@@ -227,16 +227,7 @@ pub(crate) fn read_only_command_with_timeout_and_limit(
 }
 
 fn bounded_read<R: Read>(mut reader: R, limit: usize) -> String {
-    let mut bytes = Vec::with_capacity(limit.min(4096));
-    let mut chunk = [0u8; 4096];
-    while bytes.len() < limit {
-        let take = (limit - bytes.len()).min(chunk.len());
-        match reader.read(&mut chunk[..take]) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
-        }
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
+    crate::atoms::command::read_bounded_output(&mut reader, limit).text
 }
 
 pub(crate) fn unit_state(unit: &str) -> UnitObservation {

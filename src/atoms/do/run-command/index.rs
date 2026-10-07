@@ -168,11 +168,11 @@ fn run_with_timeout_in_dir_env(
     let out = child
         .stdout
         .take()
-        .map(|mut reader| thread::spawn(move || bounded(&mut reader)));
+        .map(|reader| thread::spawn(move || bounded(reader)));
     let err = child
         .stderr
         .take()
-        .map(|mut reader| thread::spawn(move || bounded(&mut reader)));
+        .map(|reader| thread::spawn(move || bounded(reader)));
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
     let status = loop {
@@ -206,11 +206,7 @@ fn run_with_timeout_in_dir_env(
     }
 }
 
-fn bounded<R: Read>(reader: &mut R) -> String {
-    let mut bytes = Vec::new();
-    reader
-        .take(OUTPUT_LIMIT as u64)
-        .read_to_end(&mut bytes)
-        .ok();
-    String::from_utf8_lossy(&bytes).into_owned()
+fn bounded(reader: impl Read) -> String {
+    let output = crate::atoms::command::read_bounded_output(reader, OUTPUT_LIMIT);
+    crate::atoms::command::format_bounded_output_for_receipt(output, OUTPUT_LIMIT)
 }

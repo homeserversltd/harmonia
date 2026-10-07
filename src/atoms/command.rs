@@ -15,6 +15,47 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 const TERMINATION_GRACE_SECS: u64 = 3;
+const RECEIPT_OUTPUT_LIMIT: usize = 16 * 1024;
+
+pub(crate) struct BoundedOutput {
+    pub(crate) text: String,
+    pub(crate) discarded: bool,
+}
+
+pub(crate) fn read_bounded_output<R: Read>(mut reader: R, limit: usize) -> BoundedOutput {
+    let mut bytes = Vec::with_capacity(limit.min(4096));
+    let mut chunk = [0u8; 4096];
+    let mut discarded = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => {
+                let retained = count.min(limit.saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&chunk[..retained]);
+                if retained < count {
+                    discarded = true;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    BoundedOutput {
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        discarded,
+    }
+}
+
+pub(crate) fn format_bounded_output_for_receipt(output: BoundedOutput, limit: usize) -> String {
+    let mut text = output.text;
+    if output.discarded {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("[output truncated after first {limit} bytes]"));
+    }
+    text
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -46,6 +87,7 @@ pub struct CaptureOptions<'a> {
     pub env: BTreeMap<String, String>,
     pub redact: BTreeSet<String>,
     pub timeout_secs: u64,
+    output_limit: Option<usize>,
     bearer: Option<Bearer>,
 }
 
@@ -167,6 +209,7 @@ impl<'a> CaptureOptions<'a> {
             env: BTreeMap::new(),
             redact: BTreeSet::new(),
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            output_limit: None,
             bearer: None,
         }
     }
@@ -184,6 +227,10 @@ impl<'a> CaptureOptions<'a> {
     }
     pub fn redact(mut self, redact: BTreeSet<String>) -> Self {
         self.redact = redact;
+        self
+    }
+    pub fn output_limit(mut self, output_limit: usize) -> Self {
+        self.output_limit = Some(output_limit);
         self
     }
 
@@ -473,18 +520,31 @@ pub(crate) fn capture_with_options(
     } else {
         options.timeout_secs
     };
-    let stdout = child.stdout.take().map(|mut pipe| {
+    // The limit belongs only to command receipts. Internal Git/JSON/
+    // expected_stdout captures remain unbounded and keep their old trim behavior.
+    let output_limit = options.output_limit;
+    let stdout = child.stdout.take().map(|pipe| {
         thread::spawn(move || {
-            let mut captured = String::new();
-            let _ = pipe.read_to_string(&mut captured);
-            captured
+            if let Some(limit) = output_limit {
+                format_bounded_output_for_receipt(read_bounded_output(pipe, limit), limit)
+            } else {
+                let mut pipe = pipe;
+                let mut captured = String::new();
+                let _ = pipe.read_to_string(&mut captured);
+                captured
+            }
         })
     });
-    let stderr = child.stderr.take().map(|mut pipe| {
+    let stderr = child.stderr.take().map(|pipe| {
         thread::spawn(move || {
-            let mut captured = String::new();
-            let _ = pipe.read_to_string(&mut captured);
-            captured
+            if let Some(limit) = output_limit {
+                format_bounded_output_for_receipt(read_bounded_output(pipe, limit), limit)
+            } else {
+                let mut pipe = pipe;
+                let mut captured = String::new();
+                let _ = pipe.read_to_string(&mut captured);
+                captured
+            }
         })
     });
     let read_pipes = || {
@@ -502,11 +562,24 @@ pub(crate) fn capture_with_options(
         match child.try_wait() {
             Ok(Some(status)) => {
                 let (stdout, stderr) = read_pipes();
+                let (stdout, stderr) = if output_limit.is_some() {
+                    // Bounded output is a receipt head: preserve its leading
+                    // bytes instead of applying the legacy unbounded trim.
+                    (
+                        redact(&stdout, &options.redact),
+                        redact(&stderr, &options.redact),
+                    )
+                } else {
+                    (
+                        redact(stdout.trim(), &options.redact),
+                        redact(stderr.trim(), &options.redact),
+                    )
+                };
                 return CmdResult {
                     ok: status.success(),
                     code: status.code().unwrap_or(-1),
-                    stdout: redact(stdout.trim(), &options.redact),
-                    stderr: redact(stderr.trim(), &options.redact),
+                    stdout,
+                    stderr,
                 };
             }
             Ok(None) if start.elapsed() >= Duration::from_secs(timeout_secs) => {
@@ -515,16 +588,32 @@ pub(crate) fn capture_with_options(
                 let signal = format!(
                     "command-timeout-after-{timeout_secs}s: {command_label}: {termination}"
                 );
-                let stderr = if stderr.trim().is_empty() {
-                    signal
+                let (stdout, stderr) = if output_limit.is_some() {
+                    let stderr = if stderr.is_empty() {
+                        signal
+                    } else {
+                        format!("{stderr}\n{signal}")
+                    };
+                    (
+                        redact(&stdout, &options.redact),
+                        redact(&stderr, &options.redact),
+                    )
                 } else {
-                    format!("{}\n{}", stderr.trim(), signal)
+                    let stderr = if stderr.trim().is_empty() {
+                        signal
+                    } else {
+                        format!("{}\n{}", stderr.trim(), signal)
+                    };
+                    (
+                        redact(stdout.trim(), &options.redact),
+                        redact(&stderr, &options.redact),
+                    )
                 };
                 return CmdResult {
                     ok: false,
                     code: -1,
-                    stdout: redact(stdout.trim(), &options.redact),
-                    stderr: redact(&stderr, &options.redact),
+                    stdout,
+                    stderr,
                 };
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
@@ -670,7 +759,19 @@ pub(crate) fn execute_validated_step(
         }
     } else {
         decision = "observation";
-        let probe = capture_with_options(&program, &argv.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(cwd.as_deref()).timeout_secs(timeout));
+        let capture_options = CaptureOptions::new()
+            .cwd(cwd.as_deref())
+            .timeout_secs(timeout);
+        let capture_options = if step.permutation == "capture" {
+            capture_options.output_limit(RECEIPT_OUTPUT_LIMIT)
+        } else {
+            capture_options
+        };
+        let probe = capture_with_options(
+            &program,
+            &argv.iter().map(String::as_str).collect::<Vec<_>>(),
+            capture_options,
+        );
         observed_state = serde_json::json!({"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
         (Some(probe), true)
     };
