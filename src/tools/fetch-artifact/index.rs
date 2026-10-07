@@ -8,6 +8,38 @@ pub(crate) struct FetchArtifactExecution {
     pub artifact_path: std::path::PathBuf,
 }
 
+#[derive(serde::Deserialize)]
+struct FetchArtifactApplianceConfig {
+    #[serde(default)]
+    sources: BTreeMap<String, Value>,
+}
+
+fn appliance_source_declared(config_path: &Path, component: &str) -> Result<bool, String> {
+    let text = std::fs::read_to_string(config_path).map_err(|error| {
+        format!(
+            "appliance-config-read-failed {}: {error}",
+            config_path.display()
+        )
+    })?;
+    let config: FetchArtifactApplianceConfig = serde_json::from_str(&text).map_err(|error| {
+        format!(
+            "appliance-config-parse-failed {}: {error}",
+            config_path.display()
+        )
+    })?;
+    Ok(config.sources.contains_key(component))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn same_source_sha(left: &str, right: &str) -> bool {
+    left.strip_prefix("sha-")
+        .unwrap_or(left)
+        .eq_ignore_ascii_case(right.strip_prefix("sha-").unwrap_or(right))
+}
+
 pub(crate) fn execute(
     args: &BTreeMap<String, Value>,
     receipt_dir: &Path,
@@ -170,6 +202,65 @@ fn execute_with_module_provenance(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(Path::new);
+    let native_release = !release_repo.trim().is_empty();
+    let xenia_artifact = source_policy == "artifact" && module_id == Some("xenia");
+    let xenia_source_undeclared = if xenia_artifact {
+        let config_path = crate::bands::pull_source::appliance_config_path();
+        !appliance_source_declared(&config_path, component)?
+    } else {
+        false
+    };
+    let xenia_expected_digest = if xenia_artifact {
+        match args.get("expected_digest") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) if valid_sha256(value) => Some(value.as_str()),
+            Some(_) => return Err("fetch-artifact-expected-digest-invalid".into()),
+        }
+    } else {
+        None
+    };
+    let pull_repo_source_sha = ["source_build_sha", "resolved_revision", "resolved_commit"]
+        .iter()
+        .find_map(|name| {
+            args.get(*name)
+                .and_then(Value::as_str)
+                .filter(|value| crate::atoms::ask::fetch_artifact::validate_source_sha(value))
+        })
+        .map(str::to_owned);
+    if xenia_source_undeclared
+        && native_release
+        && !beam_refetch
+        && xenia_expected_digest.is_some()
+        && pull_repo_source_sha.as_deref().is_some_and(|source_identity| {
+            pinned_release_sha
+                .as_deref()
+                .is_none_or(|pin| same_source_sha(source_identity, pin))
+        })
+        && crate::known_good_ledger::sha256_file(installed_binary)
+            .is_ok_and(|installed_digest| Some(installed_digest.as_str()) == xenia_expected_digest)
+    {
+        let source_identity = pull_repo_source_sha.unwrap();
+        let installed_digest = xenia_expected_digest.unwrap();
+        crate::atoms::attest::fetch_artifact::attest(
+            &receipt_dir.join("harmonia-atoms.log"),
+            true,
+            false,
+            &format!(
+                "state=Current; care=pull-repo digest and source identity match installed bytes; after=Current; road=artifact; digest_supplier=pull-repo; observed={installed_digest}; desired={installed_digest}; source_sha={source_identity}; diff=empty; movement=none{profile_receipt_fields}"
+            ),
+        )?;
+        return Ok(FetchArtifactExecution {
+            outcome: crate::OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: "fetch-artifact-current".into(),
+                command: None,
+            },
+            source_sha: source_identity,
+            artifact_path: installed_binary.to_path_buf(),
+        });
+    }
     if source_policy == "developer" {
         let source_reference = args
             .get("source_reference")
@@ -179,7 +270,6 @@ fn execute_with_module_provenance(
             return Err("fetch-artifact-developer-source-not-main".into());
         }
     }
-    let native_release = !release_repo.trim().is_empty();
     let mut release_fallback: Option<(String, String)> = (source_policy == "developer")
         .then(|| ("developer-main".into(), "source://main".into()));
     let mut credential_state = "absent";
@@ -188,7 +278,59 @@ fn execute_with_module_provenance(
     let mut effective_source_sha = source_sha.to_owned();
     let mut stamped_source_plan: Option<crate::tools::git_artifact::SourcePlan> = None;
     let mut module_release_candidates: Option<Vec<Value>> = None;
-    if source_policy == "artifact" {
+    if source_policy == "artifact" && xenia_source_undeclared {
+        if !native_release {
+            return Err("fetch-artifact-xenia-release-repo-missing".into());
+        }
+        let selected_source_sha = pinned_release_sha
+            .as_deref()
+            .or(pull_repo_source_sha.as_deref())
+            .ok_or("fetch-artifact-xenia-release-source-sha-missing")?
+            .to_ascii_lowercase();
+        if pull_repo_source_sha
+            .as_deref()
+            .is_some_and(|observed| !same_source_sha(observed, &selected_source_sha))
+        {
+            return Err("fetch-artifact-xenia-release-source-sha-mismatch".into());
+        }
+        let release_tag = crate::atoms::ask::fetch_artifact::release_tag_for_source_sha(
+            &selected_source_sha,
+        )
+        .ok_or("fetch-artifact-xenia-release-source-sha-invalid")?;
+        let api_root = args
+            .get("api_root")
+            .and_then(Value::as_str)
+            .unwrap_or("https://git.home.arpa/api/v1");
+        credential_state =
+            crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
+        let mut download = crate::atoms::ask::fetch_artifact::download_release(
+            component,
+            artifact_name,
+            source_dir.unwrap_or(Path::new("")),
+            release_repo,
+            Some(&release_tag),
+            api_root,
+            release_asset_name.as_deref(),
+            release_sidecar_name.as_deref(),
+            identity,
+            &selected_source_sha,
+        )?
+        .ok_or("fetch-artifact-xenia-release-absent")?;
+        if !crate::atoms::ask::fetch_artifact::validate_source_sha(&download.manifest.source_sha)
+            || !same_source_sha(&download.manifest.source_sha, &selected_source_sha)
+        {
+            return Err("fetch-artifact-xenia-release-source-sha-mismatch".into());
+        }
+        if xenia_expected_digest
+            .is_some_and(|expected| download.manifest.sha256 != expected)
+        {
+            return Err("fetch-artifact-xenia-pull-repo-digest-mismatch".into());
+        }
+        effective_source_sha = download.manifest.source_sha.clone();
+        release_digest = Some(download.manifest.sha256.clone());
+        download.identity = identity.to_owned();
+        native_download = Some(download);
+    } else if source_policy == "artifact" {
         let config_path = crate::bands::pull_source::appliance_config_path();
         let certificate_path = crate::device_profile::device_profile_certificate_path();
         let source_receipt = crate::bands::pull_source::resolve_source(
