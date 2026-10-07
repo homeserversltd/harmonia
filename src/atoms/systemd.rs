@@ -94,13 +94,46 @@ pub(crate) fn condition_skip_evidence(
 ) -> Option<serde_json::Value> {
     let probe = observation.probe.as_ref()?;
     let snapshot = observation.condition_snapshot.as_ref()?;
-    let status = snapshot.status.as_ref()?;
     if probe.ok
         || probe.code != 3
         || probe.stdout.trim() != "inactive"
         || snapshot.load_state != "loaded"
         || snapshot.active_state != "inactive"
-        || snapshot.condition_result != "no"
+    {
+        return None;
+    }
+
+    if let Some(live) = snapshot.live_condition_evidence.as_ref() {
+        match live.overall_result.as_str() {
+            "unmet" if !live.decisive_conditions.is_empty() => {
+                return Some(json!({
+                    "source": "live-path-read",
+                    "load_state": snapshot.load_state,
+                    "active_state": snapshot.active_state,
+                    "condition_result": snapshot.condition_result,
+                    "conditions": snapshot.conditions,
+                    "failed_conditions": snapshot.failed_conditions,
+                    "condition_name": snapshot.condition_name,
+                    "condition_name_source": snapshot.condition_name_source,
+                    "status_unmet_summary": snapshot.status_unmet_summary,
+                    "live_condition_evidence": live,
+                    "needs_daemon_reload": observation.needs_reload,
+                    "systemctl_show": observation.condition_show,
+                    "systemctl_status": snapshot.status,
+                    "systemctl_cat": snapshot.condition_cat,
+                    "journal_condition_evidence": snapshot.condition_journal,
+                    "systemctl_is_active": probe,
+                    "condition_probe_error": observation.condition_probe_error,
+                }));
+            }
+            // A fresh all-met result defeats a stale ConditionResult=no record.
+            "met" => return None,
+            _ => {}
+        }
+    }
+
+    let status = snapshot.status.as_ref()?;
+    if snapshot.condition_result != "no"
         || status.code != 3
         || snapshot.failed_conditions.is_empty()
         || snapshot.condition_name.is_none()
@@ -109,6 +142,7 @@ pub(crate) fn condition_skip_evidence(
         return None;
     }
     Some(json!({
+        "source": "systemd-record",
         "load_state": snapshot.load_state,
         "active_state": snapshot.active_state,
         "condition_result": snapshot.condition_result,
@@ -117,6 +151,8 @@ pub(crate) fn condition_skip_evidence(
         "condition_name": snapshot.condition_name,
         "condition_name_source": snapshot.condition_name_source,
         "status_unmet_summary": snapshot.status_unmet_summary,
+        "live_condition_evidence": snapshot.live_condition_evidence,
+        "needs_daemon_reload": observation.needs_reload,
         "systemctl_show": observation.condition_show,
         "systemctl_status": status,
         "systemctl_cat": snapshot.condition_cat,
