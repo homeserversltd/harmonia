@@ -1841,11 +1841,8 @@ fn verify_exact_pinned_module_release(
     let selected_digest = digests[selected_index].clone();
     let flag: Value = serde_json::from_slice(flag_bytes)
         .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
-    let expected_flag_digest = if component == "caduceus" && asset_set.len() > 1 {
-        caduceus_profile_map_digest(asset_set, &digests)?
-    } else {
-        selected_digest.clone()
-    };
+    let expected_flag_digest =
+        module_release_flag_digest(component, asset_set, &digests, selected_index)?;
     if flag.get("sha256").is_some_and(|value| value.as_str() != Some(expected_flag_digest.as_str())) {
         return Err("fetch-artifact-release-flag-digest-mismatch".into());
     }
@@ -2178,9 +2175,9 @@ pub(crate) fn module_release_asset_set(
     component: &str,
     asset_name: &str,
     sidecar_name: &str,
-    profile: Option<&str>,
+    _profile: Option<&str>,
 ) -> Vec<(String, String)> {
-    if component == "caduceus" && profile.is_some() {
+    if component == "caduceus" {
         CADUCEUS_RELEASE_PROFILES
             .iter()
             .map(|profile| {
@@ -2200,7 +2197,7 @@ fn verify_module_release_assets(
     releases: &[ReleaseAssets],
     expected_source_sha: Option<&str>,
     created_at: Option<&str>,
-    profile: Option<&str>,
+    _profile: Option<&str>,
     release_schema_base: Option<&str>,
 ) -> Result<Download, String> {
     if releases.len() != asset_set.len() || releases.is_empty() {
@@ -2236,11 +2233,8 @@ fn verify_module_release_assets(
         digests.push(digest);
     }
     let selected_digest = digests[selected_index].clone();
-    let expected_flag_digest = if component == "caduceus" && profile.is_some() {
-        caduceus_profile_map_digest(asset_set, &digests)?
-    } else {
-        selected_digest.clone()
-    };
+    let expected_flag_digest =
+        module_release_flag_digest(component, asset_set, &digests, selected_index)?;
     let flag: Value = serde_json::from_slice(flag_bytes)
         .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
     if let Some(value) = flag.get("sha256") {
@@ -2307,9 +2301,7 @@ fn verify_module_release_assets_with_flag(
         .ok_or_else(|| "fetch-artifact-release-flag-missing".to_string())?;
     let flag: Value = serde_json::from_slice(flag_bytes)
         .map_err(|_| "fetch-artifact-release-flag-malformed".to_string())?;
-    if flag.get("sha256").and_then(Value::as_str) != Some(download.manifest.sha256.as_str()) {
-        return Err("fetch-artifact-release-flag-digest-required-or-mismatched".into());
-    }
+    verify_required_member_flag_digest(component, selected_asset, asset_set, releases, &flag)?;
     Ok((download, flag))
 }
 
@@ -2370,7 +2362,8 @@ pub(crate) fn download_member_release_binary(
             .as_deref()
             == Some(expected_source_sha);
         if stamped_exact_pin && expected_tag == format!("sha-{expected_source_sha}") {
-            let asset_set = vec![(asset_name.to_owned(), format!("{asset_name}.sha256"))];
+            let sidecar_name = format!("{asset_name}.sha256");
+            let asset_set = module_release_asset_set(component, asset_name, &sidecar_name, None);
             let Some((assets, created_at)) =
                 fetch_exact_pinned_asset_set(&request, expected_tag, &asset_set)?
             else {
@@ -2387,6 +2380,15 @@ pub(crate) fn download_member_release_binary(
                 false,
                 "engine-release",
             )?;
+            if component == "caduceus" {
+                verify_required_member_flag_digest(
+                    component,
+                    asset_name,
+                    &asset_set,
+                    &assets,
+                    &fetched_flag,
+                )?;
+            }
             if &fetched_flag != expected_flag {
                 return Err(format!(
                     "release-flag-selected-release-changed provider={provider} tag={expected_tag} url={}",
@@ -2418,8 +2420,11 @@ pub(crate) fn download_member_release_binary(
             ));
         }
         let sidecar = format!("{asset_name}.sha256");
-        let asset_set = vec![(asset_name.to_owned(), sidecar.clone())];
-        let refs = [(asset_name, sidecar.as_str())];
+        let asset_set = module_release_asset_set(component, asset_name, &sidecar, None);
+        let refs = asset_set
+            .iter()
+            .map(|(asset, sidecar)| (asset.as_str(), sidecar.as_str()))
+            .collect::<Vec<_>>();
         let (assets, created_at) =
             fetch_release_asset_set_from_metadata(&request, metadata_tag, &metadata, &refs)?;
         let (download, fetched_flag) = verify_module_release_assets_with_flag(
@@ -2475,6 +2480,45 @@ fn caduceus_profile_map_digest(
         .collect::<Vec<_>>()
         .join(",");
     Ok(crate::atoms::file_sha256(format!("{{{entries}}}").as_bytes()))
+}
+
+fn module_release_flag_digest(
+    component: &str,
+    asset_set: &[(String, String)],
+    digests: &[String],
+    selected_index: usize,
+) -> Result<String, String> {
+    if component == "caduceus" {
+        caduceus_profile_map_digest(asset_set, digests)
+    } else {
+        digests
+            .get(selected_index)
+            .cloned()
+            .ok_or_else(|| "fetch-artifact-release-selected-asset-missing".to_string())
+    }
+}
+
+fn verify_required_member_flag_digest(
+    component: &str,
+    selected_asset: &str,
+    asset_set: &[(String, String)],
+    releases: &[ReleaseAssets],
+    flag: &Value,
+) -> Result<(), String> {
+    let selected_index = asset_set
+        .iter()
+        .position(|(asset, _)| asset == selected_asset)
+        .ok_or_else(|| "fetch-artifact-release-selected-asset-missing".to_string())?;
+    let digests = releases
+        .iter()
+        .map(|release| crate::atoms::file_sha256(&release.artifact))
+        .collect::<Vec<_>>();
+    let expected_digest =
+        module_release_flag_digest(component, asset_set, &digests, selected_index)?;
+    if flag.get("sha256").and_then(Value::as_str) != Some(expected_digest.as_str()) {
+        return Err("fetch-artifact-release-flag-digest-required-or-mismatched".into());
+    }
+    Ok(())
 }
 
 fn module_release_candidate_refusal(error: &str) -> bool {

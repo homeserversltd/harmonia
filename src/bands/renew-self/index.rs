@@ -2019,7 +2019,13 @@ fn probe_engine_release_candidates(
     let requested_assets = if member_flag_mode {
         let mut requested = vec![json!({"asset_name":"release.flag"})];
         if matches!(mode, ReleaseCandidateReceiptMode::MemberFlagBinary) {
-            requested.push(json!({"asset_name":asset_name,"sidecar_name":sidecar_name}));
+            requested.extend(
+                module_release_asset_set(component, asset_name, sidecar_name, profile)
+                    .into_iter()
+                    .map(|(asset_name, sidecar_name)| {
+                        json!({"asset_name":asset_name,"sidecar_name":sidecar_name})
+                    }),
+            );
         }
         requested
     } else {
