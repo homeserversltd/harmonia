@@ -1,6 +1,8 @@
 [Unit]
 Description=NAS (primary) at /mnt/nas
 DefaultDependencies=no
+Before=umount.target
+Conflicts=umount.target
 ConditionPathIsMountPoint=/vault
 ConditionPathExists=/dev/disk/by-partlabel/homeserver-primary-nas
 Requires=homeserver-nas-open@primary.service

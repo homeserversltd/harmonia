@@ -1,6 +1,8 @@
 [Unit]
 Description=NAS (backup) at /mnt/nas_backup
 DefaultDependencies=no
+Before=umount.target
+Conflicts=umount.target
 ConditionPathIsMountPoint=/vault
 ConditionPathExists=/dev/disk/by-partlabel/homeserver-backup-nas
 Requires=homeserver-nas-open@backup.service
