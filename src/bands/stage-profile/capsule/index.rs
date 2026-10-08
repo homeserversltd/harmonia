@@ -67,6 +67,10 @@ struct CapsulePackReceipt {
     capsule_dir: String,
     created_from: String,
     module_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    union_module_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excluded_module_ids: Option<Vec<String>>,
     lock_count: usize,
     first_missing_signal: String,
 }
@@ -190,12 +194,12 @@ pub(crate) fn capsule_pack_with_invocation(
         .join(profile_id)
         .join("index.json");
     copy_node_artifact(&profile_src, &profile_dst, key)?;
-    let extension = crate::bands::stage_profile::profile_extends(
-        &harmonia_root
-            .join("profiles")
-            .join(profile_id)
-            .join("modules"),
-    )?;
+    let module_root = harmonia_root
+        .join("profiles")
+        .join(profile_id)
+        .join("modules");
+    let extension = crate::bands::stage_profile::profile_extends(&module_root)?;
+    let excluded_module_ids = crate::bands::stage_profile::profile_excludes(&module_root)?;
     if let Some(base_id) = extension {
         let mut materialized: serde_json::Value = serde_json::from_slice(
             &fs::read(&profile_dst).map_err(|error| error.to_string())?,
@@ -204,7 +208,11 @@ pub(crate) fn capsule_pack_with_invocation(
         materialized["modules"] = serde_json::json!(profile.modules);
         if let Some(object) = materialized.as_object_mut() {
             object.remove("extends");
+            object.remove("excludes");
             object.insert("source_extends".to_owned(), serde_json::json!(base_id));
+            if let Some(module_ids) = excluded_module_ids.as_ref() {
+                object.insert("source_excludes".to_owned(), serde_json::json!(module_ids));
+            }
         }
         write_manifest_json_atomic(&profile_dst, &materialized, key)?;
     }
@@ -290,6 +298,8 @@ pub(crate) fn capsule_pack_with_invocation(
         capsule_dir: output_dir.display().to_string(),
         created_from: manifest.created_from,
         module_count: manifest.modules.len(),
+        union_module_count: excluded_module_ids.as_ref().map(|_| manifest.modules.len()),
+        excluded_module_ids: excluded_module_ids.clone(),
         lock_count: manifest.locks.len(),
         first_missing_signal: "none".into(),
     };
@@ -330,6 +340,12 @@ pub(crate) fn capsule_pack_with_invocation(
     println!("profile_id={}", receipt.profile_id);
     println!("identity={}", receipt.identity);
     println!("module_count={}", receipt.module_count);
+    if let Some(union_module_count) = receipt.union_module_count {
+        println!("union_module_count={union_module_count}");
+    }
+    if let Some(module_ids) = receipt.excluded_module_ids.as_ref() {
+        println!("excluded_module_ids={}", module_ids.join(","));
+    }
     println!("lock_count={}", receipt.lock_count);
     println!("capsule_dir={}", output_dir.display());
     println!("created_from={}", receipt.created_from);

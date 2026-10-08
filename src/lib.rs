@@ -835,6 +835,8 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let extension = crate::bands::stage_profile::profile_extends(&module_root)?;
+            let excluded_module_ids =
+                crate::bands::stage_profile::profile_excludes(&module_root)?;
             let plan = crate::atoms::r#do::transaction::derive_plan(&profile, &module_root, None)?;
             let module_is_member = |member: &str, module_id: &str| {
                 plan.member_modules
@@ -881,6 +883,9 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 println!("extends={base_id}");
                 println!("base_profile_id={base_id}");
                 println!("union_module_count={}", profile.modules.len());
+            }
+            if let Some(module_ids) = excluded_module_ids.as_ref() {
+                println!("excluded_module_ids={}", module_ids.join(","));
             }
             println!("modules={}", profile.modules.join(","));
             println!("module_seats={}", module_seats.join(","));

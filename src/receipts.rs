@@ -482,6 +482,9 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
         receipt["base_profile_id"] = json!(base_id);
         receipt["union_module_count"] = json!(profile.modules.len());
     }
+    if let Some(excluded_module_ids) = crate::bands::stage_profile::profile_excludes(module_root)? {
+        receipt["excluded_module_ids"] = json!(excluded_module_ids);
+    }
     write_json(&receipt_dir.join("run.json"), &receipt)
 }
 
@@ -808,6 +811,11 @@ pub(crate) fn write_plan_receipts(
         run["extends"] = json!(base_id);
         run["base_profile_id"] = json!(base_id);
         run["union_module_count"] = json!(profile.modules.len());
+    }
+    if let Some(excluded_module_ids) =
+        crate::bands::stage_profile::profile_excludes(module_root).map_err(io::Error::other)?
+    {
+        run["excluded_module_ids"] = json!(excluded_module_ids);
     }
     crate::atoms::attest::write_json_atomic(&receipt_dir.join("run.json"), &run)
         .map_err(io::Error::other)?;

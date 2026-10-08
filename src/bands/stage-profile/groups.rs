@@ -286,7 +286,18 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
         io::Error::new(io::ErrorKind::InvalidData, format!("profile-parse-failed {}: {err}", path.display()))
     })?;
     let base_id = match raw.get("extends") {
-        None | Some(serde_json::Value::Null) => return Ok(profile),
+        None | Some(serde_json::Value::Null) => {
+            if raw.get("excludes").is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "profile-extends-exclude-without-extends overlay={}",
+                        profile.id
+                    ),
+                ));
+            }
+            return Ok(profile);
+        }
         Some(value) => value.as_str().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -314,7 +325,17 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
             ),
         ));
     }
-    let base: Profile = serde_json::from_str(&base_text).map_err(|err| {
+    if base_raw.get("excludes").is_some() {
+        let base_profile_id = base_raw
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(base_id);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("profile-extends-exclude-without-extends overlay={base_profile_id}"),
+        ));
+    }
+    let mut base: Profile = serde_json::from_str(&base_text).map_err(|err| {
         io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-parse-failed overlay={} base={base_id}: {err}", profile.id))
     })?;
     if let Some(package_authority) = base.package_authority.as_ref() {
@@ -325,11 +346,64 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     if base.id != base_id {
         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-id-mismatch overlay={} base={} index={}", profile.id, base_id, base.id)));
     }
+    let excluded_module_ids = raw
+        .get("excludes")
+        .map(|value| parse_excluded_module_ids(value, &profile.id, path))
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        .unwrap_or_default();
+    for module_id in &excluded_module_ids {
+        if profile.modules.iter().any(|declared| declared == module_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "profile-extends-exclude-declared overlay={} base={} module={module_id}",
+                    profile.id, base_id
+                ),
+            ));
+        }
+        if !base.modules.iter().any(|declared| declared == module_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "profile-extends-exclude-unknown overlay={} base={} module={module_id}",
+                    profile.id, base_id
+                ),
+            ));
+        }
+    }
     if let Some(duplicate) = base.modules.iter().find(|id| profile.modules.contains(id)) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-duplicate-module overlay={} base={} module={duplicate}", profile.id, base_id)));
     }
+    base.modules
+        .retain(|module_id| !excluded_module_ids.contains(module_id));
     profile.modules.splice(0..0, base.modules);
     Ok(profile)
+}
+
+fn parse_excluded_module_ids(
+    value: &serde_json::Value,
+    profile_id: &str,
+    index_path: &Path,
+) -> Result<Vec<String>, String> {
+    let modules = value.as_array().ok_or_else(|| {
+        format!(
+            "profile-extends-excludes-invalid profile={profile_id} path={} expected=array",
+            index_path.display()
+        )
+    })?;
+    modules
+        .iter()
+        .enumerate()
+        .map(|(index, module)| {
+            module.as_str().map(str::to_owned).ok_or_else(|| {
+                format!(
+                    "profile-extends-excludes-invalid profile={profile_id} path={} item={index} expected=string",
+                    index_path.display()
+                )
+            })
+        })
+        .collect()
 }
 
 fn validate_profile_id(profile_id: &str) -> Result<(), String> {
@@ -358,6 +432,36 @@ pub(crate) fn profile_extends(module_root: &Path) -> Result<Option<String>, Stri
             Ok(Some(id.to_owned()))
         }
     }
+}
+
+/// Return source exclusions, or inert materialized lineage, for receipt metadata.
+pub(crate) fn profile_excludes(module_root: &Path) -> Result<Option<Vec<String>>, String> {
+    let Some(index) = module_root
+        .parent()
+        .map(|directory| directory.join("index.json"))
+    else {
+        return Ok(None);
+    };
+    let text = match fs::read_to_string(&index) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "profile-index-read-failed {}: {error}",
+                index.display()
+            ));
+        }
+    };
+    let raw: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("profile-index-parse-failed {}: {error}", index.display()))?;
+    let Some(value) = raw.get("excludes").or_else(|| raw.get("source_excludes")) else {
+        return Ok(None);
+    };
+    let profile_id = raw
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<unknown>");
+    parse_excluded_module_ids(value, profile_id, &index).map(Some)
 }
 
 pub(crate) fn load_module(path: &Path) -> Result<ModuleManifest, String> {

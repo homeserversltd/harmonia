@@ -81,6 +81,8 @@ struct MoltReceipt {
     base_profile_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     union_module_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excluded_module_ids: Option<Vec<String>>,
     harmonia_root: String,
     source_kind: &'static str,
     source_profile_path: String,
@@ -225,7 +227,12 @@ fn molt_from_source_kind(
             profile_id, profile.id
         ));
     }
-    let extension = super::profile_extends(&harmonia_root.join("profiles").join(&profile.id).join("modules"))?;
+    let module_root = harmonia_root
+        .join("profiles")
+        .join(&profile.id)
+        .join("modules");
+    let extension = super::profile_extends(&module_root)?;
+    let excluded_module_ids = super::profile_excludes(&module_root)?;
 
     let subscription_modules = profile
         .modules
@@ -284,7 +291,11 @@ fn molt_from_source_kind(
         // the flattened modules and must not resolve another installed profile.
         if let Some(object) = materialized.as_object_mut() {
             object.remove("extends");
+            object.remove("excludes");
             object.insert("source_extends".to_owned(), serde_json::json!(extension));
+            if let Some(module_ids) = excluded_module_ids.as_ref() {
+                object.insert("source_excludes".to_owned(), serde_json::json!(module_ids));
+            }
         }
         let bytes = serde_json::to_vec_pretty(&materialized).map_err(|error| error.to_string())?;
         crate::tools::comparison::execute(
@@ -478,6 +489,7 @@ fn molt_from_source_kind(
         extends: extension.clone(),
         base_profile_id: extension.clone(),
         union_module_count: extension.as_ref().map(|_| profile.modules.len()),
+        excluded_module_ids: excluded_module_ids.clone(),
         harmonia_root: harmonia_root.display().to_string(),
         source_kind: source_kind.as_str(),
         source_profile_path: profile_path
@@ -518,6 +530,9 @@ fn molt_from_source_kind(
         println!("extends={base_id}");
         println!("base_profile_id={base_id}");
         println!("union_module_count={}", profile.modules.len());
+    }
+    if let Some(module_ids) = receipt.excluded_module_ids.as_ref() {
+        println!("excluded_module_ids={}", module_ids.join(","));
     }
     println!("artifact_count={}", receipt.artifacts.len());
     println!("refreshed_modules={}", receipt.refreshed_modules.join(","));
