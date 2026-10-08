@@ -1,0 +1,17 @@
+[Unit]
+Description=Open the %i NAS
+DefaultDependencies=no
+After=local-fs.target
+Before=umount.target
+Conflicts=umount.target
+ConditionPathIsMountPoint=/vault
+ConditionPathExists=/dev/disk/by-partlabel/homeserver-%i-nas
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardInput=data
+StandardInputText={"role":"%i"}
+ExecStart=/usr/local/sbin/agathodaimon/cli.py storage/nas/open
+ExecStop=/usr/sbin/cryptsetup close homeserver-%i-nas

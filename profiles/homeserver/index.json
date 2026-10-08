@@ -63,6 +63,7 @@
     "sbin",
     "caduceus",
     "sudoers",
+    "nas-units",
     "forgejo",
     "calibreweb",
     "filebrowser",

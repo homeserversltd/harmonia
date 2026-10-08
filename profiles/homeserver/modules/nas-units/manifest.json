@@ -1,0 +1,30 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "nas-units",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Fixed HOMESERVER NAS opener and mount unit bytes keyed by public PARTLABEL roles.",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "nas-units-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/systemd/system/homeserver-nas-open@.service",
+          "etc/systemd/system/mnt-nas.mount",
+          "etc/systemd/system/mnt-nas_backup.mount"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "nas-units-config"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
