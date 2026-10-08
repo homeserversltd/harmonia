@@ -1,0 +1,14 @@
+[Unit]
+Description=Hold the %i VPN provider open for Transmission
+After=network-online.target transmissionPIA.service transmission-daemon.service
+Wants=network-online.target
+Conflicts=transmissionPIA.service transmission-daemon.service
+
+[Service]
+Type=simple
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardInput=data
+StandardInputText={"provider":"%i"}
+ExecStart=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/hold
+Restart=on-failure
+RestartSec=30

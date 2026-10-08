@@ -1,0 +1,11 @@
+[Unit]
+Description=Transmission inside the VPN namespace on port %i
+ConditionPathExists=/run/netns/vpn
+After=transmissionPIA.service transmission-daemon.service
+Conflicts=transmissionPIA.service transmission-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/ip netns exec vpn /usr/sbin/runuser -u debian-transmission -- /usr/bin/transmission-daemon --foreground --config-dir /etc/transmission-daemon --port %i
+Restart=on-failure
+RestartSec=10
