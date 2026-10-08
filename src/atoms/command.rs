@@ -505,7 +505,7 @@ pub(crate) fn resolve_command_bearer(bearer: Option<&str>) -> CommandBearer {
             Err(error) => CommandBearer {
                 bearer: None,
                 drop_privileges: false,
-                actual: ambient,
+                actual: "not-executed".to_string(),
                 explicit: true,
                 failure: Some(error),
             },
@@ -522,14 +522,14 @@ pub(crate) fn resolve_command_bearer(bearer: Option<&str>) -> CommandBearer {
         Ok(_) => CommandBearer {
             bearer: None,
             drop_privileges: false,
-            actual: ambient,
+            actual: "not-executed".to_string(),
             explicit: true,
             failure: Some(format!("command-bearer-other-user-refused {name}")),
         },
         Err(error) => CommandBearer {
             bearer: None,
             drop_privileges: false,
-            actual: ambient,
+            actual: "not-executed".to_string(),
             explicit: true,
             failure: Some(error),
         },
@@ -840,6 +840,7 @@ pub(crate) fn execute_validated_step(
     let cwd = step.args.get("cwd").and_then(serde_json::Value::as_str).map(|value| expand_module_dir(value, source_module_dir));
     let step_bearer = resolve_command_bearer(step.args.get("bearer").and_then(serde_json::Value::as_str));
     let step_bearer_actual = step_bearer.actual().to_string();
+    let bearer_resolved = step_bearer.failure.is_none();
     let program = expand_module_dir(program, source_module_dir);
     let argv = argv.iter().map(|value| expand_module_dir(value, source_module_dir)).collect::<Vec<_>>();
     let is_act = step.permutation == "act";
@@ -946,7 +947,7 @@ pub(crate) fn execute_validated_step(
                             }
                         }
                     }
-                    (Some(moved), true)
+                    (Some(moved), bearer_resolved)
                 },
             }
         } else {
@@ -980,11 +981,11 @@ pub(crate) fn execute_validated_step(
             )
         };
         observed_state = serde_json::json!({"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
-        (Some(probe), true)
+        (Some(probe), bearer_resolved)
     };
     let command_result = result.0;
     let executed = result.1;
-    let skipped = !executed;
+    let skipped = !executed && bearer_resolved;
     let advisory = !is_act && step.args.get("advisory").and_then(serde_json::Value::as_bool).unwrap_or(false);
     // A command invocation is movement attempted, not proof that the
     // commanded world changed. Do not promote an exit status to a change.
@@ -1024,7 +1025,9 @@ pub(crate) fn execute_validated_step(
         )?;
     }
     Ok(crate::OperationOutcome {
-        ok: command_result.as_ref().is_none_or(|result| result.ok || (!is_act && (advisory || skipped))),
+        ok: command_result.as_ref().is_none_or(|result| {
+            result.ok || (!is_act && ((advisory && bearer_resolved) || skipped))
+        }),
         changed,
         skipped,
         message: if is_act { format!("command act diff={decision} executed={executed}") } else if !apply { format!("command report-only probe {program}") } else { format!("command capture {program}") },
