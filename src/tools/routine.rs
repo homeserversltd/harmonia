@@ -103,6 +103,14 @@ pub(crate) fn validate_command_precondition(
     args: &BTreeMap<String, Value>,
 ) -> Result<(), LadderValidationError> {
     if tool != "command" { return Ok(()); }
+    if let Some(value) = args.get("bearer") {
+        if !value.as_str().is_some_and(|bearer| !bearer.trim().is_empty()) {
+            return Err(LadderValidationError {
+                step_id: step_id.into(),
+                defect: "command-bearer-invalid".into(),
+            });
+        }
+    }
     let program = args.get("program").and_then(Value::as_str).unwrap_or("");
     let argv = args.get("args").and_then(Value::as_array).cloned().unwrap_or_default();
     let path_values = std::iter::once(program).chain(argv.iter().filter_map(Value::as_str)).chain(args.get("cwd").and_then(Value::as_str));
@@ -124,6 +132,14 @@ pub(crate) fn validate_command_precondition(
         if module_signal {
             if observation.len() != 1 { return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-invalid-module-signal".into() }); }
         } else {
+            if let Some(value) = observation.get("bearer") {
+                if !value.as_str().is_some_and(|bearer| !bearer.trim().is_empty()) {
+                    return Err(LadderValidationError {
+                        step_id: step_id.into(),
+                        defect: "command-observation-bearer-invalid".into(),
+                    });
+                }
+            }
             let observe_program = observation.get("program").and_then(Value::as_str).unwrap_or("");
             let observe_args = observation.get("args").and_then(Value::as_array).cloned().unwrap_or_default();
             let mut values = std::iter::once(observe_program).chain(observe_args.iter().filter_map(Value::as_str)).chain(observation.get("cwd").and_then(Value::as_str));
@@ -136,7 +152,7 @@ pub(crate) fn validate_command_precondition(
             if observe_program.trim().is_empty() {
                 return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-program-empty".into() });
             }
-            let allowed = ["program", "args", "cwd", "expected_exit_code", "expected_stdout"];
+            let allowed = ["program", "args", "cwd", "expected_exit_code", "expected_stdout", "bearer"];
             if observation.keys().any(|key| !allowed.contains(&key.as_str()))
                 || observation.get("args").is_some_and(|value| !value.as_array().is_some_and(|items| items.iter().all(Value::is_string)))
                 || observation.get("cwd").is_some_and(|value| !value.is_string())

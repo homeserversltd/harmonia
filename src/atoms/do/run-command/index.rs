@@ -72,9 +72,27 @@ pub(crate) fn command_with_timeout_attested(
     cwd: Option<&str>,
     timeout: Duration,
     attest_log: &Path,
+    bearer: Option<&crate::atoms::command::CommandBearer>,
 ) -> Result<CommandObservation, String> {
-    let cwd = cwd.map(Path::new);
-    let result = run_with_timeout_in_dir_env(program, args, cwd, &[], timeout);
+    let path_cwd = cwd.map(Path::new);
+    let result = if let Some(bearer) = bearer {
+        let command = crate::atoms::command::capture_with_command_bearer_and_limit(
+            program,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            cwd,
+            timeout.as_secs(),
+            bearer,
+            Some(OUTPUT_LIMIT),
+        );
+        ResultData {
+            ok: command.ok,
+            code: Some(command.code),
+            stdout: command.stdout,
+            stderr: command.stderr,
+        }
+    } else {
+        run_with_timeout_in_dir_env(program, args, path_cwd, &[], timeout)
+    };
     let _ = (authorization, invocation);
     let outcome = CommandObservation {
         program: program.into(), args: args.to_vec(), ok: result.ok,

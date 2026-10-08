@@ -490,6 +490,11 @@
               "required": false
             },
             {
+              "name": "bearer",
+              "kind": "string",
+              "required": false
+            },
+            {
               "name": "advisory",
               "kind": "bool",
               "required": false
@@ -524,6 +529,11 @@
             {
               "name": "timeout_secs",
               "kind": "integer",
+              "required": false
+            },
+            {
+              "name": "bearer",
+              "kind": "string",
               "required": false
             },
             {

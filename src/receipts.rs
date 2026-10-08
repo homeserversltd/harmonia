@@ -526,6 +526,8 @@ fn command_first_missing_signal(result: &CmdResult) -> &'static str {
         "act-did-not-converge"
     } else if result.stderr.contains("command-timeout-after-") {
         "command-timeout"
+    } else if result.stderr.contains("command-bearer-resolution-failed") {
+        "command-bearer-resolution-failed"
     } else if result.stderr.contains("command-spawn-failed") {
         "command-spawn-failed"
     } else if result.stderr.contains("command-wait-failed") {
@@ -595,6 +597,38 @@ pub(crate) fn write_command_comparison_receipt(
     changed: bool,
     final_observed_state: &serde_json::Value,
     result: Option<&CmdResult>,
+    step_bearer: &str,
+    observation_bearer: Option<&str>,
+) -> Result<(), String> {
+    write_command_comparison_receipt_inner(
+        receipt_dir,
+        name,
+        observed_state,
+        desired_state,
+        diff_decision,
+        executed,
+        changed,
+        final_observed_state,
+        result,
+        Some(step_bearer),
+        observation_bearer,
+        true,
+    )
+}
+
+fn write_command_comparison_receipt_inner(
+    receipt_dir: &Path,
+    name: &str,
+    observed_state: &serde_json::Value,
+    desired_state: &serde_json::Value,
+    diff_decision: &str,
+    executed: bool,
+    changed: bool,
+    final_observed_state: &serde_json::Value,
+    result: Option<&CmdResult>,
+    step_bearer: Option<&str>,
+    observation_bearer: Option<&str>,
+    include_result_stdout: bool,
 ) -> Result<(), String> {
     let mut receipt = json!({
         "schema":"harmonia.command_receipt.v1", "name":name,
@@ -606,9 +640,18 @@ pub(crate) fn write_command_comparison_receipt(
         "blocker":if diff_decision == "Blocked" { result.map(command_first_missing_signal).unwrap_or("command-act-observation-failed") } else if executed && result.is_some_and(|r| !r.ok) { command_first_missing_signal(result.expect("checked result")) } else { "none" },
         "ok":result.is_none_or(|r| r.ok),
     });
+    if let Some(bearer) = step_bearer {
+        receipt["bearer"] = json!(bearer);
+    }
+    if let Some(bearer) = observation_bearer {
+        receipt["observation_bearer"] = json!(bearer);
+    }
     if let Some(result) = result {
         receipt["stdout_bytes"] = json!(result.stdout.len());
         receipt["stderr_bytes"] = json!(result.stderr.len());
+        if include_result_stdout {
+            receipt["stdout"] = json!(result.stdout);
+        }
         if diff_decision != "Empty" || executed { receipt["exit_code"] = json!(result.code); }
     }
     write_json(&receipt_dir.join(format!("{}.json", name)), &receipt)
@@ -627,12 +670,50 @@ pub(crate) fn write_command_receipt_with_policy(
     executed: bool,
     skipped: bool,
 ) -> Result<(), String> {
+    write_command_receipt_with_policy_inner(
+        receipt_dir, name, program, args, cwd, result, advisory, lane, active_lane, executed,
+        skipped, None,
+    )
+}
+
+pub(crate) fn write_command_receipt_with_policy_and_bearer(
+    receipt_dir: &Path,
+    name: &str,
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    result: &CmdResult,
+    advisory: bool,
+    lane: Option<&str>,
+    active_lane: Option<&str>,
+    executed: bool,
+    skipped: bool,
+    bearer: &str,
+) -> Result<(), String> {
+    write_command_receipt_with_policy_inner(
+        receipt_dir, name, program, args, cwd, result, advisory, lane, active_lane, executed,
+        skipped, Some(bearer),
+    )
+}
+
+fn write_command_receipt_with_policy_inner(
+    receipt_dir: &Path,
+    name: &str,
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    result: &CmdResult,
+    advisory: bool,
+    lane: Option<&str>,
+    active_lane: Option<&str>,
+    executed: bool,
+    skipped: bool,
+    bearer: Option<&str>,
+) -> Result<(), String> {
     let lane_match = lane.is_none() || lane == active_lane;
     let advisory_triggered = advisory && executed && !result.ok;
     let effective_ok = result.ok || skipped || advisory_triggered;
-    write_json(
-        &receipt_dir.join(format!("{}.json", name)),
-        &json!({
+    let mut receipt = json!({
             "schema": "harmonia.command_receipt.v1",
             "name": name,
             "program": program,
@@ -652,8 +733,11 @@ pub(crate) fn write_command_receipt_with_policy(
             "executed": executed,
             "skipped": skipped,
             "first_missing_signal": if effective_ok { "none" } else { command_first_missing_signal(result) },
-        }),
-    )
+        });
+    if let Some(bearer) = bearer {
+        receipt["bearer"] = json!(bearer);
+    }
+    write_json(&receipt_dir.join(format!("{}.json", name)), &receipt)
 }
 
 pub(crate) fn write_run_receipt(

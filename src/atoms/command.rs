@@ -89,6 +89,7 @@ pub struct CaptureOptions<'a> {
     pub timeout_secs: u64,
     output_limit: Option<usize>,
     bearer: Option<Bearer>,
+    drop_bearer_privileges: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +98,25 @@ struct Bearer {
     gid: u32,
     name: String,
     home: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CommandBearer {
+    bearer: Option<Bearer>,
+    drop_privileges: bool,
+    actual: String,
+    explicit: bool,
+    failure: Option<String>,
+}
+
+impl CommandBearer {
+    pub(crate) fn actual(&self) -> &str {
+        &self.actual
+    }
+
+    pub(crate) fn is_explicit(&self) -> bool {
+        self.explicit
+    }
 }
 
 #[cfg(any(test, feature = "test-facade"))]
@@ -211,6 +231,7 @@ impl<'a> CaptureOptions<'a> {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
             output_limit: None,
             bearer: None,
+            drop_bearer_privileges: false,
         }
     }
     pub fn cwd(mut self, cwd: Option<&'a str>) -> Self {
@@ -236,6 +257,13 @@ impl<'a> CaptureOptions<'a> {
 
     fn bearer(mut self, bearer: Bearer) -> Self {
         self.bearer = Some(bearer);
+        self.drop_bearer_privileges = true;
+        self
+    }
+
+    fn command_bearer(mut self, bearer: &CommandBearer) -> Self {
+        self.bearer = bearer.bearer.clone();
+        self.drop_bearer_privileges = bearer.drop_privileges;
         self
     }
 }
@@ -260,8 +288,18 @@ pub(crate) fn authorized_capture(
     cwd: Option<&str>,
     timeout: Duration,
     attest_log: &Path,
+    bearer: Option<&CommandBearer>,
 ) -> Result<crate::atoms::CommandObservation, String> {
-    crate::atoms::r#do::run_command::command_with_timeout_attested(authorization, invocation, program, args, cwd, timeout, attest_log)
+    crate::atoms::r#do::run_command::command_with_timeout_attested(
+        authorization,
+        invocation,
+        program,
+        args,
+        cwd,
+        timeout,
+        attest_log,
+        bearer,
+    )
 }
 
 pub fn plan(request: &Request) -> Outcome {
@@ -423,6 +461,124 @@ fn resolve_non_root_bearer(bearer: &str) -> Result<Bearer, String> {
     })
 }
 
+pub(crate) fn current_command_bearer_name() -> String {
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 {
+        return "root".to_string();
+    }
+    let passwd = unsafe { libc::getpwuid(uid) };
+    if passwd.is_null() {
+        return format!("uid:{uid}");
+    }
+    unsafe { std::ffi::CStr::from_ptr((*passwd).pw_name) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) fn resolve_command_bearer(bearer: Option<&str>) -> CommandBearer {
+    let ambient = current_command_bearer_name();
+    let Some(name) = bearer else {
+        return CommandBearer {
+            bearer: None,
+            drop_privileges: false,
+            actual: ambient,
+            explicit: false,
+            failure: None,
+        };
+    };
+    if unsafe { libc::geteuid() } == 0 {
+        return match resolve_bearer_for_capture(name) {
+            Ok(Some(bearer)) => CommandBearer {
+                bearer: Some(bearer),
+                drop_privileges: true,
+                actual: name.to_string(),
+                explicit: true,
+                failure: None,
+            },
+            Ok(None) => CommandBearer {
+                bearer: None,
+                drop_privileges: false,
+                actual: ambient,
+                explicit: true,
+                failure: None,
+            },
+            Err(error) => CommandBearer {
+                bearer: None,
+                drop_privileges: false,
+                actual: ambient,
+                explicit: true,
+                failure: Some(error),
+            },
+        };
+    }
+    match resolve_non_root_bearer(name) {
+        Ok(resolved) if resolved.uid == unsafe { libc::geteuid() } => CommandBearer {
+            bearer: Some(resolved),
+            drop_privileges: false,
+            actual: name.to_string(),
+            explicit: true,
+            failure: None,
+        },
+        Ok(_) => CommandBearer {
+            bearer: None,
+            drop_privileges: false,
+            actual: ambient,
+            explicit: true,
+            failure: Some(format!("command-bearer-other-user-refused {name}")),
+        },
+        Err(error) => CommandBearer {
+            bearer: None,
+            drop_privileges: false,
+            actual: ambient,
+            explicit: true,
+            failure: Some(error),
+        },
+    }
+}
+
+pub(crate) fn capture_with_command_bearer(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    timeout_secs: u64,
+    bearer: &CommandBearer,
+) -> CmdResult {
+    capture_with_command_bearer_and_limit(
+        program,
+        args,
+        cwd,
+        timeout_secs,
+        bearer,
+        Some(RECEIPT_OUTPUT_LIMIT),
+    )
+}
+
+pub(crate) fn capture_with_command_bearer_and_limit(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    timeout_secs: u64,
+    bearer: &CommandBearer,
+    output_limit: Option<usize>,
+) -> CmdResult {
+    if let Some(failure) = bearer.failure.as_ref() {
+        return CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: format!("command-bearer-resolution-failed: {failure}"),
+        };
+    }
+    let mut options = CaptureOptions::new()
+        .cwd(cwd)
+        .timeout_secs(timeout_secs)
+        .command_bearer(bearer);
+    if let Some(output_limit) = output_limit {
+        options = options.output_limit(output_limit);
+    }
+    capture_with_options(program, args, options)
+}
+
 pub(crate) fn user_bus_env_for_bearer(bearer: &str) -> Result<BTreeMap<String, String>, String> {
     let bearer = resolve_non_root_bearer(bearer)?;
     let runtime_dir = format!("/run/user/{}", bearer.uid);
@@ -481,21 +637,23 @@ pub(crate) fn capture_with_options(
             .env_remove("GIT_CONFIG_COUNT")
             .env_remove("GIT_ASKPASS")
             .env_remove("SSH_ASKPASS");
-        let uid = bearer.uid;
-        let gid = bearer.gid;
-        unsafe {
-            std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
-                if libc::setgroups(0, std::ptr::null()) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::setgid(gid) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::setuid(uid) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+        if options.drop_bearer_privileges {
+            let uid = bearer.uid;
+            let gid = bearer.gid;
+            unsafe {
+                std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
+                    if libc::setgroups(0, std::ptr::null()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::setgid(gid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::setuid(uid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
         }
     }
     // The bearer establishes a truthful login baseline. Callers may narrowly
@@ -680,6 +838,8 @@ pub(crate) fn execute_validated_step(
     let lane_matches = requested_lane.is_none() || requested_lane == active_lane;
     let timeout = step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_SECS);
     let cwd = step.args.get("cwd").and_then(serde_json::Value::as_str).map(|value| expand_module_dir(value, source_module_dir));
+    let step_bearer = resolve_command_bearer(step.args.get("bearer").and_then(serde_json::Value::as_str));
+    let step_bearer_actual = step_bearer.actual().to_string();
     let program = expand_module_dir(program, source_module_dir);
     let argv = argv.iter().map(|value| expand_module_dir(value, source_module_dir)).collect::<Vec<_>>();
     let is_act = step.permutation == "act";
@@ -687,6 +847,8 @@ pub(crate) fn execute_validated_step(
     let mut observed_state = serde_json::Value::Null;
     let mut final_observed_state = serde_json::Value::Null;
     let mut desired_state = serde_json::Value::Null;
+    let mut resolved_observation_bearer = None;
+    let mut observation_bearer_actual = None;
     let mut result = if is_act {
         let observation = step.args.get("observation").ok_or("observation-missing")?;
         let mut observation_failure = None;
@@ -702,7 +864,26 @@ pub(crate) fn execute_validated_step(
         let expected_code = observation.get("expected_exit_code").and_then(serde_json::Value::as_i64).ok_or("observation-expected-exit-code-missing")? as i32;
         let expected_stdout = observation.get("expected_stdout").and_then(serde_json::Value::as_str);
         let observation_cwd = observation.get("cwd").and_then(serde_json::Value::as_str).map(|value| expand_module_dir(value, source_module_dir));
-        let probe = capture_with_options(&observation_program, &observation_args.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(observation_cwd.as_deref()).timeout_secs(timeout));
+        let observation_bearer = observation.get("bearer").and_then(serde_json::Value::as_str)
+            .map(|name| resolve_command_bearer(Some(name)))
+            .unwrap_or_else(|| step_bearer.clone());
+        observation_bearer_actual = Some(observation_bearer.actual().to_string());
+        resolved_observation_bearer = Some(observation_bearer.clone());
+        let probe = if observation_bearer.is_explicit() {
+            capture_with_command_bearer(
+                &observation_program,
+                &observation_args.iter().map(String::as_str).collect::<Vec<_>>(),
+                observation_cwd.as_deref(),
+                timeout,
+                &observation_bearer,
+            )
+        } else {
+            capture_with_options(
+                &observation_program,
+                &observation_args.iter().map(String::as_str).collect::<Vec<_>>(),
+                CaptureOptions::new().cwd(observation_cwd.as_deref()).timeout_secs(timeout),
+            )
+        };
         observed_state = serde_json::json!({"program":observation_program,"args":observation_args,"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
         desired_state = serde_json::json!({"exit_code":expected_code,"stdout":expected_stdout});
         if probe.code < 0 { observation_failure = Some(format!("command-act-observation-failed: {}", probe.stderr)); }
@@ -726,7 +907,16 @@ pub(crate) fn execute_validated_step(
                 |current| if *current { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
                 |authorization, _| {
                     let invocation = invocation.ok_or("invocation-key-missing")?;
-                    authorized_capture(&authorization, invocation, &program, &argv, cwd.as_deref(), Duration::from_secs(timeout), &module_dir.join("harmonia-atoms.log"))
+                    authorized_capture(
+                        &authorization,
+                        invocation,
+                        &program,
+                        &argv,
+                        cwd.as_deref(),
+                        Duration::from_secs(timeout),
+                        &module_dir.join("harmonia-atoms.log"),
+                        step_bearer.is_explicit().then_some(&step_bearer),
+                    )
                 },
             )?;
             match outcome {
@@ -739,7 +929,12 @@ pub(crate) fn execute_validated_step(
                         stderr: movement.stderr,
                     };
                     if moved.ok {
-                        if let Some((final_state, converged)) = observe_after_command(observation, source_module_dir, timeout)? {
+                        if let Some((final_state, converged)) = observe_after_command(
+                            observation,
+                            source_module_dir,
+                            timeout,
+                            resolved_observation_bearer.as_ref(),
+                        )? {
                             final_observed_state = final_state.clone();
                             if !converged {
                                 moved.ok = false;
@@ -759,19 +954,31 @@ pub(crate) fn execute_validated_step(
         }
     } else {
         decision = "observation";
-        let capture_options = CaptureOptions::new()
-            .cwd(cwd.as_deref())
-            .timeout_secs(timeout);
-        let capture_options = if step.permutation == "capture" {
-            capture_options.output_limit(RECEIPT_OUTPUT_LIMIT)
+        let output_limit = (step.permutation == "capture").then_some(RECEIPT_OUTPUT_LIMIT);
+        let probe = if step_bearer.is_explicit() {
+            capture_with_command_bearer_and_limit(
+                &program,
+                &argv.iter().map(String::as_str).collect::<Vec<_>>(),
+                cwd.as_deref(),
+                timeout,
+                &step_bearer,
+                output_limit,
+            )
         } else {
-            capture_options
+            let capture_options = CaptureOptions::new()
+                .cwd(cwd.as_deref())
+                .timeout_secs(timeout);
+            let capture_options = if step.permutation == "capture" {
+                capture_options.output_limit(RECEIPT_OUTPUT_LIMIT)
+            } else {
+                capture_options
+            };
+            capture_with_options(
+                &program,
+                &argv.iter().map(String::as_str).collect::<Vec<_>>(),
+                capture_options,
+            )
         };
-        let probe = capture_with_options(
-            &program,
-            &argv.iter().map(String::as_str).collect::<Vec<_>>(),
-            capture_options,
-        );
         observed_state = serde_json::json!({"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
         (Some(probe), true)
     };
@@ -797,11 +1004,23 @@ pub(crate) fn execute_validated_step(
             changed,
             &final_observed_state,
             command_result.as_ref(),
+            &step_bearer_actual,
+            observation_bearer_actual.as_deref(),
         )?;
     } else {
-        crate::write_command_receipt_with_policy(
-            module_dir, &step.step_id, &program, &argv, cwd.as_deref(), command_result.as_ref().ok_or("command-result-missing")?,
-            advisory, requested_lane, active_lane, executed, skipped,
+        crate::receipts::write_command_receipt_with_policy_and_bearer(
+            module_dir,
+            &step.step_id,
+            &program,
+            &argv,
+            cwd.as_deref(),
+            command_result.as_ref().ok_or("command-result-missing")?,
+            advisory,
+            requested_lane,
+            active_lane,
+            executed,
+            skipped,
+            &step_bearer_actual,
         )?;
     }
     Ok(crate::OperationOutcome {
@@ -814,7 +1033,12 @@ pub(crate) fn execute_validated_step(
 }
 
 
-fn observe_after_command(observation: &serde_json::Value, module_dir: &Path, timeout: u64) -> Result<Option<(serde_json::Value, bool)>, String> {
+fn observe_after_command(
+    observation: &serde_json::Value,
+    module_dir: &Path,
+    timeout: u64,
+    bearer: Option<&CommandBearer>,
+) -> Result<Option<(serde_json::Value, bool)>, String> {
     if observation.get("kind").and_then(serde_json::Value::as_str) == Some("module_changed_before_step") { return Ok(None); }
     let program = observation.get("program").and_then(serde_json::Value::as_str).ok_or("observation-program-missing")?;
     let program = expand_module_dir(program, module_dir);
@@ -822,7 +1046,21 @@ fn observe_after_command(observation: &serde_json::Value, module_dir: &Path, tim
     let cwd = observation.get("cwd").and_then(serde_json::Value::as_str).map(|value| expand_module_dir(value, module_dir));
     let expected_code = observation.get("expected_exit_code").and_then(serde_json::Value::as_i64).ok_or("observation-expected-exit-code-missing")? as i32;
     let expected_stdout = observation.get("expected_stdout").and_then(serde_json::Value::as_str);
-    let probe = capture_with_options(&program, &args.iter().map(String::as_str).collect::<Vec<_>>(), CaptureOptions::new().cwd(cwd.as_deref()).timeout_secs(timeout));
+    let probe = if let Some(bearer) = bearer.filter(|bearer| bearer.is_explicit()) {
+        capture_with_command_bearer(
+            &program,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            cwd.as_deref(),
+            timeout,
+            bearer,
+        )
+    } else {
+        capture_with_options(
+            &program,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            CaptureOptions::new().cwd(cwd.as_deref()).timeout_secs(timeout),
+        )
+    };
     let converged = probe.code >= 0 && probe.code == expected_code && expected_stdout.map_or(true, |expected| probe.stdout == expected);
     Ok(Some((serde_json::json!({"program":program,"args":args,"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr}), converged)))
 }
