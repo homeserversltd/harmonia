@@ -1052,7 +1052,14 @@ fn xenia_owner_ids(owner: &str) -> Result<(u32, u32), String> {
         return Err(format!("xenia-owner-absent {owner}"));
     }
     let passwd = unsafe { &*passwd };
-    Ok((passwd.pw_uid, passwd.pw_gid))
+    // The seat's group is the shared clone group `xenia`, whoever owns it: the
+    // staff band reads a 0750 seat as caduceus with exactly that one
+    // supplementary group (workflow-coronatio-xenia-clone-road-and-staff-actuation-law,
+    // amendment 2026-09-30). A body without that group keeps the owner's own.
+    let group = std::ffi::CString::new("xenia").map_err(|_| "xenia-group-invalid".to_string())?;
+    let shared = unsafe { libc::getgrnam(group.as_ptr()) };
+    let gid = if shared.is_null() { passwd.pw_gid } else { unsafe { (*shared).gr_gid } };
+    Ok((passwd.pw_uid, gid))
 }
 
 fn xenia_repair_seat(path: &Path, owner: &str) -> Result<bool, String> {
