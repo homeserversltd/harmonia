@@ -63,7 +63,7 @@
             {
               "name": "Transmission",
               "description": "BitTorrent client",
-              "services": ["transmissionPIA"],
+              "services": ["transmissionVPN"],
               "type": "systemd",
               "port": 9091,
               "localURL": "https://transmission.home.arpa",

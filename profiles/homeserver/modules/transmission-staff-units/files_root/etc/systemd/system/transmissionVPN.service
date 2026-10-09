@@ -1,0 +1,18 @@
+[Unit]
+Description=Transmission VPN singleton native service
+Wants=network-online.target hold-port-forward@pia.service
+After=network-online.target hold-port-forward@pia.service transmissionPIA.service transmission-daemon.service
+Conflicts=transmissionPIA.service transmission-daemon.service
+
+[Service]
+Type=simple
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardInput=data
+StandardInputText={}
+ExecStart=/usr/local/sbin/agathodaimon/cli.py transmission/daemon
+ExecStartPost=/usr/local/sbin/agathodaimon/cli.py transmission/settings
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

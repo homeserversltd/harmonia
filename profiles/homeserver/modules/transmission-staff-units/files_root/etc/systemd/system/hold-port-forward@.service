@@ -3,12 +3,16 @@ Description=Hold the %i VPN provider open for Transmission
 After=network-online.target transmissionPIA.service transmission-daemon.service
 Wants=network-online.target
 Conflicts=transmissionPIA.service transmission-daemon.service
+PartOf=transmissionVPN.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
 Environment=PYTHONDONTWRITEBYTECODE=1
 StandardInput=data
 StandardInputText={"provider":"%i"}
+ExecStartPre=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/namespace
 ExecStart=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/hold
 Restart=on-failure
 RestartSec=30
+TimeoutStartSec=180
