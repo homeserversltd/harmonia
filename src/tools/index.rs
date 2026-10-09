@@ -261,6 +261,8 @@ pub(crate) mod make_symlink;
 pub use crate::atoms::package;
 pub(crate) mod ladder;
 pub(crate) mod routine;
+#[path = "hermes-maintenance/index.rs"]
+pub(crate) mod hermes_maintenance;
 #[path = "release-binary/index.rs"]
 pub(crate) mod release_binary;
 #[path = "service-runtime/index.rs"]

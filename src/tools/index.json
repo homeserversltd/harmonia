@@ -1851,6 +1851,26 @@
           "placement": "RestartServices"
         }
       ]
+    },
+    {
+      "name": "hermes-maintenance",
+      "description": "Converge the Hermes source, native dependency environment, and owner-controlled launcher as one pinned generation.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "converge",
+          "description": "Observe and optionally select a complete official-main Hermes generation.",
+          "args": [
+            { "name": "owner", "kind": "string", "required": true },
+            { "name": "source_root", "kind": "string", "required": true },
+            { "name": "launcher", "kind": "string", "required": true },
+            { "name": "upstream_url", "kind": "string", "required": false },
+            { "name": "branch", "kind": "string", "required": false },
+            { "name": "extras", "kind": "string_array", "required": false }
+          ],
+          "placement": "PullSource"
+        }
+      ]
     }
   ]
 }

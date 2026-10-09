@@ -579,6 +579,59 @@ pub(crate) fn capture_with_command_bearer_and_limit(
     capture_with_options(program, args, options)
 }
 
+/// Capture raw bytes and the exact child status for the narrow native-source
+/// census that consumes Git's NUL-delimited path list. The ordinary receipt
+/// capture intentionally decodes output as UTF-8; that cannot preserve arbitrary
+/// tracked path bytes. This uses the same resolved bearer and child-only UID
+/// drop, while giving the caller an explicitly clean environment.
+pub(crate) fn capture_bytes_with_command_bearer_and_env(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    bearer: &CommandBearer,
+    env: BTreeMap<String, String>,
+) -> Result<std::process::Output, String> {
+    if let Some(failure) = bearer.failure.as_ref() {
+        return Err(format!("command-bearer-resolution-failed: {failure}"));
+    }
+    let mut command = Command::new(program);
+    command.args(args).env_clear().stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(cwd) = cwd {
+        command.current_dir(Path::new(cwd));
+    }
+    if let Some(resolved) = bearer.bearer.as_ref() {
+        command
+            .env("HOME", &resolved.home)
+            .env("USER", &resolved.name)
+            .env("LOGNAME", &resolved.name)
+            .env("XDG_CONFIG_HOME", Path::new(&resolved.home).join(".config"));
+        if bearer.drop_privileges {
+            let uid = resolved.uid;
+            let gid = resolved.gid;
+            unsafe {
+                std::os::unix::process::CommandExt::pre_exec(&mut command, move || {
+                    if libc::setgroups(0, std::ptr::null()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::setgid(gid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::setuid(uid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .map_err(|error| format!("command-capture-bytes-failed: {error}"))
+}
+
 pub(crate) fn user_bus_env_for_bearer(bearer: &str) -> Result<BTreeMap<String, String>, String> {
     let bearer = resolve_non_root_bearer(bearer)?;
     let runtime_dir = format!("/run/user/{}", bearer.uid);

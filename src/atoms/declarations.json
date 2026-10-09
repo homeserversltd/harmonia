@@ -537,6 +537,30 @@
             "attest": "do-and-attest"
           }
         ]
+      },
+      {
+        "tool": "hermes-maintenance",
+        "permutations": [
+          {
+            "name": "converge",
+            "deed": "run-command",
+            "inputs": [
+              { "name": "owner", "kind": "string", "required": true },
+              { "name": "source_root", "kind": "string", "required": true },
+              { "name": "launcher", "kind": "string", "required": true },
+              { "name": "upstream_url", "kind": "string", "required": false },
+              { "name": "branch", "kind": "string", "required": false },
+              { "name": "extras", "kind": "string_array", "required": false }
+            ],
+            "comparison": "command-status",
+            "phases": ["observe", "compare", "act", "attest"],
+            "permission": "mutate",
+            "ownership": "shared-ritual",
+            "no_follow": true,
+            "restoration": "backup-existing",
+            "attest": "do-and-attest"
+          }
+        ]
       }
     ]
   }

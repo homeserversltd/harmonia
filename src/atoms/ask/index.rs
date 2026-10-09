@@ -12,6 +12,8 @@ pub(crate) mod build_crate;
 pub(crate) mod fetch_artifact;
 #[path = "build_venv.rs"]
 pub(crate) mod build_venv;
+#[path = "hermes_maintenance.rs"]
+pub(crate) mod hermes_maintenance;
 #[path = "change_mode.rs"]
 pub(crate) mod change_mode;
 #[path = "change_owner.rs"]

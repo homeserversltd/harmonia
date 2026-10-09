@@ -8,6 +8,8 @@ pub(crate) mod build_crate;
 pub(crate) mod fetch_artifact;
 #[path = "build_venv.rs"]
 pub(crate) mod build_venv;
+#[path = "hermes_maintenance.rs"]
+pub(crate) mod hermes_maintenance;
 #[path = "check_health.rs"]
 pub(crate) mod check_health;
 #[path = "copy_file.rs"]

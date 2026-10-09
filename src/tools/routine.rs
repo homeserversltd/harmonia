@@ -302,6 +302,14 @@ pub(crate) fn validate_tool_semantics(
                 defect,
             })
         }
+        ("hermes-maintenance", "converge") => {
+            tools::hermes_maintenance::validate_args(args).map_err(|defect| {
+                LadderValidationError {
+                    step_id: step_id.into(),
+                    defect,
+                }
+            })
+        }
         _ => Ok(()),
     }
 }
@@ -492,6 +500,23 @@ fn execute_routine_tool(
         return Ok((outcome, BTreeMap::new()));
     }
     match tool {
+        "hermes-maintenance" if requested_permutation == Some("converge") => {
+            let authorized_apply = apply && software_authorization.is_some();
+            let step = ValidatedStep {
+                step_id: step_id.to_owned(),
+                tool: "hermes-maintenance".into(),
+                permutation: "converge".into(),
+                args: args.clone(),
+                on_failure: OnFailure::Stop,
+            };
+            let outcome = tools::hermes_maintenance::execute_step(
+                &step,
+                receipt_dir,
+                software_authorization.filter(|_| authorized_apply),
+                invocation.filter(|_| authorized_apply),
+            )?;
+            Ok((outcome, BTreeMap::new()))
+        }
         "pull-repo" => crate::bands::pull_source::execute_routine_child(
             "pull-repo",
             requested_permutation,
@@ -624,6 +649,7 @@ pub(crate) fn execute_validated_step_with_source(
                 | ("command", "capture")
                 | ("command", "act")
                 | ("release-binary", "install")
+                | ("hermes-maintenance", "converge")
                 | ("xenia-runtime", "refusal")
                 | ("xenia-runtime", "retire")
         );
@@ -697,6 +723,12 @@ pub(crate) fn execute_validated_step_with_source(
             &manifest.id,
             None,
             &step.step_id,
+        ),
+        ("hermes-maintenance", "converge") => tools::hermes_maintenance::execute_step(
+            step,
+            module_dir,
+            software_authorization.filter(|_| software_apply),
+            invocation.filter(|_| software_apply),
         ),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
