@@ -3,6 +3,7 @@ caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py ^[a-z0-9][a-z0
 caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^seat [a-z0-9][a-z0-9-]{0\,62}$
 caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^census [a-z0-9][a-z0-9-]{0\,62}$
 caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^[a-z0-9][a-z0-9-]{0\,62} band [A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^[a-z0-9][a-z0-9-]{0\,62} exec /var/lib/xenia/[a-z0-9][a-z0-9-]{0\,62}/[A-Za-z0-9_./-]+$
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia update
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia update --apply
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia interactable list --json
