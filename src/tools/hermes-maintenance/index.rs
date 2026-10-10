@@ -10,7 +10,7 @@ use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2222,12 +2222,33 @@ fn prove_launch_isolated(launcher: &Path, source_root: &Path) -> Result<(), Stri
             0o700,
         )?;
     }
+    let owner = current_owner_context()?;
+    let internal_launcher = source_root.join(".hermes/bin/hermes");
+    let external_native_binding = if launcher == owner.home.join(".local/bin/hermes") {
+        let launcher_text = read_owner_file(launcher, &owner, 1024 * 1024, "isolated-launcher")
+            .ok()
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        launcher_text
+            .as_deref()
+            .zip(internal_launcher.to_str())
+            .is_some_and(|(text, internal_path)| {
+                text.lines().any(|line| {
+                    let mut words = line.split_whitespace();
+                    words.next() == Some("exec") && words.next() == Some(internal_path)
+                })
+            })
+    } else {
+        false
+    };
+    if launcher == internal_launcher || external_native_binding {
+        stage_isolated_native_dependency_selection(source_root, &hermes_home, &owner)?;
+    }
     let output = run_owner_command(
         &launcher.to_string_lossy(),
         &["--version"],
         Some(source_root),
         BTreeMap::from([
-            ("HOME".into(), temp.path.to_string_lossy().into_owned()),
             (
                 "HERMES_HOME".into(),
                 hermes_home.to_string_lossy().into_owned(),
@@ -2259,6 +2280,110 @@ fn prove_launch_isolated(launcher: &Path, source_root: &Path) -> Result<(), Stri
     } else {
         Err("isolated-launch-version-probe-failed".into())
     }
+}
+
+fn stage_isolated_native_dependency_selection(
+    source_root: &Path,
+    isolated_hermes_home: &Path,
+    owner: &OwnerContext,
+) -> Result<(), String> {
+    let canonical_root = source_root
+        .canonicalize()
+        .map_err(|error| format!("isolated-native-source-root-unavailable: {error}"))?;
+    let canonical_text = canonical_root
+        .to_str()
+        .ok_or("isolated-native-source-root-not-utf8")?;
+    let install_digest = digest(canonical_text.as_bytes());
+    let install_key = &install_digest[..16];
+    let source_install = owner.hermes_home.join("installs").join(install_key);
+    reject_symlink_components(&source_install)
+        .map_err(|_| "isolated-native-install-state-not-real")?;
+    let source_facts = source_install.join("facts.json");
+    let facts = read_owner_file(
+        &source_facts,
+        owner,
+        4 * 1024 * 1024,
+        "isolated-native-runtime-facts",
+    )?
+    .ok_or("isolated-native-runtime-facts-missing")?;
+    let parsed = serde_json::from_slice::<Value>(&facts)
+        .map_err(|_| "isolated-native-runtime-facts-invalid")?;
+    let environment = parsed
+        .get("packages")
+        .and_then(|packages| packages.get("venv"))
+        .and_then(|venv| venv.get("environment"))
+        .and_then(Value::as_str)
+        .ok_or("isolated-native-dependency-selection-missing")?;
+    let environment = Path::new(environment);
+    if !environment.is_absolute() {
+        return Err("isolated-native-dependency-environment-not-absolute".into());
+    }
+
+    let source_generations = source_install.join("environments");
+    reject_symlink_components(&source_generations)
+        .map_err(|_| "isolated-native-environments-path-not-real")?;
+    let canonical_generations = source_generations
+        .canonicalize()
+        .map_err(|error| format!("isolated-native-environments-unavailable: {error}"))?;
+    let canonical_environment = environment
+        .canonicalize()
+        .map_err(|error| format!("isolated-native-dependency-environment-unavailable: {error}"))?;
+    let environment_metadata = fs::symlink_metadata(&canonical_environment)
+        .map_err(|error| format!("isolated-native-dependency-environment-stat-failed: {error}"))?;
+    if !canonical_environment.starts_with(&canonical_generations)
+        || !environment_metadata.is_dir()
+        || environment_metadata.file_type().is_symlink()
+        || environment_metadata.uid() != owner.uid
+        || !canonical_environment.join("pyvenv.cfg").is_file()
+    {
+        return Err("isolated-native-dependency-environment-not-owner-controlled".into());
+    }
+
+    let isolated_installs = isolated_hermes_home.join("installs");
+    fs::create_dir(&isolated_installs)
+        .map_err(|error| format!("isolated-native-installs-create-failed: {error}"))?;
+    own_path(&isolated_installs, owner.uid, owner.gid, 0o700)?;
+    let isolated_install = isolated_installs.join(install_key);
+    fs::create_dir(&isolated_install)
+        .map_err(|error| format!("isolated-native-install-create-failed: {error}"))?;
+    own_path(&isolated_install, owner.uid, owner.gid, 0o700)?;
+    // Upstream resolves the selected venv and requires it below the active install state's
+    // environments directory. Keep its facts bytes unchanged and expose only that path in the
+    // temporary home; the dependency generation itself remains in the owner's store.
+    symlink(
+        &canonical_generations,
+        isolated_install.join("environments"),
+    )
+    .map_err(|error| format!("isolated-native-environments-link-failed: {error}"))?;
+    write_isolated_owner_file(&isolated_install.join("facts.json"), &facts, owner)
+}
+
+fn write_isolated_owner_file(
+    path: &Path,
+    bytes: &[u8],
+    owner: &OwnerContext,
+) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| format!("isolated-native-facts-create-failed: {error}"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("isolated-native-facts-write-failed: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("isolated-native-facts-sync-failed: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("isolated-native-facts-stat-failed: {error}"))?;
+    if (metadata.uid(), metadata.gid()) != (owner.uid, owner.gid)
+        && unsafe { libc::fchown(file.as_raw_fd(), owner.uid, owner.gid) } != 0
+    {
+        return Err("isolated-native-facts-owner-assignment-failed".into());
+    }
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("isolated-native-facts-mode-set-failed: {error}"))
 }
 
 struct ScopedTempDir {
