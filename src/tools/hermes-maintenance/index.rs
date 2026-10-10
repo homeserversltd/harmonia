@@ -1367,7 +1367,7 @@ fn read_owner_executable_launcher(
     {
         return Err("launcher-snapshot-file-not-owner-controlled-executable".into());
     }
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
