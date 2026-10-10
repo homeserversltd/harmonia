@@ -598,7 +598,7 @@ pub(crate) fn register_promoted(
         }
     }
     prior["self"] = row.clone();
-    let result = exchange(profile, row, prior, seats, port)?;
+    let result = exchange(profile, row, prior, seats, port, "new-artifact", dir)?;
     amend_update_set_held_back_by(dir, &result["held_back_by"])?;
     save_receipt(dir, result)
 }
@@ -787,12 +787,340 @@ fn get_roster(url: &str) -> Result<Value, String> {
     serde_json::from_str(&observed.stdout).map_err(|_| "ruyi-roster-malformed".into())
 }
 
+const HOUSEHOLD_TRUST_STATUS: &str = "/api/v1/cert/status";
+const HOUSEHOLD_TRUST_FETCH: &str = "/api/v1/cert/trust-fetch";
+
+fn local_caduceus_json(
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
+    let base = crate::atoms::ask::caduceus_door::base_url()
+        .map_err(|signal| format!("household-trust-caduceus-base-unavailable: {signal}"))?;
+    let mut args = vec![
+        "-sS".to_string(),
+        "--connect-timeout".to_string(),
+        "2".to_string(),
+        "--max-time".to_string(),
+        "3".to_string(),
+        "--write-out".to_string(),
+        "\\n%{http_code}".to_string(),
+    ];
+    if method == "POST" {
+        let body = body.ok_or_else(|| "household-trust-request-body-absent".to_string())?;
+        args.extend([
+            "-H".into(),
+            "Content-Type: application/json".into(),
+            "--data-raw".into(),
+            serde_json::to_string(body).map_err(|error| error.to_string())?,
+        ]);
+    }
+    args.push(format!("{}{path}", base.trim_end_matches('/')));
+    let observed = crate::atoms::ask::read_only_command_with_timeout(
+        "/usr/bin/curl",
+        &args,
+        Duration::from_secs(4),
+    );
+    if !observed.ok {
+        return Err(format!(
+            "household-trust-http-transport-failed: {}",
+            observed.stderr.trim()
+        ));
+    }
+    let (body, status) = observed
+        .stdout
+        .rsplit_once('\n')
+        .ok_or_else(|| "household-trust-http-status-absent".to_string())?;
+    let status = status
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "household-trust-http-status-invalid".to_string())?;
+    let value = serde_json::from_str(body.trim_end())
+        .map_err(|_| "household-trust-response-json-invalid".to_string())?;
+    Ok((status, value))
+}
+
+pub(crate) fn post_household_trust_fetch(
+    server: &str,
+    renew: bool,
+) -> Result<(u16, Value), String> {
+    let mut body = json!({"server": server, "platform": "linux"});
+    if renew {
+        body["renew"] = json!(true);
+    }
+    local_caduceus_json("POST", HOUSEHOLD_TRUST_FETCH, Some(&body))
+}
+
+fn fingerprint_from(value: &Value, keys: &[&str]) -> Value {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .map(|fingerprint| json!(fingerprint))
+        .unwrap_or(Value::Null)
+}
+
+fn reason_from(value: &Value) -> Option<String> {
+    ["reason", "firstMissingSignal", "first_missing_signal"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_owned))
+}
+
+fn resolve_gateway_seat(roster: &Value, staves: &[Value]) -> (Option<Value>, Option<u16>) {
+    let Some(mut seat) = roster.get("seat").filter(|seat| seat.is_object()).cloned() else {
+        return (None, None);
+    };
+    let port = seat
+        .get("mac")
+        .and_then(Value::as_str)
+        .and_then(|mac| {
+            staves
+                .iter()
+                .find(|row| row.get("mac").and_then(Value::as_str) == Some(mac))
+        })
+        .and_then(|row| row.get("caduceus_port").and_then(Value::as_u64))
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port != 0);
+    seat["caduceus_port"] = port.map(|port| json!(port)).unwrap_or(Value::Null);
+    (Some(seat), port)
+}
+
+struct HouseholdTrustObservation {
+    receipt: Value,
+    renewal: Option<Value>,
+}
+
+fn trust_signal(
+    event: &str,
+    gateway_seat: Option<&Value>,
+    state: &str,
+    signal: &str,
+) -> HouseholdTrustObservation {
+    HouseholdTrustObservation {
+        receipt: json!({
+            "event": event,
+            "gateway_seat": gateway_seat.cloned().unwrap_or(Value::Null),
+            "matched": null,
+            "had_ring": null,
+            "attempted": false,
+            "state": state,
+            "fingerprint": null,
+            "reason": null,
+            "signal": if signal == "none" { Value::Null } else { json!(signal) },
+        }),
+        renewal: None,
+    }
+}
+
+fn household_trust_renewal(
+    response: &Value,
+    recorded_fingerprint: Value,
+    served_fingerprint: Value,
+    gateway_seat: &Value,
+    event: &str,
+) -> Option<Value> {
+    if response.get("state").and_then(Value::as_str) != Some("bundle_refused")
+        || response.get("reason").and_then(Value::as_str) != Some("ring-changed")
+    {
+        return None;
+    }
+    Some(json!({
+        "recorded_fingerprint": recorded_fingerprint,
+        "served_fingerprint": served_fingerprint,
+        "gateway_seat": gateway_seat,
+        "event": event,
+        "computed_at": now().ok(),
+    }))
+}
+
+fn observe_household_trust(
+    profile: &crate::Profile,
+    event: &str,
+    roster: &Value,
+    staves: &[Value],
+    is_gateway: bool,
+) -> HouseholdTrustObservation {
+    let (gateway_seat, gateway_port) = resolve_gateway_seat(roster, staves);
+    if profile.id == "homeserver" {
+        return trust_signal(event, gateway_seat.as_ref(), "skipped", "self-is-gateway");
+    }
+    if is_gateway {
+        return trust_signal(event, gateway_seat.as_ref(), "skipped", "self-is-gateway");
+    }
+    let gateway = match default_gateway() {
+        Ok(gateway) => gateway,
+        Err(error) => return trust_signal(event, gateway_seat.as_ref(), "unavailable", &error),
+    };
+    let gateway_ip = gateway_seat
+        .as_ref()
+        .and_then(|seat| seat.get("ipv4"))
+        .and_then(Value::as_str)
+        .and_then(|ip| ip.parse::<Ipv4Addr>().ok());
+    let Some(gateway_ip) = gateway_ip else {
+        return trust_signal(
+            event,
+            gateway_seat.as_ref(),
+            "unavailable",
+            "household-trust-gateway-ipv4-absent",
+        );
+    };
+    let matched = gateway_ip == gateway;
+    let mut observation = trust_signal(
+        event,
+        gateway_seat.as_ref(),
+        if matched {
+            "observing"
+        } else {
+            "route-mismatch"
+        },
+        if matched {
+            "none"
+        } else {
+            "household-trust-gateway-mismatch"
+        },
+    );
+    observation.receipt["matched"] = json!(matched);
+    if !matched {
+        return observation;
+    }
+    let Some(gateway_port) = gateway_port else {
+        observation.receipt["state"] = json!("unavailable");
+        observation.receipt["signal"] = json!("household-trust-gateway-port-absent");
+        return observation;
+    };
+    let (status_code, status) = match local_caduceus_json("GET", HOUSEHOLD_TRUST_STATUS, None) {
+        Ok(response) => response,
+        Err(error) => {
+            let malformed = error.contains("response-json-invalid")
+                || error.contains("http-status-invalid")
+                || error.contains("http-status-absent");
+            observation.receipt["state"] = json!(if malformed {
+                "status-malformed"
+            } else {
+                "status-unavailable"
+            });
+            observation.receipt["reason"] = json!(error);
+            observation.receipt["signal"] = json!(if malformed {
+                "household-trust-status-malformed"
+            } else {
+                "household-trust-status-unreachable"
+            });
+            return observation;
+        }
+    };
+    if !(200..300).contains(&status_code) {
+        observation.receipt["state"] = json!("status-refused");
+        observation.receipt["reason"] = reason_from(&status)
+            .map(Value::String)
+            .unwrap_or_else(|| json!(format!("http-status-{status_code}")));
+        observation.receipt["signal"] = json!("household-trust-status-refused");
+        return observation;
+    }
+    let Some(had_ring) = status.get("bundle_installed").and_then(Value::as_bool) else {
+        observation.receipt["state"] = json!("status-malformed");
+        observation.receipt["signal"] = json!("household-trust-status-malformed");
+        return observation;
+    };
+    let recorded_fingerprint =
+        fingerprint_from(&status, &["recorded_fingerprint", "ca_fingerprint"]);
+    observation.receipt["had_ring"] = json!(had_ring);
+    observation.receipt["fingerprint"] = recorded_fingerprint.clone();
+    if had_ring {
+        observation.receipt["attempted"] = json!(false);
+        observation.receipt["state"] = json!("already-installed");
+        observation.receipt["signal"] = Value::Null;
+        return observation;
+    }
+    observation.receipt["attempted"] = json!(true);
+    let server = format!("{gateway_ip}:{gateway_port}");
+    let (status_code, response) = match post_household_trust_fetch(&server, false) {
+        Ok(response) => response,
+        Err(error) => {
+            observation.receipt["state"] = json!("fetch-unavailable");
+            observation.receipt["reason"] = json!(error);
+            observation.receipt["signal"] = json!("household-trust-fetch-unreachable");
+            return observation;
+        }
+    };
+    let response_recorded_fingerprint = fingerprint_from(&response, &["recorded_fingerprint"]);
+    let recorded_fingerprint = if response_recorded_fingerprint.is_null() {
+        recorded_fingerprint
+    } else {
+        response_recorded_fingerprint
+    };
+    let served_fingerprint = fingerprint_from(
+        &response,
+        &["served_fingerprint", "fingerprint", "ca_fingerprint"],
+    );
+    let response_state = response.get("state").and_then(Value::as_str);
+    let response_reason = reason_from(&response);
+    let renewal = household_trust_renewal(
+        &response,
+        recorded_fingerprint.clone(),
+        served_fingerprint.clone(),
+        gateway_seat
+            .as_ref()
+            .expect("gateway seat resolved before observation"),
+        event,
+    );
+    if !(200..300).contains(&status_code) {
+        let typed_ring_refusal = response_state == Some("bundle_refused")
+            && response.get("reason").and_then(Value::as_str) == Some("ring-changed");
+        observation.receipt["state"] = json!(if typed_ring_refusal {
+            "bundle_refused"
+        } else {
+            "fetch-refused"
+        });
+        observation.receipt["fingerprint"] = served_fingerprint;
+        observation.receipt["reason"] = response_reason
+            .map(Value::String)
+            .unwrap_or_else(|| json!(format!("http-status-{status_code}")));
+        observation.receipt["signal"] = json!("household-trust-fetch-refused");
+        observation.renewal = renewal;
+        return observation;
+    }
+    let Some(ok) = response.get("ok").and_then(Value::as_bool) else {
+        observation.receipt["state"] = json!("fetch-malformed");
+        observation.receipt["fingerprint"] = served_fingerprint;
+        observation.receipt["signal"] = json!("household-trust-fetch-malformed");
+        return observation;
+    };
+    let Some(response_state) = response_state else {
+        observation.receipt["state"] = json!("fetch-malformed");
+        observation.receipt["fingerprint"] = served_fingerprint;
+        observation.receipt["reason"] = json!("trust-fetch-state-absent");
+        observation.receipt["signal"] = json!("household-trust-fetch-malformed");
+        return observation;
+    };
+    observation.receipt["state"] = json!(response_state);
+    observation.receipt["fingerprint"] = served_fingerprint.clone();
+    observation.receipt["reason"] = response_reason.map(Value::String).unwrap_or(Value::Null);
+    let installed = ok && response_state == "installed";
+    observation.receipt["signal"] = if installed {
+        Value::Null
+    } else {
+        json!("household-trust-fetch-refused")
+    };
+    observation.renewal = renewal;
+    observation
+}
+
+fn persist_household_trust(dir: &Path, value: &Value) {
+    let path = dir.join("household-trust.json");
+    if let Err(error) = crate::atoms::attest::write_json_atomic(&path, value) {
+        eprintln!(
+            "household-trust-receipt-write-failed {}: {error}",
+            path.display()
+        );
+    }
+}
+
 fn exchange(
     profile: &crate::Profile,
     mut row: Value,
     mut perspective: Value,
     seats: &Seats,
     port: u16,
+    event: &str,
+    dir: &Path,
 ) -> Result<Value, String> {
     let signal = match seats.signal() {
         Ok(signal) => signal,
@@ -873,8 +1201,19 @@ fn exchange(
     if let Err(error) = accumulate(&mut perspective, &roster, &staves, &mac) {
         return Ok(receipt("refused", row, staves, &error));
     }
-    let held_back_by =
-        crate::interactables::reconcile_ruyi(profile, &row, &roster, &staves, is_gateway)?;
+    let household_trust = observe_household_trust(profile, event, &roster, &staves, is_gateway);
+    persist_household_trust(dir, &household_trust.receipt);
+    if !household_trust.receipt["gateway_seat"].is_null() {
+        perspective["gateway_seat"] = household_trust.receipt["gateway_seat"].clone();
+    }
+    let held_back_by = crate::interactables::reconcile_ruyi_with_household_trust(
+        profile,
+        &row,
+        &roster,
+        &staves,
+        is_gateway,
+        household_trust.renewal.as_ref(),
+    )?;
     perspective["why"] = json!({
         "computed_at": now()?,
         "held_back_by": held_back_by,
@@ -883,9 +1222,8 @@ fn exchange(
     perspective["written_at"] = json!(now()?);
     // Preserve the last observed seat so the next event can take the persisted
     // mac arm before its separate local-seat observation.
-    if let Some(seat) = roster.get("seat") {
-        perspective["gateway_seat"] = seat.clone();
-    }
+    // `gateway_seat` already includes only the Caduceus port resolved from the
+    // matching staves row; do not replace that evidence with the unadorned seat.
     if let Ok(seat) = &seats.perspective {
         if let Err(error) = seat.validate_ruyi(&perspective) {
             return Ok(receipt("refused", row, staves, &error));
@@ -1146,7 +1484,7 @@ pub(crate) fn announce() -> Result<Value, String> {
     };
     let row = refresh_self_row_from_local_beam(row, &profile, HARMONIA_BUILD_SHA);
     prior["self"] = row.clone();
-    let mut result = exchange(&profile, row, prior, seats, port)?;
+    let mut result = exchange(&profile, row, prior, seats, port, "staff-start", &dir)?;
     result["event"] = json!("staff-start");
     result["staff_start_wait_ms"] = json!(wait_ms);
     amend_update_set_held_back_by(&dir, &result["held_back_by"])?;

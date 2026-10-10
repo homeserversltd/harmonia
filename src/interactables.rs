@@ -9,10 +9,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 pub(crate) const LEGACY_FEED_SCHEMA: &str = "harmonia.interactables.feed.v1";
+const HOUSEHOLD_TRUST_RENEW_RECEIPT: &str =
+    "harmonia.interactables.household_trust_renew.receipt.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
 pub(crate) fn is_ruyi_born_kind(kind: &str) -> bool {
-    matches!(kind, "ruyi-bump" | "dns-record" | "toolchain-ratchet")
+    matches!(
+        kind,
+        "ruyi-bump" | "dns-record" | "toolchain-ratchet" | "household-trust-renew"
+    )
 }
 
 pub(crate) struct OperatorHand(());
@@ -391,6 +396,7 @@ fn interactable_run(
     let item = feed.interactables[position].clone();
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
+        "household-trust-renew" => return run_household_trust_renew(&path, &item),
         "toolchain-ratchet" => {
             return run_toolchain_ratchet(&path, &mut feed, position, &item, invocation)
         }
@@ -604,6 +610,17 @@ pub(crate) fn reconcile_ruyi(
     roster: &serde_json::Value,
     staves: &[serde_json::Value],
     is_gateway: bool,
+) -> Result<Vec<String>, String> {
+    reconcile_ruyi_with_household_trust(profile, self_row, roster, staves, is_gateway, None)
+}
+
+pub(crate) fn reconcile_ruyi_with_household_trust(
+    profile: &crate::Profile,
+    self_row: &serde_json::Value,
+    roster: &serde_json::Value,
+    staves: &[serde_json::Value],
+    is_gateway: bool,
+    household_trust_renewal: Option<&Value>,
 ) -> Result<Vec<String>, String> {
     let path = feed_path();
     let mut feed = load_feed(&path)?;
@@ -968,6 +985,54 @@ pub(crate) fn reconcile_ruyi(
             }
         }
     }
+    if let Some(evidence) = household_trust_renewal {
+        let id = "household-trust-renew".to_string();
+        let recorded = evidence
+            .get("recorded_fingerprint")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let served = evidence
+            .get("served_fingerprint")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        feed.interactables.push(Interactable {
+            id: id.clone(),
+            module_id: module.to_string(),
+            name: "Renew household trust".into(),
+            description: format!(
+                "The household CA changed from {recorded} to {served}. Press to renew this appliance's trust."
+            ),
+            kind: "household-trust-renew".into(),
+            target_path: None,
+            reference_source_path: None,
+            drift: DriftSummary {
+                content: true,
+                mode: false,
+                ownership: false,
+            },
+            created_at: created.get(&id).cloned().unwrap_or_else(|| now.to_string()),
+            refreshed_at: now.to_string(),
+            available_at: None,
+            silenced: false,
+            silenced_at: None,
+            has_run: false,
+            mode: None,
+            owner: None,
+            group: None,
+            source_sha: None,
+            target_sha: None,
+            commits_behind: None,
+            live_sha: None,
+            reference_sha: None,
+            recognition_score: None,
+            diff: None,
+            script: "harmonia interactable run household-trust-renew".into(),
+            show_only_if: String::new(),
+            completion_check: String::new(),
+            evidence: evidence.clone(),
+            extra: unknown.get(&id).cloned().unwrap_or_default(),
+        });
+    }
     feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
     let entries = feed
         .interactables
@@ -991,6 +1056,187 @@ fn now_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+fn household_trust_fingerprint(value: &Value, keys: &[&str]) -> Value {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .map(|fingerprint| Value::String(fingerprint.to_owned()))
+        .unwrap_or(Value::Null)
+}
+
+fn household_trust_reason(value: &Value) -> Option<String> {
+    ["reason", "firstMissingSignal", "first_missing_signal"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_owned))
+}
+
+fn persist_household_trust_renew_receipt(
+    path: &Path,
+    item: &Interactable,
+    receipt_seat: &crate::atoms::ask::mint_seats::Seat,
+    before_fingerprint: Value,
+    after_fingerprint: Value,
+    state: String,
+    reason: String,
+    ok: bool,
+) -> Result<(), String> {
+    let receipt = serde_json::json!({
+        "schema": HOUSEHOLD_TRUST_RENEW_RECEIPT,
+        "before_fingerprint": before_fingerprint,
+        "after_fingerprint": after_fingerprint,
+        "state": state,
+        "reason": reason,
+        "ok": ok,
+    });
+    receipt_seat.validate(&receipt)?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let receipt_path = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("receipts")
+        .join(format!("household-trust-renew-{stamp}.json"));
+    crate::atoms::attest::write_json_atomic(&receipt_path, &receipt)?;
+    let intent = if ok {
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(),
+            receipts: vec![receipt.clone()],
+        }
+    } else {
+        crate::bands::propose_edits::FeedPersistenceIntent::AppendReceipts(vec![receipt.clone()])
+    };
+    crate::bands::propose_edits::persist_feed_with_intent(path, intent)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+    );
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}; item-retained",
+            receipt["reason"]
+                .as_str()
+                .unwrap_or("household-trust-renew-refused")
+        ))
+    }
+}
+
+fn run_household_trust_renew(path: &Path, item: &Interactable) -> Result<(), String> {
+    let base = crate::atoms::ask::caduceus_door::base_url()
+        .map_err(|signal| format!("household-trust-renew-caduceus-base-unavailable: {signal}"))?;
+    let receipt_seat =
+        crate::atoms::ask::mint_seats::Seat::load(HOUSEHOLD_TRUST_RENEW_RECEIPT, base).map_err(
+            |signal| format!("household-trust-renew-receipt-seat-unavailable: {signal}"),
+        )?;
+    let before_fingerprint = item
+        .evidence
+        .get("recorded_fingerprint")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let gateway_seat = match item
+        .evidence
+        .get("gateway_seat")
+        .filter(|seat| seat.is_object())
+    {
+        Some(seat) => seat,
+        None => {
+            return persist_household_trust_renew_receipt(
+                path,
+                item,
+                &receipt_seat,
+                before_fingerprint,
+                Value::Null,
+                "refused".into(),
+                "household-trust-renew-gateway-seat-absent".into(),
+                false,
+            )
+        }
+    };
+    let gateway_ip = match gateway_seat
+        .get("ipv4")
+        .and_then(Value::as_str)
+        .and_then(|ip| ip.parse::<std::net::Ipv4Addr>().ok())
+    {
+        Some(ip) => ip,
+        None => {
+            return persist_household_trust_renew_receipt(
+                path,
+                item,
+                &receipt_seat,
+                before_fingerprint,
+                Value::Null,
+                "refused".into(),
+                "household-trust-renew-gateway-ipv4-invalid".into(),
+                false,
+            )
+        }
+    };
+    let gateway_port = match gateway_seat
+        .get("caduceus_port")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port != 0)
+    {
+        Some(port) => port,
+        None => {
+            return persist_household_trust_renew_receipt(
+                path,
+                item,
+                &receipt_seat,
+                before_fingerprint,
+                Value::Null,
+                "refused".into(),
+                "household-trust-renew-gateway-port-absent".into(),
+                false,
+            )
+        }
+    };
+    let server = format!("{gateway_ip}:{gateway_port}");
+    let request = crate::atoms::ask::ruyi::registrant::post_household_trust_fetch(&server, true);
+    let (status, response, transport_reason) = match request {
+        Ok((status, response)) => (Some(status), response, None),
+        Err(reason) => (None, Value::Null, Some(reason)),
+    };
+    let http_ok = status.is_some_and(|status| (200..300).contains(&status));
+    let response_state = response.get("state").and_then(Value::as_str);
+    let result_ok = response.get("ok").and_then(Value::as_bool) == Some(true)
+        && response_state == Some("installed");
+    let ok = transport_reason.is_none() && http_ok && result_ok;
+    let after_fingerprint = household_trust_fingerprint(
+        &response,
+        &[
+            "after_fingerprint",
+            "served_fingerprint",
+            "fingerprint",
+            "ca_fingerprint",
+        ],
+    );
+    let state = response_state.unwrap_or("refused").to_owned();
+    let reason = transport_reason
+        .or_else(|| household_trust_reason(&response))
+        .unwrap_or_else(|| match status {
+            Some(status) if !(200..300).contains(&status) => format!("http-status-{status}"),
+            _ if response_state.is_none() => "trust-fetch-state-absent".into(),
+            _ if response.get("ok").and_then(Value::as_bool).is_none() => {
+                "trust-fetch-ok-absent".into()
+            }
+            Some(_) if !result_ok => "trust-fetch-result-refused".into(),
+            _ => "none".into(),
+        });
+    persist_household_trust_renew_receipt(
+        path,
+        item,
+        &receipt_seat,
+        before_fingerprint,
+        after_fingerprint,
+        state,
+        reason,
+        ok,
+    )
 }
 
 fn run_ruyi_bump(
