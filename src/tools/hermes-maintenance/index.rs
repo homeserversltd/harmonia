@@ -2480,13 +2480,23 @@ fn latest_native_receipt(directory: &Path) -> Option<String> {
     entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
-            let metadata = entry.metadata().ok()?;
-            if !metadata.is_file() {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let unique_name = name.strip_prefix("update_")?.strip_suffix(".json")?;
+            if unique_name.is_empty() {
+                return None;
+            }
+            let metadata = fs::symlink_metadata(entry.path()).ok()?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
                 return None;
             }
             Some((metadata.modified().ok()?, entry.path()))
         })
-        .max_by_key(|(modified, _)| *modified)
+        .max_by(|(left_modified, left_path), (right_modified, right_path)| {
+            left_modified
+                .cmp(right_modified)
+                .then_with(|| left_path.cmp(right_path))
+        })
         .map(|(_, path)| path.to_string_lossy().into_owned())
 }
 
