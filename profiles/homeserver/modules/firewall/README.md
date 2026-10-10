@@ -16,6 +16,10 @@ The ladder:
 
 The quarry bytes for `10-wan0.network`, `20-lan0.network`, and `kea-dhcp4.conf` are carried for birth/export parity, but the maintenance ladder only asserts the installed copies are non-empty. It does not overwrite them. They bind physical interface names, static addressing, and DHCP reservations; replacing a locally adapted copy can sever remote access. The public Kea seed preserves the quarry subnet, pool, and options but deliberately removes the two instance MAC reservations (`reservations: []`). This classification and adaptation are proposals for operator verdict, not settled product law.
 
+## Network wait-online drop-in
+
+The homeserver is the only networkd profile. Its ladder declares `/etc/systemd/system/systemd-networkd-wait-online.service.d/10-no-wait.conf` as one Config-class regular-text managed file, categorized `interactable`, with `[Service]`, an `ExecStart=` reset, and `ExecStart=/bin/true`. This remains an operator-disposition candidate, not a known-good setting; the source declaration does not install or activate it on a live body, and birth placement is outside this source-only repair. Homeconsole and TV use NetworkManager through their shared Arch birth provider and are unchanged.
+
 ## Generated and external surfaces
 
 The module does not carry generated MAC `.link` files, `/etc/unbound/blocklist.conf`, Kea leases, logs, caches, certificates, credentials, or filled secrets. It also excludes the quarry `resolv.conf` because its Tailscale search domain is instance-owned, and excludes `laptop-home-arpa.conf` because its laptop addresses are instance DNS. Quarry Python installers, adblock generators, scripts, and tests do not cross into the manifest; manifests contain declarations, never executable program text.

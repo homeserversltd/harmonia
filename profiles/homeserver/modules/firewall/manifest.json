@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "firewall",
   "category": "interactable",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Quarry-lifted HOMESERVER network spine: assert birth-provided executables and host-owned network inputs, converge product-owned firewall/DNS/unit policy with backups, validate service configurations.",
   "caduceus_commands": [
     "caduceus.network.firewall.read",
@@ -37,6 +37,24 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "firewall-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "firewall-networkd-wait-online-managed-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {
+        "files": [
+          {
+            "path": "/etc/systemd/system/systemd-networkd-wait-online.service.d/10-no-wait.conf",
+            "content": "[Service]\nExecStart=\nExecStart=/bin/true\n",
+            "mode": 420,
+            "category": "interactable"
+          }
+        ],
+        "owner": "root",
+        "group": "root"
       },
       "on_failure": "stop"
     },
