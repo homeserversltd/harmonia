@@ -36,6 +36,29 @@ struct OwnerContext {
     command_bearer: crate::atoms::command::CommandBearer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReceiptCustody {
+    uid: u32,
+    gid: u32,
+}
+
+impl ReceiptCustody {
+    fn current() -> Self {
+        Self {
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
+        }
+    }
+
+    fn validate_current(self) -> Result<(), String> {
+        if self == Self::current() {
+            Ok(())
+        } else {
+            Err("native-receipt-engine-custody-changed".into())
+        }
+    }
+}
+
 thread_local! {
     static OWNER_CONTEXT: std::cell::RefCell<Option<OwnerContext>> = const { std::cell::RefCell::new(None) };
 }
@@ -209,6 +232,7 @@ pub(crate) struct Request {
     branch: String,
     receipt_dir: PathBuf,
     receipt_name: String,
+    receipt_custody: ReceiptCustody,
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +340,7 @@ impl Request {
         args: &BTreeMap<String, Value>,
         receipt_dir: &Path,
         receipt_name: &str,
+        receipt_custody: ReceiptCustody,
     ) -> Result<Self, String> {
         let mut components = Path::new(receipt_name).components();
         if receipt_name.is_empty()
@@ -349,6 +374,7 @@ impl Request {
                 .to_owned(),
             receipt_dir: receipt_dir.to_path_buf(),
             receipt_name: receipt_name.to_owned(),
+            receipt_custody,
         })
     }
 }
@@ -360,7 +386,12 @@ pub(crate) fn execute_step(
     invocation: Option<&InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     validate_args(&step.args)?;
-    let request = Request::from_args(&step.args, receipt_dir, &step.step_id)?;
+    let request = Request::from_args(
+        &step.args,
+        receipt_dir,
+        &step.step_id,
+        ReceiptCustody::current(),
+    )?;
     let owner = resolve_owner_context(&request.owner)?;
     validate_caller_identity(&owner)?;
     let _owner_scope = OwnerContextScope::install(owner);
@@ -571,13 +602,11 @@ fn official_url(url: &str) -> bool {
 /// Observation performs no filesystem writes: no lock-file creation, receipt
 /// directory creation, updater invocation, or temporary profile allocation.
 /// Currentness uses read-only Git HEAD, install-stamp, runtime-facts, and
-/// launcher checks. It deliberately avoids bare `--version`: `main.py:336-338`
-/// reaches the fast-version path, `_startup_fast.py:255` checks updates, and
-/// `source_check.py:261-265,433` writes its cache; `hermes_bootstrap.py:588`
-/// can also repair the install before that path. The launcher runtime-command
-/// path also runs interrupted-pull recovery (`_launchers.py:447-459`), so it is
-/// not an observation probe. Version probes belong only in isolated
-/// act/post-update/rollback proof.
+/// launcher checks. It avoids bare `--version`: upstream's fast-version path
+/// reaches `_startup_fast` and `source_check`, which perform update/cache work;
+/// `hermes_bootstrap` may also repair the install first. The launcher's runtime
+/// command performs interrupted-pull recovery, so it is not an observation
+/// probe. Version probes belong only in isolated act/post-update/rollback proof.
 pub(crate) fn observe(
     request: &Request,
     retained: &mut Option<ObservationBinding>,
@@ -625,7 +654,6 @@ pub(crate) fn observe(
     if !status.status.success() {
         return Err("installed-source-status-failed".into());
     }
-    let dirty = !status.stdout.is_empty();
     let launcher_meta = fs::symlink_metadata(&launcher)
         .map_err(|error| format!("launcher-observe-failed: {error}"))?;
     if !launcher_meta.is_file()
@@ -644,8 +672,11 @@ pub(crate) fn observe(
     validate_launcher_binding(&root, &launcher, &owner, &launcher_bytes)?;
     static_runnable_probe(&launcher, &launcher_bytes)?;
     let native_state = inspect_native_install_state(&root, &launcher, &owner, &pre_sha)?;
+    let dirty = !source_status_is_clean(&status.stdout, native_state.stamp_coherent);
     let mut reasons = native_state.reasons.clone();
-    if pre_sha != target_sha {
+    let target_or_retained_descendant =
+        pre_sha == target_sha || (!first && is_ancestor(&root, &target_sha, &pre_sha)?);
+    if !target_or_retained_descendant {
         reasons.push("installed-head-differs-from-official-main".into());
     }
     if branch.as_deref() != Some("main") {
@@ -702,6 +733,8 @@ pub(crate) fn apply(
     }
     validate_caller_identity(&owner)
         .map_err(|_| "failed-stage=custody-euid predecessor=preserved".to_string())?;
+    prepare_receipt_directory(&request.receipt_dir, request.receipt_custody)?;
+    validate_receipt_output_custody(request)?;
     validate_origin(&observed.source_root)
         .map_err(|error| format!("failed-stage=foreign-origin predecessor=preserved: {error}"))?;
     if updater_is_live(&observed.source_root, &owner)? {
@@ -857,7 +890,7 @@ pub(crate) fn apply(
             &observed.source_root,
             &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         )?;
-        if !source_status.status.success() || !source_status.stdout.is_empty() {
+        if !source_status.status.success() {
             return Err("post-update-source-not-clean".into());
         }
         let launcher_after = fs::read(&observed.launcher)
@@ -876,6 +909,9 @@ pub(crate) fn apply(
                 "post-update-native-install-not-current reasons={}",
                 native_state.reasons.join(",")
             ));
+        }
+        if !source_status_is_clean(&source_status.stdout, native_state.stamp_coherent) {
+            return Err("post-update-source-not-clean".into());
         }
         prove_launch_isolated(&observed.launcher, &observed.source_root)?;
         movement.post_sha = Some(post_sha.clone());
@@ -1331,23 +1367,30 @@ pub(crate) fn failure(
 }
 
 fn write_receipt(request: &Request, receipt: &RunReceipt) -> Result<(), String> {
-    let owner = current_owner_context()?;
-    prepare_receipt_directory(&request.receipt_dir, &owner)?;
+    let _owner = current_owner_context()?;
+    prepare_receipt_directory(&request.receipt_dir, request.receipt_custody)?;
+    validate_receipt_output_custody(request)?;
     let receipt_path = request
         .receipt_dir
         .join(format!("{}.json", request.receipt_name));
     let mut bytes = serde_json::to_vec_pretty(receipt).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
-    atomic_write_owned(&receipt_path, &bytes, owner.uid, owner.gid, 0o644)?;
+    atomic_write_owned(
+        &receipt_path,
+        &bytes,
+        request.receipt_custody.uid,
+        request.receipt_custody.gid,
+        0o644,
+    )?;
     let log = request.receipt_dir.join("harmonia-atoms.log");
     match fs::symlink_metadata(&log) {
         Ok(metadata)
             if metadata.is_file()
                 && !metadata.file_type().is_symlink()
-                && metadata.uid() == owner.uid
-                && metadata.gid() == owner.gid
+                && metadata.uid() == request.receipt_custody.uid
+                && metadata.gid() == request.receipt_custody.gid
                 && metadata.nlink() == 1 => {}
-        Ok(_) => return Err("native-receipt-log-not-owner-controlled".into()),
+        Ok(_) => return Err("native-receipt-log-not-engine-controlled".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let file = OpenOptions::new()
                 .write(true)
@@ -1356,7 +1399,14 @@ fn write_receipt(request: &Request, receipt: &RunReceipt) -> Result<(), String> 
                 .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .open(&log)
                 .map_err(|error| format!("native-receipt-log-create-failed: {error}"))?;
-            if unsafe { libc::fchown(file.as_raw_fd(), owner.uid, owner.gid) } != 0 {
+            if unsafe {
+                libc::fchown(
+                    file.as_raw_fd(),
+                    request.receipt_custody.uid,
+                    request.receipt_custody.gid,
+                )
+            } != 0
+            {
                 drop(file);
                 let _ = fs::remove_file(&log);
                 return Err("native-receipt-log-owner-assignment-failed".into());
@@ -1370,8 +1420,11 @@ fn write_receipt(request: &Request, receipt: &RunReceipt) -> Result<(), String> 
         .open(&log)
         .map_err(|error| format!("native-receipt-log-open-failed: {error}"))?;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
-    if metadata.uid() != owner.uid || metadata.gid() != owner.gid || metadata.nlink() != 1 {
-        return Err("native-receipt-log-not-owner-controlled".into());
+    if metadata.uid() != request.receipt_custody.uid
+        || metadata.gid() != request.receipt_custody.gid
+        || metadata.nlink() != 1
+    {
+        return Err("native-receipt-log-not-engine-controlled".into());
     }
     crate::atoms::attest::attest(
         &log,
@@ -1420,7 +1473,63 @@ fn validate_receipt_shapes_readonly(request: &Request) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_receipt_directory(path: &Path, owner: &OwnerContext) -> Result<(), String> {
+fn validate_receipt_output_custody(request: &Request) -> Result<(), String> {
+    request.receipt_custody.validate_current()?;
+    validate_receipt_shapes_readonly(request)?;
+    match fs::symlink_metadata(&request.receipt_dir) {
+        Ok(metadata)
+            if metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == request.receipt_custody.uid
+                && metadata.gid() == request.receipt_custody.gid =>
+        {
+            validate_receipt_file_shape(
+                &request
+                    .receipt_dir
+                    .join(format!("{}.json", request.receipt_name)),
+                request.receipt_custody,
+                "native-receipt-file",
+            )?;
+            validate_receipt_file_shape(
+                &request.receipt_dir.join("harmonia-atoms.log"),
+                request.receipt_custody,
+                "native-receipt-log",
+            )?;
+        }
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            return Err("receipt-directory-not-engine-controlled".into());
+        }
+        Ok(_) => return Err("managed-directory-path-not-real-directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("receipt-directory-unavailable".into());
+        }
+        Err(error) => return Err(format!("receipt-directory-observe-failed: {error}")),
+    }
+    Ok(())
+}
+
+fn validate_receipt_file_shape(
+    path: &Path,
+    custody: ReceiptCustody,
+    label: &str,
+) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == custody.uid
+                && metadata.gid() == custody.gid
+                && metadata.nlink() == 1 =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(format!("{label}-not-engine-controlled")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("{label}-observe-failed: {error}")),
+    }
+}
+
+fn prepare_receipt_directory(path: &Path, custody: ReceiptCustody) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("managed-directory-must-be-absolute".into());
     }
@@ -1438,14 +1547,18 @@ fn prepare_receipt_directory(path: &Path, owner: &OwnerContext) -> Result<(), St
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir(&current)
                     .map_err(|error| format!("receipt-directory-create-failed: {error}"))?;
-                own_path(&current, owner.uid, owner.gid, 0o700)?;
+                own_path(&current, custody.uid, custody.gid, 0o700)?;
             }
             Err(error) => return Err(format!("receipt-directory-observe-failed: {error}")),
         }
     }
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner.uid {
-        return Err("receipt-directory-not-owner-controlled".into());
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != custody.uid
+        || metadata.gid() != custody.gid
+    {
+        return Err("receipt-directory-not-engine-controlled".into());
     }
     Ok(())
 }
@@ -1475,8 +1588,9 @@ fn atomic_write_owned(
             if metadata.is_file()
                 && !metadata.file_type().is_symlink()
                 && metadata.uid() == uid
+                && metadata.gid() == gid
                 && metadata.nlink() == 1 => {}
-        Ok(_) => return Err("native-receipt-file-not-owner-controlled".into()),
+        Ok(_) => return Err("native-receipt-file-not-engine-controlled".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("receipt-file-observe-failed: {error}")),
     }
@@ -1611,6 +1725,7 @@ fn validate_launcher_binding(
 #[derive(Debug, Clone)]
 struct NativeInstallState {
     stamp_sha256: Option<String>,
+    stamp_coherent: bool,
     runtime_facts_sha256: Option<String>,
     layout: String,
     reasons: Vec<String>,
@@ -1647,9 +1762,12 @@ fn inspect_native_install_state(
         reasons.push("legacy-install-layout".into());
     }
 
+    // Upstream may ignore this generated stamp in Git; validate its bytes independently.
     let stamp_path = root.join("install-stamp.json");
     let stamp_bytes = read_owner_file(&stamp_path, owner, 1024 * 1024, "native-install-stamp")?;
     let mut stamp_sha256 = None;
+    let mut stamp_coherent = false;
+    // Native bootstrap installs may omit runtimeDir; their managed tools live outside source_root.
     let mut runtime_root = owner.hermes_home.join("tools");
     match stamp_bytes {
         Some(bytes) => {
@@ -1657,12 +1775,12 @@ fn inspect_native_install_state(
             match serde_json::from_slice::<Value>(&bytes) {
                 Ok(stamp) if stamp.is_object() => {
                     let commit = stamp.get("commit").and_then(Value::as_str);
-                    if stamp.get("schemaVersion").and_then(Value::as_u64) != Some(2)
-                        || !commit.is_some_and(|value| value.eq_ignore_ascii_case(head))
-                        || stamp.get("updateMechanism").and_then(Value::as_str) != Some("self")
-                        || stamp.get("dirty").and_then(Value::as_bool) != Some(false)
-                        || stamp.get("branch").and_then(Value::as_str) != Some("main")
-                    {
+                    stamp_coherent = stamp.get("schemaVersion").and_then(Value::as_u64) == Some(2)
+                        && commit.is_some_and(|value| value.eq_ignore_ascii_case(head))
+                        && stamp.get("updateMechanism").and_then(Value::as_str) == Some("self")
+                        && stamp.get("dirty").and_then(Value::as_bool) == Some(false)
+                        && stamp.get("branch").and_then(Value::as_str) == Some("main");
+                    if !stamp_coherent {
                         reasons.push("native-install-stamp-not-coherent".into());
                     }
                     match stamp.get("runtimeDir") {
@@ -1706,6 +1824,7 @@ fn inspect_native_install_state(
                     reasons.push("native-runtime-python-entry-missing".into());
                     return Ok(NativeInstallState {
                         stamp_sha256,
+                        stamp_coherent,
                         runtime_facts_sha256,
                         layout,
                         reasons,
@@ -1720,14 +1839,7 @@ fn inspect_native_install_state(
                     reasons.push("native-runtime-python-entry-invalid".into());
                 } else {
                     let python = runtime_root.join(entry_path).join("bin/python3");
-                    if reject_symlink_components(&python).is_err()
-                        || !fs::symlink_metadata(&python).is_ok_and(|metadata| {
-                            metadata.is_file()
-                                && !metadata.file_type().is_symlink()
-                                && metadata.uid() == owner.uid
-                                && metadata.permissions().mode() & 0o111 != 0
-                        })
-                    {
+                    if canonical_runtime_executable(&python, owner).is_err() {
                         reasons.push("native-runtime-python-not-runnable".into());
                     }
                 }
@@ -1738,10 +1850,44 @@ fn inspect_native_install_state(
 
     Ok(NativeInstallState {
         stamp_sha256,
+        stamp_coherent,
         runtime_facts_sha256,
         layout,
         reasons,
     })
+}
+
+/// `--porcelain=v1 -z` may expose this generated untracked stamp when upstream
+/// does not ignore it. Only its exact path with a coherent stamp is tolerated;
+/// tracked modifications and all other worktree entries remain dirty.
+fn source_status_is_clean(status: &[u8], stamp_coherent: bool) -> bool {
+    status.is_empty() || (stamp_coherent && status == b"?? install-stamp.json\0")
+}
+
+fn canonical_runtime_executable(path: &Path, owner: &OwnerContext) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or("native-runtime-python-parent-missing")?;
+    reject_symlink_components(parent).map_err(|_| "native-runtime-python-parent-not-real")?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|error| format!("native-runtime-python-parent-unavailable: {error}"))?;
+    let resolved = path
+        .canonicalize()
+        .map_err(|error| format!("native-runtime-python-unavailable: {error}"))?;
+    if !resolved.starts_with(&canonical_parent) {
+        return Err("native-runtime-python-target-outside-runtime-bin".into());
+    }
+    let metadata = fs::symlink_metadata(&resolved)
+        .map_err(|error| format!("native-runtime-python-stat-failed: {error}"))?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != owner.uid
+        || metadata.permissions().mode() & 0o111 == 0
+    {
+        return Err("native-runtime-python-not-owner-controlled-executable".into());
+    }
+    Ok(resolved)
 }
 
 fn read_owner_file(
