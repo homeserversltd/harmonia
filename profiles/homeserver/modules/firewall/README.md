@@ -8,6 +8,7 @@ The ladder:
 - requires the four user-editable host/site files to exist but never overwrites them;
 - converges six product-owned policy files with backups of replaced files;
 - validates nftables, Unbound, Kea, and the nftables unit;
+- sets Kea to restart after process failure with a 10-second delay; it does not wait for network-online, and a Kea process that remains alive but cannot serve DHCP is not restarted by this policy;
 - reloads systemd after file convergence;
 - proves those services and systemd-networkd are active.
 
@@ -19,4 +20,4 @@ The quarry bytes for `10-wan0.network`, `20-lan0.network`, and `kea-dhcp4.conf` 
 
 The module does not carry generated MAC `.link` files, `/etc/unbound/blocklist.conf`, Kea leases, logs, caches, certificates, credentials, or filled secrets. It also excludes the quarry `resolv.conf` because its Tailscale search domain is instance-owned, and excludes `laptop-home-arpa.conf` because its laptop addresses are instance DNS. Quarry Python installers, adblock generators, scripts, and tests do not cross into the manifest; manifests contain declarations, never executable program text.
 
-The desired configuration crosses into other owners without absorbing them: birth supplies packages, users, service units, interface discovery, and the initial user-editable files; the adblock generator owns `blocklist.conf`; system CA custody owns `/etc/ssl/certs/ca-certificates.crt`; Kea owns `/var/lib/kea`; Tailscale owns `tailscale0`; systemd owns networkd and wait-online executables. Networkd and sysctl changes are deliberately not activated by an unconditional service restart; their live activation remains a separately authorized appliance transition.
+The desired configuration crosses into other owners without absorbing them: birth supplies packages, users, service units, interface discovery, and the initial user-editable files; the adblock generator owns `blocklist.conf`; system CA custody owns `/etc/ssl/certs/ca-certificates.crt`; Kea owns `/var/lib/kea`; Tailscale owns `tailscale0`; systemd owns the networkd executables. Networkd and sysctl changes are deliberately not activated by an unconditional service restart; their live activation remains a separately authorized appliance transition.

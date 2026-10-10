@@ -1,7 +1,6 @@
 [Unit]
 Description=Hold the %i VPN provider open for Transmission
-After=network-online.target transmissionPIA.service transmission-daemon.service
-Wants=network-online.target
+After=transmissionPIA.service transmission-daemon.service
 Conflicts=transmissionPIA.service transmission-daemon.service
 PartOf=transmissionVPN.service
 

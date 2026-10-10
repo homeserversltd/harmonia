@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "transmission-staff-units",
   "category": "known-good",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Fixed HOMESERVER Transmission staff VPN control and daemon unit bytes.",
   "constants": {},
   "files_root": "files_root",

@@ -305,8 +305,6 @@ def install_systemd_units(paths: InstallPaths, config_path: Path = DEFAULT_APPLI
     service = f"""[Unit]
 Description=Run Harmonia convergence for the selected profile
 Documentation=file:{receipt_latest}/run.json
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=oneshot
