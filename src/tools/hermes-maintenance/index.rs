@@ -368,6 +368,24 @@ struct RestoredLauncher {
     sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UntrackedWorkSnapshot {
+    path: Vec<u8>,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    symlink: bool,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalWorkSnapshot {
+    status: Vec<u8>,
+    staged_diff: Vec<u8>,
+    worktree_diff: Vec<u8>,
+    untracked: Vec<UntrackedWorkSnapshot>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Movement {
     pub(crate) pre_sha: String,
@@ -380,6 +398,8 @@ pub(crate) struct Movement {
     pub(crate) updater_stderr_tail: String,
     restored_launchers: Vec<RestoredLauncher>,
     pub(crate) stash_names_created: Vec<String>,
+    pub(crate) stash_restore_sha: Option<String>,
+    pub(crate) stash_restore_outcome: Option<String>,
     pub(crate) preserved_refs_created: Vec<String>,
     pub(crate) config_sha256_before: Option<String>,
     pub(crate) config_sha256_after: Option<String>,
@@ -415,6 +435,8 @@ struct RunReceipt {
     updater_stderr_tail: String,
     restored_launchers: Vec<RestoredLauncher>,
     stash_names_created: Vec<String>,
+    stash_restore_sha: Option<String>,
+    stash_restore_outcome: Option<String>,
     preserved_refs_created: Vec<String>,
     config_sha256_before: Option<String>,
     config_sha256_after: Option<String>,
@@ -697,43 +719,13 @@ fn validate_launcher_declaration(
     source_root: &Path,
     launcher: &Path,
 ) -> Result<(), String> {
+    // Declaration validation is lexical and host-free. Account resolution and
+    // filesystem custody checks belong to observe/launcher binding.
     let rejected = launcher.display();
-    let c_name = CString::new(owner).map_err(|_| "owner-account-name-invalid")?;
-    let home = unsafe {
-        let entry = libc::getpwnam(c_name.as_ptr());
-        if entry.is_null() {
-            return Err(format!("owner-account-unknown-{owner}"));
-        }
-        let entry = &*entry;
-        if entry.pw_uid == 0 {
-            return Err("maintenance-custody-declared-owner-must-be-non-root".into());
-        }
-        if entry.pw_dir.is_null() {
-            return Err("owner-account-home-invalid".into());
-        }
-        std::ffi::CStr::from_ptr(entry.pw_dir)
-            .to_str()
-            .map_err(|_| "owner-account-home-invalid")?
-            .to_owned()
-    };
-    let home = PathBuf::from(home)
-        .canonicalize()
-        .map_err(|_| "owner-account-home-invalid")?;
-    let source_root = source_root
-        .canonicalize()
-        .map_err(|_| format!("hermes-maintenance-launcher-declaration-not-converging: {rejected}"))?;
-    let launcher_parent = launcher
-        .parent()
-        .and_then(|parent| parent.canonicalize().ok());
-    let resolved_launcher = launcher_parent.and_then(|parent| {
-        launcher
-            .file_name()
-            .map(|basename| parent.join(basename))
-    });
-    let allowed_external = home.join(".local/bin/hermes");
+    let allowed_external = PathBuf::from(format!("/home/{owner}/.local/bin/hermes"));
     let allowed_internal = source_root.join(".hermes/bin/hermes");
-    if resolved_launcher.as_ref() == Some(&allowed_external)
-        || resolved_launcher.as_ref() == Some(&allowed_internal)
+    if launcher.as_os_str() == allowed_external.as_os_str()
+        || launcher.as_os_str() == allowed_internal.as_os_str()
     {
         Ok(())
     } else {
@@ -939,6 +931,8 @@ pub(crate) fn apply(
         updater_stderr_tail: String::new(),
         restored_launchers: Vec::new(),
         stash_names_created: Vec::new(),
+        stash_restore_sha: None,
+        stash_restore_outcome: None,
         preserved_refs_created: Vec::new(),
         config_sha256_before: hash_optional_file(&owner.hermes_home.join("config.yaml"))?,
         config_sha256_after: None,
@@ -954,9 +948,11 @@ pub(crate) fn apply(
     let previous_native_receipt =
         latest_native_receipt(&owner.hermes_home.join("logs/update_receipts"));
     let action_scratch = isolated_tempdir()?;
+    let mut pre_update_stash_sha = None;
+    let mut pre_update_work_snapshot = None;
+    let mut pre_update_work_snapshot_error = None;
+    let mut live_after_stash = false;
     let action_result = (|| -> Result<(), String> {
-        movement.stage = "clear-stale-update-markers".into();
-        clear_stale_update_markers(&observed.source_root, &owner)?;
         if updater_is_live(&observed.source_root, &owner)? {
             return Err("native-updater-live-retry".into());
         }
@@ -972,6 +968,10 @@ pub(crate) fn apply(
             return Err("source-status-before-stash-failed".into());
         }
         if !status.stdout.is_empty() {
+            match snapshot_local_worktree(&observed.source_root) {
+                Ok(snapshot) => pre_update_work_snapshot = Some(snapshot),
+                Err(error) => pre_update_work_snapshot_error = Some(error),
+            }
             let stash_message = unique_name("hermes-maintenance-preserved");
             if updater_is_live(&observed.source_root, &owner)? {
                 return Err("native-updater-live-retry".into());
@@ -1008,12 +1008,23 @@ pub(crate) fn apply(
             if !after_stash.status.success() || !after_stash.stdout.is_empty() {
                 return Err("local-work-stash-incomplete".into());
             }
+            pre_update_stash_sha = Some(stash_sha.clone());
             movement
                 .stash_names_created
                 .push(format!("stash@{{0}}:{stash_message}:{stash_sha}"));
         }
-        if updater_is_live(&observed.source_root, &owner)? {
-            return Err("native-updater-live-retry".into());
+        match updater_is_live(&observed.source_root, &owner) {
+            Ok(false) => {}
+            Ok(true) => {
+                live_after_stash = true;
+                return Err("native-updater-live-retry".into());
+            }
+            Err(error) => {
+                live_after_stash = true;
+                return Err(format!(
+                    "native-updater-live-check-after-stash-failed: {error}"
+                ));
+            }
         }
         movement.stage = "native-update".into();
         let args = [
@@ -1119,6 +1130,46 @@ pub(crate) fn apply(
         movement.stage = stage_from_error(&action_error, &movement.stage);
         let failed_stage = movement.stage.clone();
         movement.error = Some(format!("failed-stage={failed_stage}; {action_error}"));
+        if live_after_stash {
+            movement.movement = "retry-live-native-updater".into();
+            movement.stage = "live-updater-retry".into();
+            movement.post_sha = git_text(&observed.source_root, &["rev-parse", "HEAD"]).ok();
+            movement.config_sha256_after =
+                hash_optional_file(&owner.hermes_home.join("config.yaml"))
+                    .ok()
+                    .flatten();
+            movement.env_sha256_after = hash_optional_file(&owner.hermes_home.join(".env"))
+                .ok()
+                .flatten();
+            if let Some(stash_sha) = pre_update_stash_sha.as_deref() {
+                movement.stash_restore_sha = Some(stash_sha.to_owned());
+                match restore_created_stash(
+                    &observed.source_root,
+                    stash_sha,
+                    pre_update_work_snapshot.as_ref(),
+                    pre_update_work_snapshot_error.as_deref(),
+                ) {
+                    Ok(()) => {
+                        movement.stash_restore_outcome = Some("restored-and-verified".into());
+                    }
+                    Err(error) => {
+                        movement.stash_restore_outcome =
+                            Some(format!("restore-refused-debt={error}"));
+                        movement.error = Some(format!(
+                            "{}; stash-restore-refused-debt={error}",
+                            movement
+                                .error
+                                .as_deref()
+                                .unwrap_or("native-updater-live-retry")
+                        ));
+                    }
+                }
+            } else {
+                movement.stash_restore_outcome = Some("not-needed-no-stash".into());
+            }
+            movement.duration_ms = started.elapsed().as_millis();
+            return Ok(movement);
+        }
         if action_error.contains("native-updater-live-retry") {
             movement.movement = "retry-live-native-updater".into();
             movement.stage = "live-updater-retry".into();
@@ -1130,12 +1181,6 @@ pub(crate) fn apply(
             movement.env_sha256_after = hash_optional_file(&owner.hermes_home.join(".env"))
                 .ok()
                 .flatten();
-            movement.duration_ms = started.elapsed().as_millis();
-            return Ok(movement);
-        }
-        if failed_stage == "clear-stale-update-markers" {
-            movement.movement = "stale-update-marker-clear-refused".into();
-            movement.post_sha = Some(pre_sha.clone());
             movement.duration_ms = started.elapsed().as_millis();
             return Ok(movement);
         }
@@ -1420,6 +1465,126 @@ fn preserve_head_ref(root: &Path, sha: &str) -> Result<String, String> {
         return Err("pre-update-head-preservation-ref-readback-mismatch".into());
     }
     Ok(ref_name)
+}
+
+fn snapshot_local_worktree(root: &Path) -> Result<LocalWorkSnapshot, String> {
+    let status = git_output_raw(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    if !status.status.success() {
+        return Err("stash-restore-status-snapshot-failed".into());
+    }
+    let staged = git_output_raw(
+        root,
+        &[
+            "diff",
+            "--cached",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+        ],
+    )?;
+    if !staged.status.success() {
+        return Err("stash-restore-index-snapshot-failed".into());
+    }
+    let worktree = git_output_raw(
+        root,
+        &["diff", "--binary", "--no-ext-diff", "--no-textconv"],
+    )?;
+    if !worktree.status.success() {
+        return Err("stash-restore-worktree-snapshot-failed".into());
+    }
+    let untracked_output = git_output_raw(
+        root,
+        &[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+        ],
+    )?;
+    if !untracked_output.status.success() {
+        return Err("stash-restore-untracked-list-snapshot-failed".into());
+    }
+    let mut untracked = Vec::new();
+    for raw_path in untracked_output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let relative = Path::new(OsStr::from_bytes(raw_path));
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err("stash-restore-untracked-path-invalid".into());
+        }
+        let path = root.join(relative);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("stash-restore-untracked-stat-failed: {error}"))?;
+        let symlink = metadata.file_type().is_symlink();
+        let bytes = if symlink {
+            fs::read_link(&path)
+                .map_err(|error| format!("stash-restore-untracked-symlink-read-failed: {error}"))?
+                .as_os_str()
+                .as_bytes()
+                .to_vec()
+        } else if metadata.is_file() {
+            fs::read(&path)
+                .map_err(|error| format!("stash-restore-untracked-file-read-failed: {error}"))?
+        } else {
+            return Err("stash-restore-untracked-entry-not-file-or-symlink".into());
+        };
+        untracked.push(UntrackedWorkSnapshot {
+            path: raw_path.to_vec(),
+            mode: metadata.permissions().mode() & 0o7777,
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            symlink,
+            sha256: digest(&bytes),
+        });
+    }
+    let status_readback = git_output_raw(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    if !status_readback.status.success() || status_readback.stdout != status.stdout {
+        return Err("stash-restore-worktree-changed-during-snapshot".into());
+    }
+    Ok(LocalWorkSnapshot {
+        status: status.stdout,
+        staged_diff: staged.stdout,
+        worktree_diff: worktree.stdout,
+        untracked,
+    })
+}
+
+fn restore_created_stash(
+    root: &Path,
+    stash_sha: &str,
+    expected: Option<&LocalWorkSnapshot>,
+    snapshot_error: Option<&str>,
+) -> Result<(), String> {
+    validate_sha(stash_sha, "stash")?;
+    let applied = git_output(root, &["stash", "apply", "--index", stash_sha])?;
+    if !applied.status.success() {
+        return Err(format!(
+            "stash-apply-index-failed-exit-{:?}",
+            applied.status.code()
+        ));
+    }
+    if let Some(error) = snapshot_error {
+        return Err(format!("stash-restore-preimage-unavailable: {error}"));
+    }
+    let expected = expected.ok_or("stash-restore-preimage-unavailable")?;
+    let actual = snapshot_local_worktree(root)?;
+    if &actual != expected {
+        return Err("stash-restore-index-worktree-untracked-readback-mismatch".into());
+    }
+    Ok(())
 }
 
 fn preserve_post_update_worktree(
@@ -1739,6 +1904,8 @@ pub(crate) fn receipt(
             updater_stderr_tail: movement.updater_stderr_tail.clone(),
             restored_launchers: movement.restored_launchers.clone(),
             stash_names_created: movement.stash_names_created.clone(),
+            stash_restore_sha: movement.stash_restore_sha.clone(),
+            stash_restore_outcome: movement.stash_restore_outcome.clone(),
             preserved_refs_created: movement.preserved_refs_created.clone(),
             config_sha256_before: movement.config_sha256_before.clone(),
             config_sha256_after: movement.config_sha256_after.clone(),
@@ -1775,6 +1942,8 @@ pub(crate) fn receipt(
             updater_stderr_tail: String::new(),
             restored_launchers: Vec::new(),
             stash_names_created: Vec::new(),
+            stash_restore_sha: None,
+            stash_restore_outcome: None,
             preserved_refs_created: Vec::new(),
             config_sha256_before: None,
             config_sha256_after: None,
@@ -1821,6 +1990,8 @@ pub(crate) fn failure(
         updater_stderr_tail: String::new(),
         restored_launchers: Vec::new(),
         stash_names_created: Vec::new(),
+        stash_restore_sha: None,
+        stash_restore_outcome: None,
         preserved_refs_created: Vec::new(),
         config_sha256_before: None,
         config_sha256_after: None,
@@ -2645,24 +2816,11 @@ fn marker_metadata_mtime(metadata: &fs::Metadata) -> f64 {
     metadata.mtime() as f64 + metadata.mtime_nsec() as f64 / 1_000_000_000.0
 }
 
-fn same_marker_snapshot(left: &UpdateMarkerSnapshot, right: &UpdateMarkerSnapshot) -> bool {
-    left.bytes == right.bytes
-        && left.metadata.dev() == right.metadata.dev()
-        && left.metadata.ino() == right.metadata.ino()
-        && left.metadata.uid() == right.metadata.uid()
-        && left.metadata.gid() == right.metadata.gid()
-        && left.metadata.mode() == right.metadata.mode()
-        && left.metadata.nlink() == right.metadata.nlink()
-        && left.metadata.len() == right.metadata.len()
-        && left.metadata.mtime() == right.metadata.mtime()
-        && left.metadata.mtime_nsec() == right.metadata.mtime_nsec()
-}
-
 fn marker_snapshot_has_live_claim(snapshot: &UpdateMarkerSnapshot) -> bool {
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs_f64(),
-        Err(_) => return false,
-    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(f64::NAN);
     marker_claims(&snapshot.bytes)
         .iter()
         .any(|claim| marker_claim_is_live(claim, marker_metadata_mtime(&snapshot.metadata), now))
@@ -2675,16 +2833,6 @@ fn marker_claim_is_live(claim: &MarkerClaim, mtime: f64, now: f64) -> bool {
     let Some(identity) = linux_process_identity(pid) else {
         return false;
     };
-    let timestamp = match claim.started_at.as_deref() {
-        Some(raw) => match raw.parse::<f64>() {
-            Ok(timestamp) if timestamp.is_finite() && timestamp > 0.0 => timestamp,
-            _ => return false,
-        },
-        None => mtime,
-    };
-    if !timestamp.is_finite() || timestamp > now + UPDATE_MARKER_FUTURE_SKEW_SECS {
-        return false;
-    }
     if let Some(raw_creation_time) = claim.creation_time.as_deref() {
         let Ok(expected) = raw_creation_time.parse::<f64>() else {
             return false;
@@ -2697,7 +2845,16 @@ fn marker_claim_is_live(claim: &MarkerClaim, mtime: f64, now: f64) -> bool {
                 && (observed - expected).abs() <= UPDATE_MARKER_CREATE_TIME_TOLERANCE_SECS
         });
     }
-    now - timestamp <= UPDATE_MARKER_MAX_AGE_SECS
+    let timestamp = match claim.started_at.as_deref() {
+        Some(raw) => match raw.parse::<f64>() {
+            Ok(timestamp) if timestamp.is_finite() && timestamp > 0.0 => timestamp,
+            _ => return false,
+        },
+        None => mtime,
+    };
+    timestamp.is_finite()
+        && timestamp <= now + UPDATE_MARKER_FUTURE_SKEW_SECS
+        && now - timestamp <= UPDATE_MARKER_MAX_AGE_SECS
 }
 
 fn linux_process_identity(pid: i32) -> Option<LinuxProcessIdentity> {
@@ -2824,438 +2981,6 @@ fn parse_delegate_claim(line: &str, started_at: Option<String>) -> Option<Marker
         started_at,
         creation_time,
     })
-}
-
-fn marker_parent_directory(path: &Path, owner_uid: u32) -> Result<File, String> {
-    let parent = path.parent().ok_or("native-update-marker-parent-missing")?;
-    let before = fs::symlink_metadata(parent)
-        .map_err(|error| format!("native-update-marker-parent-observe-failed: {error}"))?;
-    if !before.is_dir() || before.file_type().is_symlink() || before.uid() != owner_uid {
-        return Err("native-update-marker-parent-not-owner-controlled".into());
-    }
-    let directory = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(parent)
-        .map_err(|error| format!("native-update-marker-parent-open-failed: {error}"))?;
-    let opened = directory
-        .metadata()
-        .map_err(|error| format!("native-update-marker-parent-fstat-failed: {error}"))?;
-    if !opened.is_dir()
-        || opened.uid() != owner_uid
-        || opened.dev() != before.dev()
-        || opened.ino() != before.ino()
-    {
-        return Err("native-update-marker-parent-custody-changed".into());
-    }
-    Ok(directory)
-}
-
-fn verify_marker_parent_directory(
-    path: &Path,
-    directory: &File,
-    owner_uid: u32,
-) -> Result<(), String> {
-    let parent = path.parent().ok_or("native-update-marker-parent-missing")?;
-    let expected = directory
-        .metadata()
-        .map_err(|error| format!("native-update-marker-parent-fstat-failed: {error}"))?;
-    let current = fs::symlink_metadata(parent)
-        .map_err(|error| format!("native-update-marker-parent-readback-failed: {error}"))?;
-    if !current.is_dir()
-        || current.file_type().is_symlink()
-        || current.uid() != owner_uid
-        || current.dev() != expected.dev()
-        || current.ino() != expected.ino()
-    {
-        return Err("native-update-marker-parent-custody-changed".into());
-    }
-    Ok(())
-}
-
-fn renameat2_noreplace(
-    directory: &File,
-    source: &std::ffi::OsStr,
-    destination: &std::ffi::OsStr,
-) -> std::io::Result<()> {
-    let source = CString::new(source.as_bytes())
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "source contains NUL"))?;
-    let destination = CString::new(destination.as_bytes()).map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination contains NUL")
-    })?;
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            directory.as_raw_fd(),
-            source.as_ptr(),
-            directory.as_raw_fd(),
-            destination.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-fn unlinkat_marker(directory: &File, name: &std::ffi::OsStr) -> std::io::Result<()> {
-    let name = CString::new(name.as_bytes())
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "name contains NUL"))?;
-    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-fn quarantine_update_marker(
-    marker: &Path,
-    owner_uid: u32,
-) -> Result<(File, std::ffi::OsString, std::ffi::OsString, PathBuf), String> {
-    let directory = marker_parent_directory(marker, owner_uid)?;
-    let marker_name = marker
-        .file_name()
-        .ok_or("native-update-marker-basename-missing")?
-        .to_os_string();
-    let parent = marker
-        .parent()
-        .ok_or("native-update-marker-parent-missing")?;
-    for attempt in 0..4 {
-        let quarantine_name = std::ffi::OsString::from(format!(
-            ".hermes-update-in-progress-quarantine-{}-{attempt}",
-            unique_name("claim")
-        ));
-        verify_marker_parent_directory(marker, &directory, owner_uid)?;
-        match renameat2_noreplace(&directory, &marker_name, &quarantine_name) {
-            Ok(()) => {
-                let quarantine_path = parent.join(&quarantine_name);
-                directory.sync_all().map_err(|error| {
-                    format!(
-                        "native-update-marker-held-conflict quarantine={} directory-sync-failed: {error}",
-                        quarantine_path.display()
-                    )
-                })?;
-                return Ok((directory, marker_name, quarantine_name, quarantine_path));
-            }
-            Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
-            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
-                return Err("native-updater-live-retry".into());
-            }
-            Err(error) => {
-                return Err(format!("native-update-marker-quarantine-failed: {error}"));
-            }
-        }
-    }
-    Err("native-update-marker-quarantine-name-collision".into())
-}
-
-fn restore_quarantined_marker(
-    marker: &Path,
-    directory: &File,
-    marker_name: &std::ffi::OsStr,
-    quarantine_name: &std::ffi::OsStr,
-    quarantine_path: &Path,
-    owner_uid: u32,
-) -> Result<(), String> {
-    verify_marker_parent_directory(marker, directory, owner_uid)?;
-    let current = match read_update_marker_snapshot(quarantine_path, owner_uid) {
-        Ok(Some(current)) => current,
-        Ok(None) => {
-            return Err(format!(
-                "native-update-marker-held-conflict quarantine-disappeared path={}",
-                quarantine_path.display()
-            ));
-        }
-        Err(error) => {
-            return Err(restore_uninspected_marker(
-                marker,
-                directory,
-                marker_name,
-                quarantine_name,
-                quarantine_path,
-                owner_uid,
-                &format!("changed-claim-inspection-failed: {error}"),
-            ));
-        }
-    };
-    match renameat2_noreplace(directory, quarantine_name, marker_name) {
-        Ok(()) => {}
-        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => {
-            return Err(format!(
-                "native-update-marker-held-conflict quarantine={} replacement={}",
-                quarantine_path.display(),
-                marker.display()
-            ));
-        }
-        Err(error) => {
-            return Err(format!(
-                "native-update-marker-held-conflict quarantine={} restore-failed: {error}",
-                quarantine_path.display()
-            ));
-        }
-    }
-    directory.sync_all().map_err(|error| {
-        format!(
-            "native-update-marker-held-conflict restored={} directory-sync-failed: {error}",
-            marker.display()
-        )
-    })?;
-    let restored = read_update_marker_snapshot(marker, owner_uid)?;
-    if restored
-        .as_ref()
-        .is_none_or(|restored| !same_marker_snapshot(&current, restored))
-    {
-        return Err(format!(
-            "native-update-marker-held-conflict restoration-readback-mismatch path={}",
-            marker.display()
-        ));
-    }
-    Ok(())
-}
-
-fn restore_uninspected_marker(
-    marker: &Path,
-    directory: &File,
-    marker_name: &std::ffi::OsStr,
-    quarantine_name: &std::ffi::OsStr,
-    quarantine_path: &Path,
-    owner_uid: u32,
-    reason: &str,
-) -> String {
-    if let Err(error) = verify_marker_parent_directory(marker, directory, owner_uid) {
-        return format!(
-            "native-update-marker-held-conflict quarantine={} parent-check-failed: {error}",
-            quarantine_path.display()
-        );
-    }
-    match renameat2_noreplace(directory, quarantine_name, marker_name) {
-        Ok(()) => match directory.sync_all() {
-            Ok(()) => format!("native-updater-live-retry: {reason}"),
-            Err(error) => format!(
-                "native-update-marker-held-conflict restored={} directory-sync-failed: {error}",
-                marker.display()
-            ),
-        },
-        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => format!(
-            "native-update-marker-held-conflict quarantine={} replacement={}",
-            quarantine_path.display(),
-            marker.display()
-        ),
-        Err(error) => format!(
-            "native-update-marker-held-conflict quarantine={} restore-failed: {error}",
-            quarantine_path.display()
-        ),
-    }
-}
-
-fn restore_marker_then_retry(
-    reason: &str,
-    marker: &Path,
-    directory: &File,
-    marker_name: &std::ffi::OsStr,
-    quarantine_name: &std::ffi::OsStr,
-    quarantine_path: &Path,
-    owner_uid: u32,
-) -> String {
-    match restore_quarantined_marker(
-        marker,
-        directory,
-        marker_name,
-        quarantine_name,
-        quarantine_path,
-        owner_uid,
-    ) {
-        Ok(()) => format!("native-updater-live-retry: {reason}"),
-        Err(error) => error,
-    }
-}
-
-fn clear_stale_update_markers(root: &Path, owner: &OwnerContext) -> Result<(), String> {
-    for marker in [
-        root.join(".hermes-update-in-progress"),
-        owner.hermes_home.join(".hermes-update-in-progress"),
-    ] {
-        let Some(original) = read_update_marker_snapshot(&marker, owner.uid)? else {
-            continue;
-        };
-        if marker_snapshot_has_live_claim(&original) || updater_is_live(root, owner)? {
-            return Err("native-updater-live-retry".into());
-        }
-        let current = read_update_marker_snapshot(&marker, owner.uid)?;
-        if current
-            .as_ref()
-            .is_none_or(|current| !same_marker_snapshot(&original, current))
-            || current
-                .as_ref()
-                .is_some_and(marker_snapshot_has_live_claim)
-            || updater_is_live(root, owner)?
-        {
-            return Err("native-updater-live-retry".into());
-        }
-        let (directory, marker_name, quarantine_name, quarantine_path) =
-            quarantine_update_marker(&marker, owner.uid)?;
-        let displaced = match read_update_marker_snapshot(&quarantine_path, owner.uid) {
-            Ok(Some(displaced)) => displaced,
-            Ok(None) => {
-                return Err(format!(
-                    "native-update-marker-held-conflict quarantine-disappeared path={}",
-                    quarantine_path.display()
-                ));
-            }
-            Err(error) => {
-                return Err(restore_uninspected_marker(
-                    &marker,
-                    &directory,
-                    &marker_name,
-                    &quarantine_name,
-                    &quarantine_path,
-                    owner.uid,
-                    &format!("quarantine-inspection-failed: {error}"),
-                ));
-            }
-        };
-        let changed = !same_marker_snapshot(&original, &displaced);
-        let live = marker_snapshot_has_live_claim(&displaced);
-        let replacement = match fs::symlink_metadata(&marker) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                return Err(restore_marker_then_retry(
-                    &format!("replacement-marker-observe-failed: {error}"),
-                    &marker,
-                    &directory,
-                    &marker_name,
-                    &quarantine_name,
-                    &quarantine_path,
-                    owner.uid,
-                ));
-            }
-        };
-        let updater_live = match updater_is_live(root, owner) {
-            Ok(live) => live,
-            Err(error) => {
-                return Err(restore_marker_then_retry(
-                    &format!("updater-state-observe-failed: {error}"),
-                    &marker,
-                    &directory,
-                    &marker_name,
-                    &quarantine_name,
-                    &quarantine_path,
-                    owner.uid,
-                ));
-            }
-        };
-        if changed || live || replacement || updater_live {
-            let reason = if live {
-                "displaced-marker-claim-live"
-            } else if changed {
-                "displaced-marker-claim-changed"
-            } else if replacement {
-                "replacement-marker-present"
-            } else {
-                "native-updater-live"
-            };
-            return Err(restore_marker_then_retry(
-                reason,
-                &marker,
-                &directory,
-                &marker_name,
-                &quarantine_name,
-                &quarantine_path,
-                owner.uid,
-            ));
-        }
-        let parent_check = verify_marker_parent_directory(&marker, &directory, owner.uid);
-        if let Err(error) = parent_check {
-            return Err(format!(
-                "native-update-marker-held-conflict quarantine={} parent-check-failed: {error}",
-                quarantine_path.display()
-            ));
-        }
-        let final_readback = match read_update_marker_snapshot(&quarantine_path, owner.uid) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                return Err(restore_marker_then_retry(
-                    &format!("quarantine-readback-failed: {error}"),
-                    &marker,
-                    &directory,
-                    &marker_name,
-                    &quarantine_name,
-                    &quarantine_path,
-                    owner.uid,
-                ));
-            }
-        };
-        let final_changed = final_readback
-            .as_ref()
-            .is_none_or(|final_readback| !same_marker_snapshot(&displaced, final_readback));
-        let final_live = final_readback
-            .as_ref()
-            .is_some_and(marker_snapshot_has_live_claim);
-        let final_updater_live = match updater_is_live(root, owner) {
-            Ok(live) => live,
-            Err(error) => {
-                return Err(restore_marker_then_retry(
-                    &format!("updater-state-readback-failed: {error}"),
-                    &marker,
-                    &directory,
-                    &marker_name,
-                    &quarantine_name,
-                    &quarantine_path,
-                    owner.uid,
-                ));
-            }
-        };
-        let final_replacement = match fs::symlink_metadata(&marker) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                return Err(restore_marker_then_retry(
-                    &format!("replacement-marker-readback-failed: {error}"),
-                    &marker,
-                    &directory,
-                    &marker_name,
-                    &quarantine_name,
-                    &quarantine_path,
-                    owner.uid,
-                ));
-            }
-        };
-        if final_changed || final_live || final_updater_live || final_replacement {
-            return Err(restore_marker_then_retry(
-                "claim-changed-before-quarantine-clear",
-                &marker,
-                &directory,
-                &marker_name,
-                &quarantine_name,
-                &quarantine_path,
-                owner.uid,
-            ));
-        }
-        unlinkat_marker(&directory, &quarantine_name).map_err(|error| {
-            format!(
-                "native-update-marker-held-conflict quarantine={} clear-failed: {error}",
-                quarantine_path.display()
-            )
-        })?;
-        directory.sync_all().map_err(|error| {
-            format!("native-update-marker-parent-sync-failed: {error}")
-        })?;
-        match fs::symlink_metadata(&marker) {
-            Ok(_) => return Err("native-updater-live-retry".into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!("native-update-marker-readback-failed: {error}"));
-            }
-        }
-        if updater_is_live(root, owner)? {
-            return Err("native-updater-live-retry".into());
-        }
-    }
-    Ok(())
 }
 
 fn git_text(root: &Path, args: &[&str]) -> Result<String, String> {
