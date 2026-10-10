@@ -1854,19 +1854,18 @@
     },
     {
       "name": "hermes-maintenance",
-      "description": "Converge the Hermes source, native dependency environment, and owner-controlled launcher as one pinned generation.",
+      "description": "Converge the owner's Hermes installation through its native updater, preserving local work and proving or rolling back the result.",
       "routine_summonable": true,
       "permutations": [
         {
           "name": "converge",
-          "description": "Observe and optionally select a complete official-main Hermes generation.",
+          "description": "Observe official main and run the declared owner's native Hermes updater only when installed state differs.",
           "args": [
             { "name": "owner", "kind": "string", "required": true },
             { "name": "source_root", "kind": "string", "required": true },
             { "name": "launcher", "kind": "string", "required": true },
             { "name": "upstream_url", "kind": "string", "required": false },
-            { "name": "branch", "kind": "string", "required": false },
-            { "name": "extras", "kind": "string_array", "required": false }
+            { "name": "branch", "kind": "string", "required": false }
           ],
           "placement": "PullSource"
         }

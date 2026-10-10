@@ -22,6 +22,10 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("build-crate", include_str!("build-crate/index.json")),
     ("fetch-artifact", include_str!("fetch-artifact/index.json")),
     ("grub", include_str!("grub/index.json")),
+    (
+        "hermes-maintenance",
+        include_str!("hermes-maintenance/index.json"),
+    ),
     ("build-venv", include_str!("build-venv/index.json")),
     ("check-health", include_str!("check-health/index.json")),
     (

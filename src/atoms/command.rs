@@ -579,23 +579,33 @@ pub(crate) fn capture_with_command_bearer_and_limit(
     capture_with_options(program, args, options)
 }
 
-/// Capture raw bytes and the exact child status for the narrow native-source
-/// census that consumes Git's NUL-delimited path list. The ordinary receipt
-/// capture intentionally decodes output as UTF-8; that cannot preserve arbitrary
-/// tracked path bytes. This uses the same resolved bearer and child-only UID
-/// drop, while giving the caller an explicitly clean environment.
+/// Capture bounded raw bytes for NUL-delimited Git output and native updater
+/// commands. Both pipes are drained after the limit is reached, but truncated
+/// captures are refused so callers can never mistake a clipped path list for a
+/// complete one. The child has null stdin, a private process group, a timeout,
+/// and the same explicit bearer/drop behavior as other command captures.
 pub(crate) fn capture_bytes_with_command_bearer_and_env(
     program: &str,
     args: &[&str],
     cwd: Option<&str>,
     bearer: &CommandBearer,
     env: BTreeMap<String, String>,
+    timeout_secs: u64,
+    output_limit: usize,
 ) -> Result<std::process::Output, String> {
     if let Some(failure) = bearer.failure.as_ref() {
         return Err(format!("command-bearer-resolution-failed: {failure}"));
     }
     let mut command = Command::new(program);
-    command.args(args).env_clear().stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .args(args)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if !program.contains('/') && !env.contains_key("PATH") {
+        command.env("PATH", DEFAULT_SYSTEM_PATH);
+    }
     if let Some(cwd) = cwd {
         command.current_dir(Path::new(cwd));
     }
@@ -627,9 +637,115 @@ pub(crate) fn capture_bytes_with_command_bearer_and_env(
     for (key, value) in env {
         command.env(key, value);
     }
-    command
-        .output()
-        .map_err(|error| format!("command-capture-bytes-failed: {error}"))
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("command-capture-bytes-spawn-failed: {error}"))?;
+    let pid = child.id() as i32;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("command-capture-bytes-stdout-missing")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("command-capture-bytes-stderr-missing")?;
+    let stdout_reader = thread::spawn(move || read_bounded_bytes(stdout, output_limit));
+    let stderr_reader = thread::spawn(move || read_bounded_bytes(stderr, output_limit));
+    let timeout_secs = if timeout_secs == 0 {
+        DEFAULT_TIMEOUT_SECS
+    } else {
+        timeout_secs
+    };
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() >= Duration::from_secs(timeout_secs) => {
+                terminate_process_group(&mut child, pid);
+                break None;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                terminate_process_group(&mut child, pid);
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!("command-capture-bytes-wait-failed: {error}"));
+            }
+        }
+    };
+    if status.is_some() {
+        let drain_deadline = Instant::now() + Duration::from_millis(250);
+        while (!stdout_reader.is_finished() || !stderr_reader.is_finished())
+            && Instant::now() < drain_deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !stdout_reader.is_finished() || !stderr_reader.is_finished() {
+            terminate_process_group(&mut child, pid);
+        }
+    }
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "command-capture-bytes-stdout-reader-panicked")?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "command-capture-bytes-stderr-reader-panicked")?;
+    let Some(status) = status else {
+        return Err(format!(
+            "command-capture-bytes-timeout-after-{timeout_secs}s"
+        ));
+    };
+    if stdout.1 || stderr.1 {
+        return Err(format!(
+            "command-capture-bytes-output-truncated-after-{output_limit}-bytes-per-stream"
+        ));
+    }
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.0,
+        stderr: stderr.0,
+    })
+}
+
+fn read_bounded_bytes<R: Read>(mut reader: R, limit: usize) -> (Vec<u8>, bool) {
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    let mut chunk = [0u8; 8192];
+    let mut discarded = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => {
+                let retained = count.min(limit.saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&chunk[..retained]);
+                discarded |= retained < count;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                discarded = true;
+                break;
+            }
+        }
+    }
+    (bytes, discarded)
+}
+
+fn terminate_process_group(child: &mut std::process::Child, pid: i32) {
+    unsafe {
+        libc::kill(-pid, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    let _ = child.wait();
 }
 
 pub(crate) fn user_bus_env_for_bearer(bearer: &str) -> Result<BTreeMap<String, String>, String> {
