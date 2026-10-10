@@ -3169,6 +3169,7 @@ fn promote_launcher(path:&Path,temp:&mut TempLauncher,expected_sha:&str)->Result
     let now=fs::read(path).map_err(|e|e.to_string())?;
     if digest(&now)!=expected_sha{return Err("launcher-changed-before-atomic-rename".into())}
     let _file=temp.file.take().ok_or("launcher-temp-file-missing")?;
+    drop(_file);
     fs::rename(&temp.path,path).map_err(|e|format!("atomic-launcher-rename: {e}"))?;
     File::open(path.parent().ok_or("launcher-parent-missing")?).and_then(|f|f.sync_all()).map_err(|e|format!("launcher-parent-sync: {e}"))?;
     Ok(())
@@ -3354,6 +3355,7 @@ fn restore_predecessor_if_candidate(
         .file
         .take()
         .ok_or("launcher-rollback-temp-file-missing")?;
+    drop(_file);
     fs::rename(&replacement.path, &observation.launcher)
         .map_err(|error| format!("launcher-rollback-rename: {error}"))?;
     File::open(
