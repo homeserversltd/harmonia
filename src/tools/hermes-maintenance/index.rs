@@ -8,8 +8,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -25,6 +26,12 @@ const OFFICIAL_SSH_NO_GIT: &str = "ssh://git@github.com/NousResearch/hermes-agen
 const OWNER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 const UPDATER_TIMEOUT_SECS: u64 = 3600;
 const COMMAND_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+const UPDATER_OUTPUT_TAIL_BYTES: usize = 4096;
+const UPDATE_MARKER_MAX_AGE_SECS: f64 = 20.0 * 60.0;
+const UPDATE_MARKER_FUTURE_SKEW_SECS: f64 = 5.0;
+const UPDATE_MARKER_CREATE_TIME_TOLERANCE_SECS: f64 = 2.0;
+const UPDATE_MARKER_MAX_BYTES: u64 = 8192;
+const LAUNCHER_MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
 struct OwnerContext {
@@ -148,7 +155,6 @@ fn validate_caller_identity(owner: &OwnerContext) -> Result<(), String> {
 struct CapturedOutput {
     status: CapturedStatus,
     stdout: Vec<u8>,
-    stderr: Vec<u8>,
 }
 struct CapturedStatus {
     success: bool,
@@ -219,8 +225,66 @@ fn run_owner_command(
             code: output.status.code(),
         },
         stdout: output.stdout,
-        stderr: output.stderr,
     })
+}
+
+struct UpdaterOutput {
+    status: CapturedStatus,
+    stdout_tail: String,
+    stderr_tail: String,
+    error: Option<String>,
+}
+
+fn run_owner_updater(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    extra_env: BTreeMap<String, String>,
+    timeout_secs: u64,
+) -> Result<UpdaterOutput, String> {
+    let owner = current_owner_context()?;
+    let mut env = owner_environment(&owner);
+    env.extend(extra_env);
+    let cwd = cwd
+        .map(|path| {
+            path.to_str()
+                .ok_or_else(|| "maintenance-command-cwd-not-utf8".to_string())
+        })
+        .transpose()?;
+    let output = crate::atoms::command::capture_bytes_with_command_bearer_and_env_tail(
+        program,
+        args,
+        cwd,
+        &owner.command_bearer,
+        env,
+        timeout_secs,
+        COMMAND_OUTPUT_LIMIT,
+        UPDATER_OUTPUT_TAIL_BYTES,
+    )?;
+    Ok(UpdaterOutput {
+        status: CapturedStatus {
+            success: output
+                .status
+                .as_ref()
+                .is_some_and(std::process::ExitStatus::success),
+            code: output.status.as_ref().and_then(std::process::ExitStatus::code),
+        },
+        stdout_tail: bounded_utf8_tail(&output.stdout_tail, UPDATER_OUTPUT_TAIL_BYTES),
+        stderr_tail: bounded_utf8_tail(&output.stderr_tail, UPDATER_OUTPUT_TAIL_BYTES),
+        error: output.error,
+    })
+}
+
+fn bounded_utf8_tail(bytes: &[u8], limit: usize) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut start = text.len();
+    for (index, _) in text.char_indices().rev() {
+        if text.len() - index > limit {
+            break;
+        }
+        start = index;
+    }
+    text[start..].to_owned()
 }
 
 #[derive(Debug, Clone)]
@@ -244,12 +308,8 @@ pub(crate) struct Observation {
     pub(crate) anchor_sha: String,
     pub(crate) target_sha: String,
     pub(crate) launcher_sha256: String,
-    pub(crate) native_state_sha256: String,
-    pub(crate) launcher_mode: u32,
-    pub(crate) launcher_uid: u32,
-    pub(crate) launcher_gid: u32,
     pub(crate) branch: Option<String>,
-    pub(crate) dirty: bool,
+    native_stamp_fields: Option<InstallStampFields>,
     pub(crate) changed: bool,
     pub(crate) reasons: Vec<String>,
 }
@@ -271,13 +331,41 @@ pub(crate) struct ObservationBinding {
 struct RollbackSnapshot {
     source_root: PathBuf,
     launcher: PathBuf,
+    launcher_directory: PathBuf,
+    launcher_directory_mode: u32,
+    launcher_directory_uid: u32,
+    launcher_directory_gid: u32,
+    launcher_directory_dev: u64,
+    launcher_directory_ino: u64,
     pre_sha: String,
     branch: Option<String>,
-    launcher_bytes: Vec<u8>,
-    launcher_mode: u32,
-    launcher_uid: u32,
-    launcher_gid: u32,
+    launchers: Vec<LauncherSnapshot>,
     owner_uid: u32,
+}
+
+#[derive(Debug, Clone)]
+struct LauncherSnapshot {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
+#[derive(Debug, Clone)]
+struct LauncherDirectorySnapshot {
+    path: PathBuf,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    dev: u64,
+    ino: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RestoredLauncher {
+    path: String,
+    sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +376,9 @@ pub(crate) struct Movement {
     pub(crate) movement: String,
     pub(crate) stage: String,
     pub(crate) updater_exit_code: Option<i32>,
+    pub(crate) updater_stdout_tail: String,
+    pub(crate) updater_stderr_tail: String,
+    restored_launchers: Vec<RestoredLauncher>,
     pub(crate) stash_names_created: Vec<String>,
     pub(crate) preserved_refs_created: Vec<String>,
     pub(crate) config_sha256_before: Option<String>,
@@ -320,6 +411,9 @@ struct RunReceipt {
     movement: String,
     stage: String,
     updater_exit_code: Option<i32>,
+    updater_stdout_tail: String,
+    updater_stderr_tail: String,
+    restored_launchers: Vec<RestoredLauncher>,
     stash_names_created: Vec<String>,
     preserved_refs_created: Vec<String>,
     config_sha256_before: Option<String>,
@@ -558,6 +652,17 @@ pub(crate) fn validate_args(args: &BTreeMap<String, Value>) -> Result<(), String
             return Err(format!("{name}-must-be-absolute-path"));
         }
     }
+    let source_root = Path::new(
+        args.get("source_root")
+            .and_then(Value::as_str)
+            .ok_or("source_root-required")?,
+    );
+    let launcher = Path::new(
+        args.get("launcher")
+            .and_then(Value::as_str)
+            .ok_or("launcher-required")?,
+    );
+    validate_launcher_declaration(owner, source_root, launcher)?;
     if args
         .get("upstream_url")
         .is_some_and(|value| value.as_str().is_none())
@@ -585,6 +690,57 @@ pub(crate) fn validate_args(args: &BTreeMap<String, Value>) -> Result<(), String
         return Err("upstream-branch-must-be-main".into());
     }
     Ok(())
+}
+
+fn validate_launcher_declaration(
+    owner: &str,
+    source_root: &Path,
+    launcher: &Path,
+) -> Result<(), String> {
+    let rejected = launcher.display();
+    let c_name = CString::new(owner).map_err(|_| "owner-account-name-invalid")?;
+    let home = unsafe {
+        let entry = libc::getpwnam(c_name.as_ptr());
+        if entry.is_null() {
+            return Err(format!("owner-account-unknown-{owner}"));
+        }
+        let entry = &*entry;
+        if entry.pw_uid == 0 {
+            return Err("maintenance-custody-declared-owner-must-be-non-root".into());
+        }
+        if entry.pw_dir.is_null() {
+            return Err("owner-account-home-invalid".into());
+        }
+        std::ffi::CStr::from_ptr(entry.pw_dir)
+            .to_str()
+            .map_err(|_| "owner-account-home-invalid")?
+            .to_owned()
+    };
+    let home = PathBuf::from(home)
+        .canonicalize()
+        .map_err(|_| "owner-account-home-invalid")?;
+    let source_root = source_root
+        .canonicalize()
+        .map_err(|_| format!("hermes-maintenance-launcher-declaration-not-converging: {rejected}"))?;
+    let launcher_parent = launcher
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok());
+    let resolved_launcher = launcher_parent.and_then(|parent| {
+        launcher
+            .file_name()
+            .map(|basename| parent.join(basename))
+    });
+    let allowed_external = home.join(".local/bin/hermes");
+    let allowed_internal = source_root.join(".hermes/bin/hermes");
+    if resolved_launcher.as_ref() == Some(&allowed_external)
+        || resolved_launcher.as_ref() == Some(&allowed_internal)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "hermes-maintenance-launcher-declaration-not-converging: {rejected}"
+        ))
+    }
 }
 
 fn official_url(url: &str) -> bool {
@@ -696,12 +852,8 @@ pub(crate) fn observe(
         anchor_sha: pre_sha,
         target_sha: target_sha.clone(),
         launcher_sha256: digest(&launcher_bytes),
-        native_state_sha256: native_state.fingerprint(),
-        launcher_mode: launcher_meta.permissions().mode() & 0o7777,
-        launcher_uid: launcher_meta.uid(),
-        launcher_gid: launcher_meta.gid(),
         branch,
-        dirty,
+        native_stamp_fields: native_state.stamp_fields.clone(),
         changed: !reasons.is_empty(),
         reasons,
     };
@@ -756,15 +908,24 @@ pub(crate) fn apply(
         return Err("failed-stage=pre-action-launcher-changed predecessor=preserved".into());
     }
     static_runnable_probe(&observed.launcher, &launcher_bytes)?;
+    let (launcher_directory, launchers) = snapshot_launchers(
+        &observed.launcher,
+        &observed.source_root,
+        &owner,
+        &launcher_bytes,
+    )?;
     let snapshot = RollbackSnapshot {
         source_root: observed.source_root.clone(),
         launcher: observed.launcher.clone(),
+        launcher_directory: launcher_directory.path,
+        launcher_directory_mode: launcher_directory.mode,
+        launcher_directory_uid: launcher_directory.uid,
+        launcher_directory_gid: launcher_directory.gid,
+        launcher_directory_dev: launcher_directory.dev,
+        launcher_directory_ino: launcher_directory.ino,
         pre_sha: pre_sha.clone(),
         branch: observed.branch.clone(),
-        launcher_bytes,
-        launcher_mode: observed.launcher_mode,
-        launcher_uid: observed.launcher_uid,
-        launcher_gid: observed.launcher_gid,
+        launchers,
         owner_uid: owner.uid,
     };
     let mut movement = Movement {
@@ -774,6 +935,9 @@ pub(crate) fn apply(
         movement: "not-started".into(),
         stage: "pre-action".into(),
         updater_exit_code: None,
+        updater_stdout_tail: String::new(),
+        updater_stderr_tail: String::new(),
+        restored_launchers: Vec::new(),
         stash_names_created: Vec::new(),
         preserved_refs_created: Vec::new(),
         config_sha256_before: hash_optional_file(&owner.hermes_home.join("config.yaml"))?,
@@ -791,9 +955,15 @@ pub(crate) fn apply(
         latest_native_receipt(&owner.hermes_home.join("logs/update_receipts"));
     let action_scratch = isolated_tempdir()?;
     let action_result = (|| -> Result<(), String> {
-        movement.stage = "preserve-local-custody".into();
+        movement.stage = "clear-stale-update-markers".into();
+        clear_stale_update_markers(&observed.source_root, &owner)?;
+        if updater_is_live(&observed.source_root, &owner)? {
+            return Err("native-updater-live-retry".into());
+        }
+        movement.stage = "preserve-head-ref".into();
         let ref_name = preserve_head_ref(&observed.source_root, &pre_sha)?;
         movement.preserved_refs_created.push(ref_name);
+        movement.stage = "preserve-local-worktree".into();
         let status = git_output_raw(
             &observed.source_root,
             &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -803,6 +973,9 @@ pub(crate) fn apply(
         }
         if !status.stdout.is_empty() {
             let stash_message = unique_name("hermes-maintenance-preserved");
+            if updater_is_live(&observed.source_root, &owner)? {
+                return Err("native-updater-live-retry".into());
+            }
             let stash = git_output(
                 &observed.source_root,
                 &[
@@ -850,7 +1023,7 @@ pub(crate) fn apply(
             "--branch",
             "main",
         ];
-        let result = run_owner_command(
+        let result = run_owner_updater(
             &observed.launcher.to_string_lossy(),
             &args,
             Some(&observed.source_root),
@@ -866,11 +1039,16 @@ pub(crate) fn apply(
         match result {
             Ok(output) => {
                 movement.updater_exit_code = output.status.code();
+                movement.updater_stdout_tail = output.stdout_tail;
+                movement.updater_stderr_tail = output.stderr_tail;
+                if let Some(error) = output.error {
+                    return Err(format!("native-updater-capture-failed: {error}"));
+                }
                 if !output.status.success() {
                     return Err("native-updater-returned-nonzero".into());
                 }
             }
-            Err(error) => return Err(format!("native-updater-timeout-or-capture-failed: {error}")),
+            Err(error) => return Err(format!("native-updater-start-failed: {error}")),
         }
         movement.stage = "post-update-proof".into();
         let post_sha = git_text(&observed.source_root, &["rev-parse", "HEAD"])?;
@@ -924,7 +1102,7 @@ pub(crate) fn apply(
         movement.changed = post_sha != pre_sha
             || post_branch != observed.branch
             || digest(&launcher_after) != observed.launcher_sha256
-            || native_state.fingerprint() != observed.native_state_sha256;
+            || native_state.stamp_fields != observed.native_stamp_fields;
         movement.movement = if !movement.changed {
             "native-update-completed-without-installation-movement"
         } else if post_sha != pre_sha {
@@ -952,6 +1130,12 @@ pub(crate) fn apply(
             movement.env_sha256_after = hash_optional_file(&owner.hermes_home.join(".env"))
                 .ok()
                 .flatten();
+            movement.duration_ms = started.elapsed().as_millis();
+            return Ok(movement);
+        }
+        if failed_stage == "clear-stale-update-markers" {
+            movement.movement = "stale-update-marker-clear-refused".into();
+            movement.post_sha = Some(pre_sha.clone());
             movement.duration_ms = started.elapsed().as_millis();
             return Ok(movement);
         }
@@ -1001,6 +1185,227 @@ fn stage_from_error(error: &str, current: &str) -> String {
     }
 }
 
+fn snapshot_launchers(
+    launcher: &Path,
+    source_root: &Path,
+    owner: &OwnerContext,
+    expected_main_bytes: &[u8],
+) -> Result<(LauncherDirectorySnapshot, Vec<LauncherSnapshot>), String> {
+    let directory_path = launcher
+        .parent()
+        .ok_or("launcher-parent-missing")?
+        .to_path_buf();
+    let directory = launcher_directory_snapshot(&directory_path, owner.uid)?;
+    let source_bytes = source_root.as_os_str().as_bytes().to_vec();
+    let mut launchers = Vec::new();
+    let mut main_included = false;
+    let entries = fs::read_dir(&directory_path)
+        .map_err(|error| format!("launcher-directory-census-failed: {error}"))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("launcher-directory-entry-read-failed: {error}"))?;
+        let path = entry.path();
+        if path == launcher {
+            let (bytes, metadata) = read_owner_executable_launcher(&path, owner.uid)?;
+            if bytes != expected_main_bytes {
+                return Err("pre-action-launcher-changed-during-snapshot".into());
+            }
+            launchers.push(LauncherSnapshot {
+                path,
+                bytes,
+                mode: metadata.permissions().mode() & 0o7777,
+                uid: metadata.uid(),
+                gid: metadata.gid(),
+            });
+            main_included = true;
+            continue;
+        }
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("launcher-sibling-observe-failed: {error}")),
+        };
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != owner.uid
+            || metadata.permissions().mode() & 0o111 == 0
+        {
+            continue;
+        }
+        if !file_contains_bytes(&path, &source_bytes, owner.uid)? {
+            continue;
+        }
+        let (bytes, metadata) = read_owner_executable_launcher(&path, owner.uid)?;
+        if source_bytes.is_empty()
+            || !bytes
+                .windows(source_bytes.len())
+                .any(|window| window == source_bytes)
+        {
+            return Err("launcher-source-binding-changed-during-snapshot".into());
+        }
+        launchers.push(LauncherSnapshot {
+            path,
+            bytes,
+            mode: metadata.permissions().mode() & 0o7777,
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        });
+    }
+    if !main_included {
+        return Err("declared-launcher-not-in-launcher-directory-census".into());
+    }
+    verify_launcher_directory(&directory, owner.uid)?;
+    Ok((directory, launchers))
+}
+
+fn file_contains_bytes(path: &Path, needle: &[u8], owner_uid: u32) -> Result<bool, String> {
+    if needle.is_empty() {
+        return Ok(false);
+    }
+    let before = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("launcher-census-stat-failed: {error}")),
+    };
+    if !before.is_file()
+        || before.file_type().is_symlink()
+        || before.uid() != owner_uid
+        || before.permissions().mode() & 0o111 == 0
+    {
+        return Ok(false);
+    }
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("launcher-census-open-failed: {error}")),
+    };
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("launcher-census-fstat-failed: {error}"))?;
+    if !opened.is_file()
+        || opened.uid() != owner_uid
+        || opened.dev() != before.dev()
+        || opened.ino() != before.ino()
+    {
+        return Ok(false);
+    }
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut carry = Vec::with_capacity(needle.len().saturating_sub(1));
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("launcher-census-read-failed: {error}"))?;
+        if count == 0 {
+            return Ok(false);
+        }
+        let mut window = Vec::with_capacity(carry.len() + count);
+        window.extend_from_slice(&carry);
+        window.extend_from_slice(&buffer[..count]);
+        if window
+            .windows(needle.len())
+            .any(|candidate| candidate == needle)
+        {
+            return Ok(true);
+        }
+        let keep = needle.len().saturating_sub(1).min(window.len());
+        carry.clear();
+        carry.extend_from_slice(&window[window.len() - keep..]);
+    }
+}
+
+fn launcher_directory_snapshot(
+    path: &Path,
+    owner_uid: u32,
+) -> Result<LauncherDirectorySnapshot, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("launcher-directory-observe-failed: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner_uid {
+        return Err("launcher-directory-not-owner-controlled-real-directory".into());
+    }
+    Ok(LauncherDirectorySnapshot {
+        path: path.to_path_buf(),
+        mode: metadata.permissions().mode() & 0o7777,
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    })
+}
+
+fn verify_launcher_directory(
+    expected: &LauncherDirectorySnapshot,
+    owner_uid: u32,
+) -> Result<(), String> {
+    let current = launcher_directory_snapshot(&expected.path, owner_uid)?;
+    if current.mode != expected.mode
+        || current.uid != expected.uid
+        || current.gid != expected.gid
+        || current.dev != expected.dev
+        || current.ino != expected.ino
+    {
+        return Err("rollback-launcher-directory-custody-changed".into());
+    }
+    Ok(())
+}
+
+fn read_owner_executable_launcher(
+    path: &Path,
+    owner_uid: u32,
+) -> Result<(Vec<u8>, fs::Metadata), String> {
+    let before = fs::symlink_metadata(path)
+        .map_err(|error| format!("launcher-snapshot-stat-failed: {error}"))?;
+    if !before.is_file()
+        || before.file_type().is_symlink()
+        || before.uid() != owner_uid
+        || before.nlink() != 1
+        || before.permissions().mode() & 0o111 == 0
+        || before.len() > LAUNCHER_MAX_BYTES
+    {
+        return Err("launcher-snapshot-file-not-owner-controlled-executable".into());
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| format!("launcher-snapshot-open-failed: {error}"))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("launcher-snapshot-fstat-failed: {error}"))?;
+    if !opened.is_file()
+        || opened.uid() != owner_uid
+        || opened.nlink() != 1
+        || opened.len() > LAUNCHER_MAX_BYTES
+        || opened.dev() != before.dev()
+        || opened.ino() != before.ino()
+    {
+        return Err("launcher-snapshot-file-custody-changed".into());
+    }
+    let mut bytes = Vec::with_capacity(opened.len().min(LAUNCHER_MAX_BYTES) as usize);
+    Read::take(file, LAUNCHER_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("launcher-snapshot-read-failed: {error}"))?;
+    if bytes.len() as u64 > LAUNCHER_MAX_BYTES {
+        return Err("launcher-size-exceeds-bound".into());
+    }
+    let after = fs::symlink_metadata(path)
+        .map_err(|error| format!("launcher-snapshot-readback-stat-failed: {error}"))?;
+    if !after.is_file()
+        || after.file_type().is_symlink()
+        || after.uid() != owner_uid
+        || after.nlink() != 1
+        || after.dev() != opened.dev()
+        || after.ino() != opened.ino()
+        || after.len() != bytes.len() as u64
+    {
+        return Err("launcher-snapshot-file-changed-during-read".into());
+    }
+    Ok((bytes, opened))
+}
+
 fn preserve_head_ref(root: &Path, sha: &str) -> Result<String, String> {
     let ref_name = format!(
         "refs/hermes-maintenance/preserved/{}-{}",
@@ -1017,7 +1422,11 @@ fn preserve_head_ref(root: &Path, sha: &str) -> Result<String, String> {
     Ok(ref_name)
 }
 
-fn preserve_post_update_worktree(root: &Path, movement: &mut Movement) -> Result<(), String> {
+fn preserve_post_update_worktree(
+    root: &Path,
+    movement: &mut Movement,
+    owner: &OwnerContext,
+) -> Result<(), String> {
     let status = git_output_raw(
         root,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -1029,6 +1438,9 @@ fn preserve_post_update_worktree(root: &Path, movement: &mut Movement) -> Result
         return Ok(());
     }
     let stash_message = unique_name("hermes-maintenance-post-update-preserved");
+    if updater_is_live(root, owner)? {
+        return Err("native-updater-live-retry".into());
+    }
     let stash = git_output(
         root,
         &[
@@ -1090,7 +1502,7 @@ fn restore_snapshot(
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
     )?;
     if current_sha != snapshot.pre_sha || current_branch != snapshot.branch {
-        preserve_post_update_worktree(&snapshot.source_root, movement)?;
+        preserve_post_update_worktree(&snapshot.source_root, movement, &owner)?;
         if let Some(branch) = snapshot.branch.as_deref() {
             let exists = git_output(
                 &snapshot.source_root,
@@ -1102,12 +1514,18 @@ fn restore_snapshot(
                 ],
             )?;
             if exists.status.code() == Some(0) {
+                if updater_is_live(&snapshot.source_root, &owner)? {
+                    return Err("native-updater-live-retry".into());
+                }
                 let switched = git_output(
                     &snapshot.source_root,
                     &["switch", "--quiet", "--force", "--", branch],
                 )?;
                 if !switched.status.success() {
                     return Err("rollback-original-branch-switch-failed".into());
+                }
+                if updater_is_live(&snapshot.source_root, &owner)? {
+                    return Err("native-updater-live-retry".into());
                 }
                 let reset = git_output(
                     &snapshot.source_root,
@@ -1117,6 +1535,9 @@ fn restore_snapshot(
                     return Err("rollback-source-reset-failed".into());
                 }
             } else {
+                if updater_is_live(&snapshot.source_root, &owner)? {
+                    return Err("native-updater-live-retry".into());
+                }
                 let create = git_output(
                     &snapshot.source_root,
                     &[
@@ -1133,6 +1554,9 @@ fn restore_snapshot(
                 }
             }
         } else {
+            if updater_is_live(&snapshot.source_root, &owner)? {
+                return Err("native-updater-live-retry".into());
+            }
             let switched = git_output(
                 &snapshot.source_root,
                 &[
@@ -1156,71 +1580,78 @@ fn restore_snapshot(
     {
         return Err("rollback-source-sha-or-branch-readback-mismatch".into());
     }
-    restore_launcher(snapshot)?;
-    let restored = fs::read(&snapshot.launcher)
-        .map_err(|error| format!("rollback-launcher-readback-failed: {error}"))?;
-    if restored != snapshot.launcher_bytes {
-        return Err("rollback-launcher-byte-readback-mismatch".into());
+    let directory = LauncherDirectorySnapshot {
+        path: snapshot.launcher_directory.clone(),
+        mode: snapshot.launcher_directory_mode,
+        uid: snapshot.launcher_directory_uid,
+        gid: snapshot.launcher_directory_gid,
+        dev: snapshot.launcher_directory_dev,
+        ino: snapshot.launcher_directory_ino,
+    };
+    let mut main_bytes = None;
+    for launcher in &snapshot.launchers {
+        if updater_is_live(&snapshot.source_root, &owner)? {
+            return Err("native-updater-live-retry".into());
+        }
+        let restored = restore_launcher(launcher, &directory, owner.uid)?;
+        if restored != launcher.bytes {
+            return Err(format!(
+                "rollback-launcher-byte-readback-mismatch-{}",
+                launcher.path.display()
+            ));
+        }
+        movement.restored_launchers.push(RestoredLauncher {
+            path: launcher.path.to_string_lossy().into_owned(),
+            sha256: digest(&restored),
+        });
+        if launcher.path == snapshot.launcher {
+            main_bytes = Some(restored);
+        }
     }
-    static_runnable_probe(&snapshot.launcher, &restored)?;
+    let main_bytes = main_bytes.ok_or("rollback-main-launcher-snapshot-missing")?;
+    static_runnable_probe(&snapshot.launcher, &main_bytes)?;
     prove_launch_isolated(&snapshot.launcher, &snapshot.source_root)?;
     Ok(())
 }
 
-fn restore_launcher(snapshot: &RollbackSnapshot) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(&snapshot.launcher)
-        .map_err(|error| format!("rollback-launcher-stat-failed: {error}"))?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.uid() != snapshot.launcher_uid
-        || metadata.nlink() != 1
-    {
-        return Err("rollback-launcher-custody-changed".into());
-    }
-    let current = fs::read(&snapshot.launcher)
-        .map_err(|error| format!("rollback-launcher-read-failed: {error}"))?;
-    if current == snapshot.launcher_bytes {
-        if metadata.permissions().mode() & 0o7777 != snapshot.launcher_mode
-            || metadata.gid() != snapshot.launcher_gid
-        {
-            return Err("rollback-launcher-metadata-changed".into());
-        }
-        return Ok(());
-    }
-    let parent = snapshot
-        .launcher
-        .parent()
-        .ok_or("rollback-launcher-parent-missing")?;
-    let temp = parent.join(format!(
-        ".hermes-maintenance-rollback-{}-{}.tmp",
+fn restore_launcher(
+    snapshot: &LauncherSnapshot,
+    directory: &LauncherDirectorySnapshot,
+    owner_uid: u32,
+) -> Result<Vec<u8>, String> {
+    verify_launcher_directory(directory, owner_uid)?;
+    let original_target = restorable_launcher_identity(&snapshot.path, owner_uid)?;
+    let basename = snapshot
+        .path
+        .file_name()
+        .ok_or("rollback-launcher-basename-missing")?;
+    let temp = directory.path.join(format!(
+        ".hermes-maintenance-rollback-{}-{}-{}.tmp",
         std::process::id(),
-        now_nanos()?
+        now_nanos()?,
+        basename.to_string_lossy()
     ));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(snapshot.launcher_mode)
+        .mode(snapshot.mode)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&temp)
         .map_err(|error| format!("rollback-launcher-temp-create-failed: {error}"))?;
     let write_result = (|| -> Result<(), String> {
-        file.write_all(&snapshot.launcher_bytes)
+        file.write_all(&snapshot.bytes)
             .map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
-        if (metadata.uid(), metadata.gid()) != (snapshot.launcher_uid, snapshot.launcher_gid)
+        if (metadata.uid(), metadata.gid()) != (snapshot.uid, snapshot.gid)
             && unsafe {
-                libc::fchown(
-                    file.as_raw_fd(),
-                    snapshot.launcher_uid,
-                    snapshot.launcher_gid,
-                )
+                libc::fchown(file.as_raw_fd(), snapshot.uid, snapshot.gid)
             } != 0
         {
             return Err("rollback-launcher-owner-restore-failed".into());
         }
-        file.set_permissions(fs::Permissions::from_mode(snapshot.launcher_mode))
+        file.set_permissions(fs::Permissions::from_mode(snapshot.mode))
             .map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
         Ok(())
     })();
     if let Err(error) = write_result {
@@ -1229,14 +1660,47 @@ fn restore_launcher(snapshot: &RollbackSnapshot) -> Result<(), String> {
         return Err(error);
     }
     drop(file);
-    fs::rename(&temp, &snapshot.launcher).map_err(|error| {
+    verify_launcher_directory(directory, owner_uid)?;
+    if restorable_launcher_identity(&snapshot.path, owner_uid)? != original_target {
+        let _ = fs::remove_file(&temp);
+        return Err("rollback-launcher-target-changed-before-promote".into());
+    }
+    fs::rename(&temp, &snapshot.path).map_err(|error| {
         let _ = fs::remove_file(&temp);
         format!("rollback-launcher-atomic-rename-failed: {error}")
     })?;
-    File::open(parent)
+    verify_launcher_directory(directory, owner_uid)?;
+    File::open(&directory.path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("rollback-launcher-parent-sync-failed: {error}"))?;
-    Ok(())
+    let (restored, metadata) = read_owner_executable_launcher(&snapshot.path, owner_uid)?;
+    if restored != snapshot.bytes
+        || metadata.permissions().mode() & 0o7777 != snapshot.mode
+        || metadata.uid() != snapshot.uid
+        || metadata.gid() != snapshot.gid
+    {
+        return Err("rollback-launcher-readback-mismatch".into());
+    }
+    Ok(restored)
+}
+
+fn restorable_launcher_identity(
+    path: &Path,
+    owner_uid: u32,
+) -> Result<Option<(u64, u64)>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == owner_uid
+                && metadata.nlink() == 1 =>
+        {
+            Ok(Some((metadata.dev(), metadata.ino())))
+        }
+        Ok(_) => Err("rollback-launcher-target-custody-changed".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("rollback-launcher-stat-failed: {error}")),
+    }
 }
 
 pub(crate) fn receipt(
@@ -1271,6 +1735,9 @@ pub(crate) fn receipt(
             movement: movement.movement.clone(),
             stage: movement.stage.clone(),
             updater_exit_code: movement.updater_exit_code,
+            updater_stdout_tail: movement.updater_stdout_tail.clone(),
+            updater_stderr_tail: movement.updater_stderr_tail.clone(),
+            restored_launchers: movement.restored_launchers.clone(),
             stash_names_created: movement.stash_names_created.clone(),
             preserved_refs_created: movement.preserved_refs_created.clone(),
             config_sha256_before: movement.config_sha256_before.clone(),
@@ -1304,6 +1771,9 @@ pub(crate) fn receipt(
             movement: "none".into(),
             stage: "observe".into(),
             updater_exit_code: None,
+            updater_stdout_tail: String::new(),
+            updater_stderr_tail: String::new(),
+            restored_launchers: Vec::new(),
             stash_names_created: Vec::new(),
             preserved_refs_created: Vec::new(),
             config_sha256_before: None,
@@ -1347,6 +1817,9 @@ pub(crate) fn failure(
         movement: "none".into(),
         stage: stage.into(),
         updater_exit_code: None,
+        updater_stdout_tail: String::new(),
+        updater_stderr_tail: String::new(),
+        restored_launchers: Vec::new(),
         stash_names_created: Vec::new(),
         preserved_refs_created: Vec::new(),
         config_sha256_before: None,
@@ -1687,29 +2160,19 @@ fn validate_launcher_binding(
     bytes: &[u8],
 ) -> Result<(), String> {
     let internal = root.join(".hermes/bin/hermes");
-    let legacy_venv = [root.join("venv/bin/hermes"), root.join(".venv/bin/hermes")];
-    let legacy_wrappers = [root.join("hermes"), root.join("bin/hermes")];
     let external = owner.home.join(".local/bin/hermes");
-    let allowed_location = launcher == internal
-        || legacy_venv.iter().any(|path| launcher == path)
-        || legacy_wrappers.iter().any(|path| launcher == path)
-        || launcher == external;
-    if !allowed_location {
-        return Err("launcher-path-not-bound-to-declared-install".into());
-    }
-    if launcher == internal || legacy_venv.iter().any(|path| launcher == path) {
+    if launcher == internal {
         return Ok(());
+    }
+    if launcher != external {
+        return Err(format!(
+            "hermes-maintenance-launcher-declaration-not-converging: {}",
+            launcher.display()
+        ));
     }
     let text = std::str::from_utf8(bytes).map_err(|_| "launcher-not-recognized-text")?;
     let root_text = root.to_string_lossy();
     let internal_text = internal.to_string_lossy();
-    if legacy_wrappers.iter().any(|path| launcher == path)
-        && (text.contains("venv/bin")
-            || text.contains("hermes_cli.main")
-            || text.contains(root_text.as_ref()))
-    {
-        return Ok(());
-    }
     let bound_to_root = text.contains(internal_text.as_ref())
         || (text.contains(root_text.as_ref())
             && (text.contains("venv/bin/hermes")
@@ -1724,18 +2187,33 @@ fn validate_launcher_binding(
 
 #[derive(Debug, Clone)]
 struct NativeInstallState {
-    stamp_sha256: Option<String>,
+    stamp_fields: Option<InstallStampFields>,
     stamp_coherent: bool,
-    runtime_facts_sha256: Option<String>,
-    layout: String,
     reasons: Vec<String>,
 }
 
-impl NativeInstallState {
-    fn fingerprint(&self) -> String {
-        let stamp = self.stamp_sha256.as_deref().unwrap_or("missing");
-        let runtime = self.runtime_facts_sha256.as_deref().unwrap_or("missing");
-        digest(format!("{}\0{stamp}\0{runtime}", self.layout).as_bytes())
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstallStampFields {
+    commit: Option<Value>,
+    branch: Option<Value>,
+    dirty: Option<Value>,
+    schema_version: Option<Value>,
+    update_mechanism: Option<Value>,
+}
+
+impl InstallStampFields {
+    fn from_stamp(stamp: &Value) -> Self {
+        let mut commit = stamp.get("commit").cloned();
+        if let Some(Value::String(value)) = &mut commit {
+            *value = value.to_ascii_lowercase();
+        }
+        Self {
+            commit,
+            branch: stamp.get("branch").cloned(),
+            dirty: stamp.get("dirty").cloned(),
+            schema_version: stamp.get("schemaVersion").cloned(),
+            update_mechanism: stamp.get("updateMechanism").cloned(),
+        }
     }
 }
 
@@ -1765,15 +2243,15 @@ fn inspect_native_install_state(
     // Upstream may ignore this generated stamp in Git; validate its bytes independently.
     let stamp_path = root.join("install-stamp.json");
     let stamp_bytes = read_owner_file(&stamp_path, owner, 1024 * 1024, "native-install-stamp")?;
-    let mut stamp_sha256 = None;
+    let mut stamp_fields = None;
     let mut stamp_coherent = false;
     // Native bootstrap installs may omit runtimeDir; their managed tools live outside source_root.
     let mut runtime_root = owner.hermes_home.join("tools");
     match stamp_bytes {
         Some(bytes) => {
-            stamp_sha256 = Some(digest(&bytes));
             match serde_json::from_slice::<Value>(&bytes) {
                 Ok(stamp) if stamp.is_object() => {
+                    stamp_fields = Some(InstallStampFields::from_stamp(&stamp));
                     let commit = stamp.get("commit").and_then(Value::as_str);
                     stamp_coherent = stamp.get("schemaVersion").and_then(Value::as_u64) == Some(2)
                         && commit.is_some_and(|value| value.eq_ignore_ascii_case(head))
@@ -1802,14 +2280,12 @@ fn inspect_native_install_state(
         None => reasons.push("native-install-stamp-missing".into()),
     }
 
-    let mut runtime_facts_sha256 = None;
     let facts_path = runtime_root.join("facts.json");
     if reject_symlink_components(&runtime_root).is_err() {
         reasons.push("native-runtime-path-not-real".into());
     } else {
         match read_owner_file(&facts_path, owner, 4 * 1024 * 1024, "native-runtime-facts")? {
             Some(bytes) => {
-                runtime_facts_sha256 = Some(digest(&bytes));
                 let entry = serde_json::from_slice::<Value>(&bytes)
                     .ok()
                     .and_then(|facts| {
@@ -1823,10 +2299,8 @@ fn inspect_native_install_state(
                 let Some(entry) = entry else {
                     reasons.push("native-runtime-python-entry-missing".into());
                     return Ok(NativeInstallState {
-                        stamp_sha256,
+                        stamp_fields,
                         stamp_coherent,
-                        runtime_facts_sha256,
-                        layout,
                         reasons,
                     });
                 };
@@ -1849,10 +2323,8 @@ fn inspect_native_install_state(
     }
 
     Ok(NativeInstallState {
-        stamp_sha256,
+        stamp_fields,
         stamp_coherent,
-        runtime_facts_sha256,
-        layout,
         reasons,
     })
 }
@@ -2059,16 +2531,16 @@ fn updater_is_live(root: &Path, owner: &OwnerContext) -> Result<bool, String> {
             let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
             if rc != 0 {
                 let error = std::io::Error::last_os_error();
-                if matches!(
-                    error.raw_os_error(),
-                    Some(libc::EWOULDBLOCK) | Some(libc::EAGAIN)
-                ) {
+                if error.kind() == std::io::ErrorKind::WouldBlock {
                     return Ok(true);
                 }
                 return Err(format!("upstream-update-lock-probe-failed: {error}"));
             }
-            unsafe {
-                libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } != 0 {
+                return Err(format!(
+                    "upstream-update-lock-probe-release-failed: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -2078,48 +2550,712 @@ fn updater_is_live(root: &Path, owner: &OwnerContext) -> Result<bool, String> {
         root.join(".hermes-update-in-progress"),
         owner.hermes_home.join(".hermes-update-in-progress"),
     ] {
-        if marker_pid_live(&marker)? {
+        if marker_pid_live(&marker, owner.uid)? {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-fn marker_pid_live(path: &Path) -> Result<bool, String> {
-    let metadata = match fs::symlink_metadata(path) {
+#[derive(Clone)]
+struct UpdateMarkerSnapshot {
+    bytes: Vec<u8>,
+    metadata: fs::Metadata,
+}
+
+#[derive(Clone)]
+struct MarkerClaim {
+    pid: Option<i32>,
+    started_at: Option<String>,
+    creation_time: Option<String>,
+}
+
+struct LinuxProcessIdentity {
+    start_epoch: Option<f64>,
+}
+
+fn marker_pid_live(path: &Path, owner_uid: u32) -> Result<bool, String> {
+    let Some(snapshot) = read_update_marker_snapshot(path, owner_uid)? else {
+        return Ok(false);
+    };
+    Ok(marker_snapshot_has_live_claim(&snapshot))
+}
+
+fn read_update_marker_snapshot(
+    path: &Path,
+    owner_uid: u32,
+) -> Result<Option<UpdateMarkerSnapshot>, String> {
+    let before = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("native-update-marker-observe-failed: {error}")),
     };
-    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 8192 {
+    if !before.is_file()
+        || before.file_type().is_symlink()
+        || before.uid() != owner_uid
+        || before.nlink() != 1
+        || before.len() > UPDATE_MARKER_MAX_BYTES
+    {
         return Err("native-update-marker-shape-invalid".into());
     }
-    let bytes =
-        fs::read(path).map_err(|error| format!("native-update-marker-read-failed: {error}"))?;
-    let text = String::from_utf8_lossy(&bytes);
-    let pid = text.trim().parse::<i32>().ok().or_else(|| {
-        serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("pid")
-                    .or_else(|| value.get("process_id"))
-                    .and_then(Value::as_i64)
-                    .and_then(|pid| i32::try_from(pid).ok())
-            })
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| format!("native-update-marker-open-failed: {error}"))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("native-update-marker-fstat-failed: {error}"))?;
+    if !opened.is_file()
+        || opened.uid() != owner_uid
+        || opened.nlink() != 1
+        || opened.len() > UPDATE_MARKER_MAX_BYTES
+        || opened.dev() != before.dev()
+        || opened.ino() != before.ino()
+    {
+        return Err("native-update-marker-custody-changed".into());
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    Read::take(file, UPDATE_MARKER_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("native-update-marker-read-failed: {error}"))?;
+    if bytes.len() as u64 > UPDATE_MARKER_MAX_BYTES {
+        return Err("native-update-marker-size-exceeds-bound".into());
+    }
+    let after = fs::symlink_metadata(path)
+        .map_err(|error| format!("native-update-marker-readback-stat-failed: {error}"))?;
+    if !after.is_file()
+        || after.file_type().is_symlink()
+        || after.uid() != owner_uid
+        || after.nlink() != 1
+        || after.dev() != opened.dev()
+        || after.ino() != opened.ino()
+        || after.len() != bytes.len() as u64
+        || marker_metadata_mtime(&after) != marker_metadata_mtime(&opened)
+    {
+        return Err("native-update-marker-changed-during-read".into());
+    }
+    Ok(Some(UpdateMarkerSnapshot {
+        bytes,
+        metadata: opened,
+    }))
+}
+
+fn marker_metadata_mtime(metadata: &fs::Metadata) -> f64 {
+    metadata.mtime() as f64 + metadata.mtime_nsec() as f64 / 1_000_000_000.0
+}
+
+fn same_marker_snapshot(left: &UpdateMarkerSnapshot, right: &UpdateMarkerSnapshot) -> bool {
+    left.bytes == right.bytes
+        && left.metadata.dev() == right.metadata.dev()
+        && left.metadata.ino() == right.metadata.ino()
+        && left.metadata.uid() == right.metadata.uid()
+        && left.metadata.gid() == right.metadata.gid()
+        && left.metadata.mode() == right.metadata.mode()
+        && left.metadata.nlink() == right.metadata.nlink()
+        && left.metadata.len() == right.metadata.len()
+        && left.metadata.mtime() == right.metadata.mtime()
+        && left.metadata.mtime_nsec() == right.metadata.mtime_nsec()
+}
+
+fn marker_snapshot_has_live_claim(snapshot: &UpdateMarkerSnapshot) -> bool {
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs_f64(),
+        Err(_) => return false,
+    };
+    marker_claims(&snapshot.bytes)
+        .iter()
+        .any(|claim| marker_claim_is_live(claim, marker_metadata_mtime(&snapshot.metadata), now))
+}
+
+fn marker_claim_is_live(claim: &MarkerClaim, mtime: f64, now: f64) -> bool {
+    let Some(pid) = claim.pid.filter(|pid| *pid > 1) else {
+        return false;
+    };
+    let Some(identity) = linux_process_identity(pid) else {
+        return false;
+    };
+    let timestamp = match claim.started_at.as_deref() {
+        Some(raw) => match raw.parse::<f64>() {
+            Ok(timestamp) if timestamp.is_finite() && timestamp > 0.0 => timestamp,
+            _ => return false,
+        },
+        None => mtime,
+    };
+    if !timestamp.is_finite() || timestamp > now + UPDATE_MARKER_FUTURE_SKEW_SECS {
+        return false;
+    }
+    if let Some(raw_creation_time) = claim.creation_time.as_deref() {
+        let Ok(expected) = raw_creation_time.parse::<f64>() else {
+            return false;
+        };
+        if !expected.is_finite() || expected <= 0.0 {
+            return false;
+        }
+        return identity.start_epoch.is_some_and(|observed| {
+            observed.is_finite()
+                && (observed - expected).abs() <= UPDATE_MARKER_CREATE_TIME_TOLERANCE_SECS
+        });
+    }
+    now - timestamp <= UPDATE_MARKER_MAX_AGE_SECS
+}
+
+fn linux_process_identity(pid: i32) -> Option<LinuxProcessIdentity> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let close = stat.rfind(')')?;
+    let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+    let state = *fields.first()?;
+    if matches!(state, "Z" | "X") {
+        return None;
+    }
+    let start_ticks = fields.get(19)?.parse::<u64>().ok()?;
+    let boot_epoch = fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .parse::<u64>()
+        .ok()? as f64;
+    let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let start_epoch = (ticks_per_second > 0)
+        .then(|| boot_epoch + start_ticks as f64 / ticks_per_second as f64);
+    Some(LinuxProcessIdentity { start_epoch })
+}
+
+fn marker_claims(bytes: &[u8]) -> Vec<MarkerClaim> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Vec::new();
+    };
+    let text = text.trim_start_matches(|character: char| {
+        character.is_whitespace() || character == '\u{feff}'
     });
-    match pid {
-        Some(pid) if pid > 1 => {
-            let result = unsafe { libc::kill(pid, 0) };
-            if result == 0 {
-                Ok(true)
+    if let Ok(value) = serde_json::from_str::<Value>(text.trim()) {
+        if value.is_object() {
+            return json_marker_claims(&value);
+        }
+    }
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let Some(first) = lines.first() else {
+        return Vec::new();
+    };
+    let mut claims = vec![MarkerClaim {
+        pid: parse_pid(first),
+        started_at: lines.get(1).map(|line| line.to_string()),
+        creation_time: None,
+    }];
+    for line in lines.iter().skip(2) {
+        if let Some(raw) = line.strip_prefix("ct:") {
+            claims[0].creation_time = Some(if claims[0].creation_time.is_some() {
+                String::new()
             } else {
-                let error = std::io::Error::last_os_error();
-                Ok(error.raw_os_error() == Some(libc::EPERM))
+                raw.trim().to_string()
+            });
+        } else if let Some(claim) = parse_delegate_claim(line, claims[0].started_at.clone()) {
+            claims.push(claim);
+        }
+    }
+    claims
+}
+
+fn json_marker_claims(value: &Value) -> Vec<MarkerClaim> {
+    let mut claims = Vec::new();
+    let pid = value.get("pid").or_else(|| value.get("process_id"));
+    if pid.is_some() {
+        claims.push(MarkerClaim {
+            pid: pid.and_then(json_pid),
+            started_at: json_raw_field(value, &["started_at", "startedAt"]),
+            creation_time: json_raw_field(value, &["ct", "creation_time"]),
+        });
+    }
+    if let Some(delegate) = value.get("delegate") {
+        if delegate.is_object() {
+            let pid = delegate
+                .get("pid")
+                .or_else(|| delegate.get("process_id"));
+            if pid.is_some() {
+                claims.push(MarkerClaim {
+                    pid: pid.and_then(json_pid),
+                    started_at: json_raw_field(delegate, &["started_at", "startedAt"]),
+                    creation_time: json_raw_field(delegate, &["ct", "creation_time"]),
+                });
             }
         }
-        _ => Ok(false),
     }
+    if value.get("delegate_pid").is_some() {
+        claims.push(MarkerClaim {
+            pid: value.get("delegate_pid").and_then(json_pid),
+            started_at: json_raw_field(value, &["started_at", "startedAt"]),
+            creation_time: json_raw_field(value, &["delegate_ct", "delegate_creation_time"]),
+        });
+    }
+    claims
+}
+
+fn json_raw_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value.get(*key).map(|value| match value {
+            Value::String(text) => text.trim().to_string(),
+            Value::Number(number) => number.to_string(),
+            _ => String::new(),
+        })
+    })
+}
+
+fn json_pid(value: &Value) -> Option<i32> {
+    value
+        .as_i64()
+        .and_then(|pid| i32::try_from(pid).ok())
+        .or_else(|| value.as_str().and_then(parse_pid))
+}
+
+fn parse_pid(value: &str) -> Option<i32> {
+    value.trim().parse::<i32>().ok().filter(|pid| *pid > 1)
+}
+
+fn parse_delegate_claim(line: &str, started_at: Option<String>) -> Option<MarkerClaim> {
+    let rest = line.strip_prefix("delegate:")?.trim();
+    let mut words = rest.split_whitespace();
+    let pid = words.next().and_then(parse_pid);
+    let creation_time = words.find_map(|word| {
+        word.strip_prefix("ct:")
+            .map(|value| value.trim().to_string())
+    });
+    Some(MarkerClaim {
+        pid,
+        started_at,
+        creation_time,
+    })
+}
+
+fn marker_parent_directory(path: &Path, owner_uid: u32) -> Result<File, String> {
+    let parent = path.parent().ok_or("native-update-marker-parent-missing")?;
+    let before = fs::symlink_metadata(parent)
+        .map_err(|error| format!("native-update-marker-parent-observe-failed: {error}"))?;
+    if !before.is_dir() || before.file_type().is_symlink() || before.uid() != owner_uid {
+        return Err("native-update-marker-parent-not-owner-controlled".into());
+    }
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
+        .map_err(|error| format!("native-update-marker-parent-open-failed: {error}"))?;
+    let opened = directory
+        .metadata()
+        .map_err(|error| format!("native-update-marker-parent-fstat-failed: {error}"))?;
+    if !opened.is_dir()
+        || opened.uid() != owner_uid
+        || opened.dev() != before.dev()
+        || opened.ino() != before.ino()
+    {
+        return Err("native-update-marker-parent-custody-changed".into());
+    }
+    Ok(directory)
+}
+
+fn verify_marker_parent_directory(
+    path: &Path,
+    directory: &File,
+    owner_uid: u32,
+) -> Result<(), String> {
+    let parent = path.parent().ok_or("native-update-marker-parent-missing")?;
+    let expected = directory
+        .metadata()
+        .map_err(|error| format!("native-update-marker-parent-fstat-failed: {error}"))?;
+    let current = fs::symlink_metadata(parent)
+        .map_err(|error| format!("native-update-marker-parent-readback-failed: {error}"))?;
+    if !current.is_dir()
+        || current.file_type().is_symlink()
+        || current.uid() != owner_uid
+        || current.dev() != expected.dev()
+        || current.ino() != expected.ino()
+    {
+        return Err("native-update-marker-parent-custody-changed".into());
+    }
+    Ok(())
+}
+
+fn renameat2_noreplace(
+    directory: &File,
+    source: &std::ffi::OsStr,
+    destination: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    let source = CString::new(source.as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "source contains NUL"))?;
+    let destination = CString::new(destination.as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination contains NUL")
+    })?;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            directory.as_raw_fd(),
+            source.as_ptr(),
+            directory.as_raw_fd(),
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn unlinkat_marker(directory: &File, name: &std::ffi::OsStr) -> std::io::Result<()> {
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "name contains NUL"))?;
+    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn quarantine_update_marker(
+    marker: &Path,
+    owner_uid: u32,
+) -> Result<(File, std::ffi::OsString, std::ffi::OsString, PathBuf), String> {
+    let directory = marker_parent_directory(marker, owner_uid)?;
+    let marker_name = marker
+        .file_name()
+        .ok_or("native-update-marker-basename-missing")?
+        .to_os_string();
+    let parent = marker
+        .parent()
+        .ok_or("native-update-marker-parent-missing")?;
+    for attempt in 0..4 {
+        let quarantine_name = std::ffi::OsString::from(format!(
+            ".hermes-update-in-progress-quarantine-{}-{attempt}",
+            unique_name("claim")
+        ));
+        verify_marker_parent_directory(marker, &directory, owner_uid)?;
+        match renameat2_noreplace(&directory, &marker_name, &quarantine_name) {
+            Ok(()) => {
+                let quarantine_path = parent.join(&quarantine_name);
+                directory.sync_all().map_err(|error| {
+                    format!(
+                        "native-update-marker-held-conflict quarantine={} directory-sync-failed: {error}",
+                        quarantine_path.display()
+                    )
+                })?;
+                return Ok((directory, marker_name, quarantine_name, quarantine_path));
+            }
+            Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+                return Err("native-updater-live-retry".into());
+            }
+            Err(error) => {
+                return Err(format!("native-update-marker-quarantine-failed: {error}"));
+            }
+        }
+    }
+    Err("native-update-marker-quarantine-name-collision".into())
+}
+
+fn restore_quarantined_marker(
+    marker: &Path,
+    directory: &File,
+    marker_name: &std::ffi::OsStr,
+    quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+    owner_uid: u32,
+) -> Result<(), String> {
+    verify_marker_parent_directory(marker, directory, owner_uid)?;
+    let current = match read_update_marker_snapshot(quarantine_path, owner_uid) {
+        Ok(Some(current)) => current,
+        Ok(None) => {
+            return Err(format!(
+                "native-update-marker-held-conflict quarantine-disappeared path={}",
+                quarantine_path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(restore_uninspected_marker(
+                marker,
+                directory,
+                marker_name,
+                quarantine_name,
+                quarantine_path,
+                owner_uid,
+                &format!("changed-claim-inspection-failed: {error}"),
+            ));
+        }
+    };
+    match renameat2_noreplace(directory, quarantine_name, marker_name) {
+        Ok(()) => {}
+        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => {
+            return Err(format!(
+                "native-update-marker-held-conflict quarantine={} replacement={}",
+                quarantine_path.display(),
+                marker.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "native-update-marker-held-conflict quarantine={} restore-failed: {error}",
+                quarantine_path.display()
+            ));
+        }
+    }
+    directory.sync_all().map_err(|error| {
+        format!(
+            "native-update-marker-held-conflict restored={} directory-sync-failed: {error}",
+            marker.display()
+        )
+    })?;
+    let restored = read_update_marker_snapshot(marker, owner_uid)?;
+    if restored
+        .as_ref()
+        .is_none_or(|restored| !same_marker_snapshot(&current, restored))
+    {
+        return Err(format!(
+            "native-update-marker-held-conflict restoration-readback-mismatch path={}",
+            marker.display()
+        ));
+    }
+    Ok(())
+}
+
+fn restore_uninspected_marker(
+    marker: &Path,
+    directory: &File,
+    marker_name: &std::ffi::OsStr,
+    quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+    owner_uid: u32,
+    reason: &str,
+) -> String {
+    if let Err(error) = verify_marker_parent_directory(marker, directory, owner_uid) {
+        return format!(
+            "native-update-marker-held-conflict quarantine={} parent-check-failed: {error}",
+            quarantine_path.display()
+        );
+    }
+    match renameat2_noreplace(directory, quarantine_name, marker_name) {
+        Ok(()) => match directory.sync_all() {
+            Ok(()) => format!("native-updater-live-retry: {reason}"),
+            Err(error) => format!(
+                "native-update-marker-held-conflict restored={} directory-sync-failed: {error}",
+                marker.display()
+            ),
+        },
+        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => format!(
+            "native-update-marker-held-conflict quarantine={} replacement={}",
+            quarantine_path.display(),
+            marker.display()
+        ),
+        Err(error) => format!(
+            "native-update-marker-held-conflict quarantine={} restore-failed: {error}",
+            quarantine_path.display()
+        ),
+    }
+}
+
+fn restore_marker_then_retry(
+    reason: &str,
+    marker: &Path,
+    directory: &File,
+    marker_name: &std::ffi::OsStr,
+    quarantine_name: &std::ffi::OsStr,
+    quarantine_path: &Path,
+    owner_uid: u32,
+) -> String {
+    match restore_quarantined_marker(
+        marker,
+        directory,
+        marker_name,
+        quarantine_name,
+        quarantine_path,
+        owner_uid,
+    ) {
+        Ok(()) => format!("native-updater-live-retry: {reason}"),
+        Err(error) => error,
+    }
+}
+
+fn clear_stale_update_markers(root: &Path, owner: &OwnerContext) -> Result<(), String> {
+    for marker in [
+        root.join(".hermes-update-in-progress"),
+        owner.hermes_home.join(".hermes-update-in-progress"),
+    ] {
+        let Some(original) = read_update_marker_snapshot(&marker, owner.uid)? else {
+            continue;
+        };
+        if marker_snapshot_has_live_claim(&original) || updater_is_live(root, owner)? {
+            return Err("native-updater-live-retry".into());
+        }
+        let current = read_update_marker_snapshot(&marker, owner.uid)?;
+        if current
+            .as_ref()
+            .is_none_or(|current| !same_marker_snapshot(&original, current))
+            || current
+                .as_ref()
+                .is_some_and(marker_snapshot_has_live_claim)
+            || updater_is_live(root, owner)?
+        {
+            return Err("native-updater-live-retry".into());
+        }
+        let (directory, marker_name, quarantine_name, quarantine_path) =
+            quarantine_update_marker(&marker, owner.uid)?;
+        let displaced = match read_update_marker_snapshot(&quarantine_path, owner.uid) {
+            Ok(Some(displaced)) => displaced,
+            Ok(None) => {
+                return Err(format!(
+                    "native-update-marker-held-conflict quarantine-disappeared path={}",
+                    quarantine_path.display()
+                ));
+            }
+            Err(error) => {
+                return Err(restore_uninspected_marker(
+                    &marker,
+                    &directory,
+                    &marker_name,
+                    &quarantine_name,
+                    &quarantine_path,
+                    owner.uid,
+                    &format!("quarantine-inspection-failed: {error}"),
+                ));
+            }
+        };
+        let changed = !same_marker_snapshot(&original, &displaced);
+        let live = marker_snapshot_has_live_claim(&displaced);
+        let replacement = match fs::symlink_metadata(&marker) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(restore_marker_then_retry(
+                    &format!("replacement-marker-observe-failed: {error}"),
+                    &marker,
+                    &directory,
+                    &marker_name,
+                    &quarantine_name,
+                    &quarantine_path,
+                    owner.uid,
+                ));
+            }
+        };
+        let updater_live = match updater_is_live(root, owner) {
+            Ok(live) => live,
+            Err(error) => {
+                return Err(restore_marker_then_retry(
+                    &format!("updater-state-observe-failed: {error}"),
+                    &marker,
+                    &directory,
+                    &marker_name,
+                    &quarantine_name,
+                    &quarantine_path,
+                    owner.uid,
+                ));
+            }
+        };
+        if changed || live || replacement || updater_live {
+            let reason = if live {
+                "displaced-marker-claim-live"
+            } else if changed {
+                "displaced-marker-claim-changed"
+            } else if replacement {
+                "replacement-marker-present"
+            } else {
+                "native-updater-live"
+            };
+            return Err(restore_marker_then_retry(
+                reason,
+                &marker,
+                &directory,
+                &marker_name,
+                &quarantine_name,
+                &quarantine_path,
+                owner.uid,
+            ));
+        }
+        let parent_check = verify_marker_parent_directory(&marker, &directory, owner.uid);
+        if let Err(error) = parent_check {
+            return Err(format!(
+                "native-update-marker-held-conflict quarantine={} parent-check-failed: {error}",
+                quarantine_path.display()
+            ));
+        }
+        let final_readback = match read_update_marker_snapshot(&quarantine_path, owner.uid) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Err(restore_marker_then_retry(
+                    &format!("quarantine-readback-failed: {error}"),
+                    &marker,
+                    &directory,
+                    &marker_name,
+                    &quarantine_name,
+                    &quarantine_path,
+                    owner.uid,
+                ));
+            }
+        };
+        let final_changed = final_readback
+            .as_ref()
+            .is_none_or(|final_readback| !same_marker_snapshot(&displaced, final_readback));
+        let final_live = final_readback
+            .as_ref()
+            .is_some_and(marker_snapshot_has_live_claim);
+        let final_updater_live = match updater_is_live(root, owner) {
+            Ok(live) => live,
+            Err(error) => {
+                return Err(restore_marker_then_retry(
+                    &format!("updater-state-readback-failed: {error}"),
+                    &marker,
+                    &directory,
+                    &marker_name,
+                    &quarantine_name,
+                    &quarantine_path,
+                    owner.uid,
+                ));
+            }
+        };
+        let final_replacement = match fs::symlink_metadata(&marker) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(restore_marker_then_retry(
+                    &format!("replacement-marker-readback-failed: {error}"),
+                    &marker,
+                    &directory,
+                    &marker_name,
+                    &quarantine_name,
+                    &quarantine_path,
+                    owner.uid,
+                ));
+            }
+        };
+        if final_changed || final_live || final_updater_live || final_replacement {
+            return Err(restore_marker_then_retry(
+                "claim-changed-before-quarantine-clear",
+                &marker,
+                &directory,
+                &marker_name,
+                &quarantine_name,
+                &quarantine_path,
+                owner.uid,
+            ));
+        }
+        unlinkat_marker(&directory, &quarantine_name).map_err(|error| {
+            format!(
+                "native-update-marker-held-conflict quarantine={} clear-failed: {error}",
+                quarantine_path.display()
+            )
+        })?;
+        directory.sync_all().map_err(|error| {
+            format!("native-update-marker-parent-sync-failed: {error}")
+        })?;
+        match fs::symlink_metadata(&marker) {
+            Ok(_) => return Err("native-updater-live-retry".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("native-update-marker-readback-failed: {error}"));
+            }
+        }
+        if updater_is_live(root, owner)? {
+            return Err("native-updater-live-retry".into());
+        }
+    }
+    Ok(())
 }
 
 fn git_text(root: &Path, args: &[&str]) -> Result<String, String> {

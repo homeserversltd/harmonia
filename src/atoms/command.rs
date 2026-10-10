@@ -1,7 +1,7 @@
 use crate::CmdResult;
 #[cfg(any(test, feature = "test-facade"))]
 use std::collections::HashMap;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -593,6 +593,123 @@ pub(crate) fn capture_bytes_with_command_bearer_and_env(
     timeout_secs: u64,
     output_limit: usize,
 ) -> Result<std::process::Output, String> {
+    let captured = capture_bytes_with_command_bearer_and_env_policy(
+        program,
+        args,
+        cwd,
+        bearer,
+        env,
+        timeout_secs,
+        ByteCapturePolicy::Head { limit: output_limit },
+    )?;
+    if let Some(error) = captured.failure {
+        return Err(error);
+    }
+    if let Some(error) = captured.reader_error {
+        return Err(error);
+    }
+    let status = captured
+        .status
+        .ok_or_else(|| "command-capture-bytes-status-missing".to_string())?;
+    if captured.stdout_truncated || captured.stderr_truncated {
+        return Err(format!(
+            "command-capture-bytes-output-truncated-after-{output_limit}-bytes-per-stream"
+        ));
+    }
+    Ok(std::process::Output {
+        status,
+        stdout: captured.stdout,
+        stderr: captured.stderr,
+    })
+}
+
+/// Captures the actual last bytes written by a bounded command while retaining
+/// the same bearer, environment, process-group, timeout, and pipe-drain rules
+/// as the strict head-capture API. Timeout and cap failures carry any tails
+/// that were read before the child was stopped.
+pub(crate) struct TailCapture {
+    pub(crate) status: Option<std::process::ExitStatus>,
+    pub(crate) stdout_tail: Vec<u8>,
+    pub(crate) stderr_tail: Vec<u8>,
+    pub(crate) error: Option<String>,
+}
+
+pub(crate) fn capture_bytes_with_command_bearer_and_env_tail(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    bearer: &CommandBearer,
+    env: BTreeMap<String, String>,
+    timeout_secs: u64,
+    output_limit: usize,
+    tail_limit: usize,
+) -> Result<TailCapture, String> {
+    let captured = capture_bytes_with_command_bearer_and_env_policy(
+        program,
+        args,
+        cwd,
+        bearer,
+        env,
+        timeout_secs,
+        ByteCapturePolicy::Tail {
+            output_limit,
+            tail_limit,
+        },
+    )?;
+    let mut failures = Vec::new();
+    if let Some(error) = captured.failure {
+        failures.push(error);
+    }
+    if let Some(error) = captured.reader_error {
+        failures.push(error);
+    }
+    if let Some(error) = captured.stream_error {
+        failures.push(error);
+    }
+    if captured.stdout_limit_exceeded || captured.stderr_limit_exceeded {
+        failures.push(format!(
+            "command-capture-bytes-output-truncated-after-{output_limit}-bytes-per-stream"
+        ));
+    }
+    Ok(TailCapture {
+        status: captured.status,
+        stdout_tail: captured.stdout,
+        stderr_tail: captured.stderr,
+        error: (!failures.is_empty()).then(|| failures.join("; ")),
+    })
+}
+
+#[derive(Clone, Copy)]
+enum ByteCapturePolicy {
+    Head { limit: usize },
+    Tail {
+        output_limit: usize,
+        tail_limit: usize,
+    },
+}
+
+struct RawByteCapture {
+    status: Option<std::process::ExitStatus>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    stdout_limit_exceeded: bool,
+    stderr_limit_exceeded: bool,
+    failure: Option<String>,
+    reader_error: Option<String>,
+    stream_error: Option<String>,
+}
+
+fn capture_bytes_with_command_bearer_and_env_policy(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    bearer: &CommandBearer,
+    env: BTreeMap<String, String>,
+    timeout_secs: u64,
+    policy: ByteCapturePolicy,
+) -> Result<RawByteCapture, String> {
     if let Some(failure) = bearer.failure.as_ref() {
         return Err(format!("command-bearer-resolution-failed: {failure}"));
     }
@@ -642,36 +759,46 @@ pub(crate) fn capture_bytes_with_command_bearer_and_env(
         .spawn()
         .map_err(|error| format!("command-capture-bytes-spawn-failed: {error}"))?;
     let pid = child.id() as i32;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("command-capture-bytes-stdout-missing")?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("command-capture-bytes-stderr-missing")?;
-    let stdout_reader = thread::spawn(move || read_bounded_bytes(stdout, output_limit));
-    let stderr_reader = thread::spawn(move || read_bounded_bytes(stderr, output_limit));
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            terminate_process_group(&mut child, pid);
+            return Err("command-capture-bytes-stdout-missing".into());
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            terminate_process_group(&mut child, pid);
+            return Err("command-capture-bytes-stderr-missing".into());
+        }
+    };
+    let stdout_reader = thread::spawn(move || read_bounded_bytes(stdout, policy));
+    let stderr_reader = thread::spawn(move || read_bounded_bytes(stderr, policy));
     let timeout_secs = if timeout_secs == 0 {
         DEFAULT_TIMEOUT_SECS
     } else {
         timeout_secs
     };
     let started = Instant::now();
-    let status = loop {
+    let (status, failure) = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+            Ok(Some(status)) => break (Some(status), None),
             Ok(None) if started.elapsed() >= Duration::from_secs(timeout_secs) => {
                 terminate_process_group(&mut child, pid);
-                break None;
+                break (
+                    None,
+                    Some(format!("command-capture-bytes-timeout-after-{timeout_secs}s")),
+                );
             }
             Ok(None) => thread::sleep(Duration::from_millis(10)),
             Err(error) => {
                 terminate_process_group(&mut child, pid);
                 let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(format!("command-capture-bytes-wait-failed: {error}"));
+                break (
+                    None,
+                    Some(format!("command-capture-bytes-wait-failed: {error}")),
+                );
             }
         }
     };
@@ -686,49 +813,118 @@ pub(crate) fn capture_bytes_with_command_bearer_and_env(
             terminate_process_group(&mut child, pid);
         }
     }
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| "command-capture-bytes-stdout-reader-panicked")?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "command-capture-bytes-stderr-reader-panicked")?;
-    let Some(status) = status else {
-        return Err(format!(
-            "command-capture-bytes-timeout-after-{timeout_secs}s"
-        ));
+    let (stdout, stdout_join_error) = match stdout_reader.join() {
+        Ok(output) => (output, None),
+        Err(_) => (
+            RetainedBytes {
+                bytes: Vec::new(),
+                truncated: true,
+                limit_exceeded: false,
+                read_error: None,
+            },
+            Some("command-capture-bytes-stdout-reader-panicked".to_string()),
+        ),
     };
-    if stdout.1 || stderr.1 {
-        return Err(format!(
-            "command-capture-bytes-output-truncated-after-{output_limit}-bytes-per-stream"
-        ));
-    }
-    Ok(std::process::Output {
+    let (stderr, stderr_join_error) = match stderr_reader.join() {
+        Ok(output) => (output, None),
+        Err(_) => (
+            RetainedBytes {
+                bytes: Vec::new(),
+                truncated: true,
+                limit_exceeded: false,
+                read_error: None,
+            },
+            Some("command-capture-bytes-stderr-reader-panicked".to_string()),
+        ),
+    };
+    let stdout_truncated = stdout.truncated;
+    let stderr_truncated = stderr.truncated;
+    let stdout_limit_exceeded = stdout.limit_exceeded;
+    let stderr_limit_exceeded = stderr.limit_exceeded;
+    let stream_error = stdout.read_error.or(stderr.read_error);
+    let reader_error = stdout_join_error.or(stderr_join_error);
+    Ok(RawByteCapture {
         status,
-        stdout: stdout.0,
-        stderr: stderr.0,
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+        stdout_truncated,
+        stderr_truncated,
+        stdout_limit_exceeded,
+        stderr_limit_exceeded,
+        failure,
+        reader_error,
+        stream_error,
     })
 }
 
-fn read_bounded_bytes<R: Read>(mut reader: R, limit: usize) -> (Vec<u8>, bool) {
-    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+struct RetainedBytes {
+    bytes: Vec<u8>,
+    truncated: bool,
+    limit_exceeded: bool,
+    read_error: Option<String>,
+}
+
+fn read_bounded_bytes<R: Read>(mut reader: R, policy: ByteCapturePolicy) -> RetainedBytes {
+    let capacity = match policy {
+        ByteCapturePolicy::Head { limit } => limit.min(64 * 1024),
+        ByteCapturePolicy::Tail { tail_limit, .. } => tail_limit.min(64 * 1024),
+    };
+    let mut head = Vec::with_capacity(capacity);
+    let mut tail = VecDeque::with_capacity(capacity);
     let mut chunk = [0u8; 8192];
     let mut discarded = false;
+    let mut limit_exceeded = false;
+    let mut read_error = None;
+    let mut total_read = 0usize;
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(count) => {
-                let retained = count.min(limit.saturating_sub(bytes.len()));
-                bytes.extend_from_slice(&chunk[..retained]);
-                discarded |= retained < count;
+                match policy {
+                    ByteCapturePolicy::Head { limit } => {
+                        let retained = count.min(limit.saturating_sub(head.len()));
+                        head.extend_from_slice(&chunk[..retained]);
+                        discarded |= retained < count;
+                        limit_exceeded |= retained < count;
+                    }
+                    ByteCapturePolicy::Tail {
+                        output_limit,
+                        tail_limit,
+                    } => {
+                        total_read = total_read.saturating_add(count);
+                        discarded |= total_read > output_limit;
+                        limit_exceeded |= total_read > output_limit;
+                        if tail_limit > 0 {
+                            if count >= tail_limit {
+                                tail.clear();
+                                tail.extend(&chunk[count - tail_limit..count]);
+                            } else {
+                                while tail.len() + count > tail_limit {
+                                    tail.pop_front();
+                                }
+                                tail.extend(&chunk[..count]);
+                            }
+                        }
+                    }
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => {
+            Err(error) => {
                 discarded = true;
+                read_error = Some(format!("command-capture-bytes-stream-read-failed: {error}"));
                 break;
             }
         }
     }
-    (bytes, discarded)
+    RetainedBytes {
+        bytes: match policy {
+            ByteCapturePolicy::Head { .. } => head,
+            ByteCapturePolicy::Tail { .. } => tail.into_iter().collect(),
+        },
+        truncated: discarded,
+        limit_exceeded,
+        read_error,
+    }
 }
 
 fn terminate_process_group(child: &mut std::process::Child, pid: i32) {

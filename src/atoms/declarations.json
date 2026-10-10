@@ -549,8 +549,7 @@
               { "name": "source_root", "kind": "string", "required": true },
               { "name": "launcher", "kind": "string", "required": true },
               { "name": "upstream_url", "kind": "string", "required": false },
-              { "name": "branch", "kind": "string", "required": false },
-              { "name": "extras", "kind": "string_array", "required": false }
+              { "name": "branch", "kind": "string", "required": false }
             ],
             "comparison": "command-status",
             "phases": ["observe", "compare", "act", "attest"],

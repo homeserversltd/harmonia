@@ -20,14 +20,14 @@ impl ActRung {
 const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("backfill-file", include_str!("backfill-file/index.json")),
     ("build-crate", include_str!("build-crate/index.json")),
+    ("build-venv", include_str!("build-venv/index.json")),
+    ("check-health", include_str!("check-health/index.json")),
     ("fetch-artifact", include_str!("fetch-artifact/index.json")),
     ("grub", include_str!("grub/index.json")),
     (
         "hermes-maintenance",
         include_str!("hermes-maintenance/index.json"),
     ),
-    ("build-venv", include_str!("build-venv/index.json")),
-    ("check-health", include_str!("check-health/index.json")),
     (
         "install-package",
         include_str!("install-package/index.json"),
@@ -35,11 +35,11 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
     ("make-symlink", include_str!("make-symlink/index.json")),
     ("place-file", include_str!("place-file/index.json")),
     ("pull-repo", include_str!("pull-repo/index.json")),
-    ("release-binary", include_str!("release-binary/index.json")),
     (
         "ratchet-aur-package",
         include_str!("ratchet-aur-package/index.json"),
     ),
+    ("release-binary", include_str!("release-binary/index.json")),
     ("remove-file", include_str!("remove-file/index.json")),
     (
         "service-runtime",
