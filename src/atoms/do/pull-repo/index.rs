@@ -1041,7 +1041,7 @@ fn xenia_commit(request: &git_artifact::Request, cwd: &Path, expression: &str) -
     result.ok.then(|| result.stdout.trim().to_owned()).filter(|value| git_artifact::is_lower_hex_sha(value))
 }
 
-fn xenia_owner_ids(owner: &str) -> Result<(u32, u32), String> {
+pub(crate) fn xenia_owner_ids(owner: &str) -> Result<(u32, u32), String> {
     #[cfg(test)]
     if owner == "xenia" {
         return Ok((unsafe { libc::geteuid() }, unsafe { libc::getegid() }));

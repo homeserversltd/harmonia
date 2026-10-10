@@ -1792,6 +1792,11 @@
               "name": "seat",
               "kind": "string",
               "required": true
+            },
+            {
+              "name": "bin",
+              "kind": "string",
+              "required": false
             }
           ],
           "placement": "RatchetBinaries"

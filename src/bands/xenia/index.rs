@@ -2,10 +2,14 @@ use crate::tools::ladder::{LadderManifest, LadderStep, RoutineStep};
 use crate::OperationOutcome;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::fs;
+use std::ffi::{CStr, CString, OsStr, OsString};
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -530,6 +534,7 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                     ("id".into(), json!(id)),
                     ("owner".into(), json!(owner)),
                     ("seat".into(), json!(seat)),
+                    ("bin".into(), json!(bin)),
                 ]),
                 extra: BTreeMap::new(),
             },
@@ -807,48 +812,410 @@ fn http(
     Ok((status, value))
 }
 
+struct XeniaSeatFile {
+    name: OsString,
+    labels: Vec<String>,
+    file: Option<File>,
+    before: Option<std::fs::Metadata>,
+}
+
+fn xenia_user_name(uid: u32) -> Option<String> {
+    let account = unsafe { libc::getpwuid(uid as libc::uid_t) };
+    if account.is_null() {
+        return None;
+    }
+    let name = unsafe { (*account).pw_name };
+    if name.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn xenia_group_name(gid: u32) -> Option<String> {
+    let group = unsafe { libc::getgrgid(gid as libc::gid_t) };
+    if group.is_null() {
+        return None;
+    }
+    let name = unsafe { (*group).gr_name };
+    if name.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn xenia_owner_label(uid: u32, gid: u32) -> String {
+    format!(
+        "{}:{}",
+        xenia_user_name(uid).unwrap_or_else(|| uid.to_string()),
+        xenia_group_name(gid).unwrap_or_else(|| gid.to_string())
+    )
+}
+
+fn xenia_mode_label(mode: u32) -> String {
+    format!("{:04o}", mode & 0o7777)
+}
+
+fn xenia_same_inode(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn open_xenia_seat_directory(path: &Path) -> Result<File, String> {
+    if !path.is_absolute() || path == Path::new("/") {
+        return Err("xenia-seat-path-invalid".into());
+    }
+    let mut directory =
+        File::open("/").map_err(|error| format!("xenia-seat-root-open-failed: {error}"))?;
+    let mut traversed = false;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                traversed = true;
+                let name = CString::new(name.as_bytes())
+                    .map_err(|_| "xenia-seat-path-invalid".to_string())?;
+                let fd = unsafe {
+                    libc::openat(
+                        directory.as_raw_fd(),
+                        name.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if fd < 0 {
+                    let error = std::io::Error::last_os_error();
+                    return match error.raw_os_error() {
+                        Some(libc::ENOENT) => Err("seat-absent".into()),
+                        Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
+                            Err("xenia-seat-path-symlink-or-not-directory".into())
+                        }
+                        _ => Err(format!("xenia-seat-open-failed: {error}")),
+                    };
+                }
+                directory = unsafe { File::from_raw_fd(fd) };
+            }
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err("xenia-seat-path-invalid".into());
+            }
+        }
+    }
+    if !traversed
+        || !directory
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+    {
+        return Err("seat-absent".into());
+    }
+    Ok(directory)
+}
+
+fn open_xenia_seat_file(directory: &File, name: &OsStr) -> Result<Option<File>, String> {
+    let name_c =
+        CString::new(name.as_bytes()).map_err(|_| "xenia-seat-entry-name-invalid".to_string())?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name_c.as_ptr(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOENT) => Ok(None),
+            Some(libc::ELOOP) => Err(format!(
+                "xenia-seat-entry-symlink-refused {}",
+                name.to_string_lossy()
+            )),
+            _ => Err(format!(
+                "xenia-seat-entry-open-failed {}: {error}",
+                name.to_string_lossy()
+            )),
+        };
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "xenia-seat-entry-stat-failed {}: {error}",
+            name.to_string_lossy()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "xenia-seat-entry-not-regular {}",
+            name.to_string_lossy()
+        ));
+    }
+    if metadata.nlink() != 1 {
+        return Err(format!(
+            "xenia-seat-entry-hardlink-refused {}",
+            name.to_string_lossy()
+        ));
+    }
+    Ok(Some(file))
+}
+
+fn xenia_fchown(file: &File, uid: u32, gid: u32, target: &str) -> Result<(), String> {
+    if unsafe { libc::fchown(file.as_raw_fd(), uid as libc::uid_t, gid as libc::gid_t) } != 0 {
+        return Err(format!(
+            "xenia-seat-chown-failed {target}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn xenia_fchmod(file: &File, mode: u32, target: &str) -> Result<(), String> {
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 {
+        return Err(format!(
+            "xenia-seat-chmod-failed {target}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn xenia_seat_present(
+    args: &BTreeMap<String, Value>,
+    apply: bool,
+) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
+    args.get("id")
+        .and_then(Value::as_str)
+        .ok_or("xenia-id-missing")?;
+    let owner = args
+        .get("owner")
+        .and_then(Value::as_str)
+        .ok_or("xenia-owner-missing")?;
+    let seat = args
+        .get("seat")
+        .and_then(Value::as_str)
+        .ok_or("xenia-seat-missing")?;
+    let (uid, gid) = crate::atoms::r#do::pull_repo::xenia_owner_ids(owner)
+        .map_err(|_| "xenia-install-owner-unknown".to_string())?;
+    let seat_path = Path::new(seat);
+    let seat_directory = open_xenia_seat_directory(seat_path)?;
+    let seat_before = seat_directory
+        .metadata()
+        .map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
+
+    let mut requested_files = Vec::<(String, OsString)>::new();
+    if let Some(value) = args.get("bin").filter(|value| !value.is_null()) {
+        let bin = value.as_str().ok_or("xenia-install-bin-invalid")?;
+        let bin_path = Path::new(bin);
+        if !bin_path.is_absolute() || bin_path.parent() != Some(seat_path) {
+            return Err("xenia-install-bin-seat-mismatch".into());
+        }
+        let name = bin_path
+            .file_name()
+            .ok_or("xenia-install-bin-invalid")?
+            .to_os_string();
+        if name == OsStr::new(".") || name == OsStr::new("..") {
+            return Err("xenia-install-bin-invalid".into());
+        }
+        requested_files.push(("engine".into(), name));
+    }
+    requested_files.push(("listen".into(), OsString::from("listen")));
+
+    let mut files = Vec::<XeniaSeatFile>::new();
+    for (label, name) in requested_files {
+        if let Some(existing) = files.iter_mut().find(|file| file.name == name) {
+            existing.labels.push(label);
+            continue;
+        }
+        let file = open_xenia_seat_file(&seat_directory, &name)?;
+        let before = file
+            .as_ref()
+            .map(File::metadata)
+            .transpose()
+            .map_err(|error| {
+                format!(
+                    "xenia-seat-entry-stat-failed {}: {error}",
+                    name.to_string_lossy()
+                )
+            })?;
+        files.push(XeniaSeatFile {
+            name,
+            labels: vec![label],
+            file,
+            before,
+        });
+    }
+
+    let owner_drift = seat_before.uid() != uid || seat_before.gid() != gid;
+    let mode_drift = seat_before.mode() & 0o7777 != 0o750;
+    let seat_drift = owner_drift || mode_drift;
+    let file_drift = |file: &XeniaSeatFile| {
+        file.before
+            .as_ref()
+            .is_some_and(|metadata| metadata.uid() != uid || metadata.gid() != gid)
+    };
+    let engine_drift = files
+        .iter()
+        .any(|file| file.labels.iter().any(|label| label == "engine") && file_drift(file));
+    let listen_drift = files
+        .iter()
+        .any(|file| file.labels.iter().any(|label| label == "listen") && file_drift(file));
+    let could_change_any = seat_drift || engine_drift || listen_drift;
+    let could_change_detail = json!({
+        "seat": seat_drift,
+        "engine": engine_drift,
+        "listen": listen_drift,
+        "any": could_change_any,
+    });
+
+    let mut repaired = false;
+    if apply {
+        let named_seat = open_xenia_seat_directory(seat_path)?;
+        let named_seat_metadata = named_seat
+            .metadata()
+            .map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
+        if !xenia_same_inode(&seat_before, &named_seat_metadata) {
+            return Err("xenia-seat-path-changed-before-repair".into());
+        }
+        for file in &files {
+            let named_file = open_xenia_seat_file(&named_seat, &file.name)?;
+            match (&file.before, named_file.as_ref()) {
+                (None, None) => {}
+                (Some(before), Some(named)) => {
+                    let metadata = named
+                        .metadata()
+                        .map_err(|error| format!("xenia-seat-entry-stat-failed: {error}"))?;
+                    if !xenia_same_inode(before, &metadata) {
+                        return Err("xenia-seat-entry-changed-before-repair".into());
+                    }
+                }
+                _ => return Err("xenia-seat-entry-changed-before-repair".into()),
+            }
+        }
+        for file in &files {
+            let Some(before) = file.before.as_ref() else {
+                continue;
+            };
+            if before.uid() == uid && before.gid() == gid {
+                continue;
+            }
+            let target = file.name.to_string_lossy();
+            let opened = file.file.as_ref().ok_or("xenia-seat-entry-open-failed")?;
+            xenia_fchown(opened, uid, gid, &target)?;
+            repaired = true;
+            let after_chown = opened
+                .metadata()
+                .map_err(|error| format!("xenia-seat-entry-stat-failed {target}: {error}"))?;
+            let original_mode = before.mode() & 0o7777;
+            if after_chown.mode() & 0o7777 != original_mode {
+                xenia_fchmod(opened, original_mode, &target)?;
+            }
+        }
+        if owner_drift {
+            xenia_fchown(&seat_directory, uid, gid, seat)?;
+            repaired = true;
+        }
+        if owner_drift || mode_drift {
+            xenia_fchmod(&seat_directory, 0o750, seat)?;
+            repaired = true;
+        }
+    }
+
+    let (seat_after, files_after) = if apply {
+        let named_seat = open_xenia_seat_directory(seat_path)?;
+        let seat_after = named_seat
+            .metadata()
+            .map_err(|error| format!("xenia-seat-final-stat-failed: {error}"))?;
+        if !xenia_same_inode(&seat_before, &seat_after) {
+            return Err("xenia-seat-path-changed-after-repair".into());
+        }
+        let mut files_after = Vec::with_capacity(files.len());
+        for file in &files {
+            let named_file = open_xenia_seat_file(&named_seat, &file.name)?;
+            match (&file.before, named_file.as_ref()) {
+                (None, None) => files_after.push(None),
+                (Some(before), Some(named)) => {
+                    let after = named
+                        .metadata()
+                        .map_err(|error| format!("xenia-seat-entry-final-stat-failed: {error}"))?;
+                    if !xenia_same_inode(before, &after)
+                        || after.uid() != uid
+                        || after.gid() != gid
+                        || after.mode() & 0o7777 != before.mode() & 0o7777
+                    {
+                        return Err("xenia-seat-entry-final-state-mismatch".into());
+                    }
+                    files_after.push(Some(after));
+                }
+                _ => return Err("xenia-seat-entry-changed-during-repair".into()),
+            }
+        }
+        if seat_after.uid() != uid || seat_after.gid() != gid || seat_after.mode() & 0o7777 != 0o750
+        {
+            return Err("xenia-seat-final-state-mismatch".into());
+        }
+        (seat_after, files_after)
+    } else {
+        (
+            seat_before.clone(),
+            files.iter().map(|file| file.before.clone()).collect(),
+        )
+    };
+
+    let disposition = if !apply {
+        "planned"
+    } else if repaired {
+        "corrected"
+    } else {
+        "converged-quiet"
+    };
+    let mut file_receipt = BTreeMap::new();
+    for (file, after) in files.iter().zip(files_after.iter()) {
+        let label = file.labels.join("+");
+        file_receipt.insert(
+            label,
+            json!({
+                "name": file.name.to_string_lossy(),
+                "owner_before": file.before.as_ref().map(|metadata| xenia_owner_label(metadata.uid(), metadata.gid())),
+                "owner_after": after.as_ref().map(|metadata| xenia_owner_label(metadata.uid(), metadata.gid())),
+            }),
+        );
+    }
+    let final_state = json!({
+        "disposition": disposition,
+        "owner_before": xenia_owner_label(seat_before.uid(), seat_before.gid()),
+        "owner_after": xenia_owner_label(seat_after.uid(), seat_after.gid()),
+        "mode_before": xenia_mode_label(seat_before.mode()),
+        "mode_after": xenia_mode_label(seat_after.mode()),
+        "files": file_receipt,
+    });
+    Ok((
+        OperationOutcome {
+            ok: true,
+            changed: apply && repaired,
+            skipped: !apply,
+            message: format!("xenia-seat-{disposition}"),
+            command: None,
+        },
+        BTreeMap::from([
+            ("uid".into(), json!(u64::from(uid))),
+            ("gid".into(), json!(u64::from(gid))),
+            ("could_change".into(), json!(could_change_any)),
+            ("could_change_detail".into(), could_change_detail),
+            ("final_state".into(), final_state),
+        ]),
+    ))
+}
+
 pub(crate) fn execute_routine_child(
     permutation: &str,
     args: &BTreeMap<String, Value>,
     apply: bool,
 ) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
     match permutation {
-        "seat-present" => {
-            let owner = args
-                .get("owner")
-                .and_then(Value::as_str)
-                .ok_or("xenia-owner-missing")?;
-            let seat = args
-                .get("seat")
-                .and_then(Value::as_str)
-                .ok_or("xenia-seat-missing")?;
-            let account = crate::command_capture("getent", &["passwd", owner]);
-            if !account.ok {
-                return Err("owner-absent".into());
-            }
-            if !Path::new(seat).is_dir() {
-                return Err("seat-absent".into());
-            }
-            let fields: Vec<&str> = account.stdout.trim().split(':').collect();
-            let uid = fields
-                .get(2)
-                .and_then(|value| value.parse::<u64>().ok())
-                .ok_or("owner-absent")?;
-            let gid = fields
-                .get(3)
-                .and_then(|value| value.parse::<u64>().ok())
-                .ok_or("owner-absent")?;
-            Ok((
-                OperationOutcome {
-                    ok: true,
-                    changed: false,
-                    skipped: false,
-                    message: "xenia-seat-present".into(),
-                    command: None,
-                },
-                BTreeMap::from([("uid".into(), json!(uid)), ("gid".into(), json!(gid))]),
-            ))
-        }
+        "seat-present" => xenia_seat_present(args, apply),
         "observe-stamp" => {
             if !apply {
                 return Ok((
