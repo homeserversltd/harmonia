@@ -790,13 +790,12 @@ fn get_roster(url: &str) -> Result<Value, String> {
 const HOUSEHOLD_TRUST_STATUS: &str = "/api/v1/cert/status";
 const HOUSEHOLD_TRUST_FETCH: &str = "/api/v1/cert/trust-fetch";
 
-fn local_caduceus_json(
+fn caduceus_http_at(
+    base: &str,
     method: &str,
     path: &str,
     body: Option<&Value>,
-) -> Result<(u16, Value), String> {
-    let base = crate::atoms::ask::caduceus_door::base_url()
-        .map_err(|signal| format!("household-trust-caduceus-base-unavailable: {signal}"))?;
+) -> Result<(u16, String), String> {
     let mut args = vec![
         "-sS".to_string(),
         "--connect-timeout".to_string(),
@@ -835,6 +834,17 @@ fn local_caduceus_json(
         .trim()
         .parse::<u16>()
         .map_err(|_| "household-trust-http-status-invalid".to_string())?;
+    Ok((status, body.to_owned()))
+}
+
+fn local_caduceus_json(
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
+    let base = crate::atoms::ask::caduceus_door::base_url()
+        .map_err(|signal| format!("household-trust-caduceus-base-unavailable: {signal}"))?;
+    let (status, body) = caduceus_http_at(&base, method, path, body)?;
     let value = serde_json::from_str(body.trim_end())
         .map_err(|_| "household-trust-response-json-invalid".to_string())?;
     Ok((status, value))
@@ -903,6 +913,7 @@ fn trust_signal(
             "attempted": false,
             "state": state,
             "fingerprint": null,
+            "gateway_fingerprint": null,
             "reason": null,
             "signal": if signal == "none" { Value::Null } else { json!(signal) },
         }),
@@ -922,13 +933,27 @@ fn household_trust_renewal(
     {
         return None;
     }
-    Some(json!({
+    Some(household_trust_renewal_evidence(
+        recorded_fingerprint,
+        served_fingerprint,
+        gateway_seat,
+        event,
+    ))
+}
+
+fn household_trust_renewal_evidence(
+    recorded_fingerprint: Value,
+    served_fingerprint: Value,
+    gateway_seat: &Value,
+    event: &str,
+) -> Value {
+    json!({
         "recorded_fingerprint": recorded_fingerprint,
         "served_fingerprint": served_fingerprint,
         "gateway_seat": gateway_seat,
         "event": event,
         "computed_at": now().ok(),
-    }))
+    })
 }
 
 fn observe_household_trust(
@@ -1027,6 +1052,59 @@ fn observe_household_trust(
         observation.receipt["attempted"] = json!(false);
         observation.receipt["state"] = json!("already-installed");
         observation.receipt["signal"] = Value::Null;
+        let Some(recorded_fingerprint) = recorded_fingerprint.as_str() else {
+            return observation;
+        };
+        let Some(gateway_seat) = gateway_seat.as_ref() else {
+            return observation;
+        };
+        let gateway_base = format!("http://{gateway_ip}:{gateway_port}");
+        let (gateway_status_code, gateway_body) =
+            match caduceus_http_at(&gateway_base, "GET", HOUSEHOLD_TRUST_STATUS, None) {
+                Ok(response) => response,
+                Err(error) => {
+                    let malformed = error.contains("http-status-absent")
+                        || error.contains("http-status-invalid");
+                    observation.receipt["reason"] = json!(error);
+                    observation.receipt["signal"] = json!(if malformed {
+                        "household-trust-gateway-status-malformed"
+                    } else {
+                        "household-trust-gateway-status-unreachable"
+                    });
+                    return observation;
+                }
+            };
+        if !(200..300).contains(&gateway_status_code) {
+            observation.receipt["reason"] = json!(format!("http-status-{gateway_status_code}"));
+            observation.receipt["signal"] = json!("household-trust-gateway-status-refused");
+            return observation;
+        }
+        let gateway_status: Value = match serde_json::from_str(gateway_body.trim_end()) {
+            Ok(status) => status,
+            Err(_) => {
+                observation.receipt["reason"] = json!("household-trust-response-json-invalid");
+                observation.receipt["signal"] = json!("household-trust-gateway-status-malformed");
+                return observation;
+            }
+        };
+        let Some(served_fingerprint) = gateway_status.get("ca_fingerprint").and_then(Value::as_str)
+        else {
+            observation.receipt["reason"] = json!("household-trust-gateway-status-shape-invalid");
+            observation.receipt["signal"] = json!("household-trust-gateway-status-malformed");
+            return observation;
+        };
+        observation.receipt["gateway_fingerprint"] = json!(served_fingerprint);
+        if served_fingerprint == recorded_fingerprint {
+            return observation;
+        }
+        observation.receipt["state"] = json!("ring-changed");
+        observation.receipt["signal"] = json!("household-trust-ring-changed");
+        observation.renewal = Some(household_trust_renewal_evidence(
+            json!(recorded_fingerprint),
+            json!(served_fingerprint),
+            gateway_seat,
+            event,
+        ));
         return observation;
     }
     observation.receipt["attempted"] = json!(true);
