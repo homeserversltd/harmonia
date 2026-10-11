@@ -1854,18 +1854,19 @@
     },
     {
       "name": "hermes-maintenance",
-      "description": "Converge the owner's Hermes installation through its native updater, preserving local work and proving or rolling back the result.",
+      "description": "Converge the owner's Hermes installation through its native updater, preserving local work and proving or rolling back the result; optional daily_window gates execution by /etc/localtime and records a proven moved day; absent or null preserves legacy behavior.",
       "routine_summonable": true,
       "permutations": [
         {
           "name": "converge",
-          "description": "Observe official main and run the declared owner's native Hermes updater only when installed state differs.",
+          "description": "Observe official main and run the declared owner's native Hermes updater only when installed state differs; daily_window is exact ASCII HH:MM-HH:MM in /etc/localtime, start-inclusive/end-exclusive, same-day, and proven moves are recorded once per local date.",
           "args": [
             { "name": "owner", "kind": "string", "required": true },
             { "name": "source_root", "kind": "string", "required": true },
             { "name": "launcher", "kind": "string", "required": true },
             { "name": "upstream_url", "kind": "string", "required": false },
-            { "name": "branch", "kind": "string", "required": false }
+            { "name": "branch", "kind": "string", "required": false },
+            { "name": "daily_window", "kind": "string", "required": false }
           ],
           "placement": "PullSource"
         }

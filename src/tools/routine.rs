@@ -70,8 +70,21 @@ pub(crate) fn validate_args(
             });
         }
         if let Some(value) = args.get(arg.name) {
-            if value.as_object().is_some_and(is_optional_routine_reference)
-            {
+            // `daily_window` is declared only by hermes-maintenance; allow its
+            // explicit null and reject other non-string JSON values before the
+            // generic kind check so the legacy path and refusal are stable.
+            if arg.name == "daily_window" && !arg.required {
+                if value.is_null() {
+                    continue;
+                }
+                if !value.is_string() {
+                    return Err(LadderValidationError {
+                        step_id: step_id.into(),
+                        defect: "hermes-maintenance-daily-window-malformed".into(),
+                    });
+                }
+            }
+            if value.as_object().is_some_and(is_optional_routine_reference) {
                 continue;
             }
             if !arg.kind.matches(value) {
@@ -509,13 +522,13 @@ fn execute_routine_tool(
                 args: args.clone(),
                 on_failure: OnFailure::Stop,
             };
-            let outcome = tools::hermes_maintenance::execute_step(
+            let (outcome, outputs) = tools::hermes_maintenance::execute_step_with_outputs(
                 &step,
                 receipt_dir,
                 software_authorization.filter(|_| authorized_apply),
                 invocation.filter(|_| authorized_apply),
             )?;
-            Ok((outcome, BTreeMap::new()))
+            Ok((outcome, outputs))
         }
         "pull-repo" => crate::bands::pull_source::execute_routine_child(
             "pull-repo",
@@ -1121,6 +1134,25 @@ pub(crate) fn execute_routine(
                                 "module_artifact_exhaustion_debt": true,
                                 "first_missing_signal": signal,
                                 "debt": debt,
+                            }),
+                        )
+                    } else if child.tool == "hermes-maintenance"
+                        && outcome.ok
+                        && !outcome.changed
+                        && outcome.skipped
+                        && outcome
+                            .message
+                            .starts_with("hermes-maintenance-daily-window-deferred")
+                    {
+                        (
+                            "skipped",
+                            true,
+                            false,
+                            outputs,
+                            json!({
+                                "skipped": true,
+                                "message": outcome.message,
+                                "reason": "daily-window-deferred",
                             }),
                         )
                     } else if outcome.ok

@@ -748,7 +748,7 @@ pub(crate) fn validate_ladder(
 
 fn validate_routine(
     step: &LadderStep,
-    _manifest: &LadderManifest,
+    manifest: &LadderManifest,
 ) -> Result<(), LadderValidationError> {
     if step.permutation != "execute" {
         return Err(LadderValidationError {
@@ -818,6 +818,34 @@ fn validate_routine(
                         defect: format!("routine-reference-malformed-{}", child.name),
                     });
                 }
+            }
+        }
+        if child.tool == "hermes-maintenance" && permutation_name == "converge" {
+            let daily_window_args = child
+                .args
+                .get("daily_window")
+                .map(|value| BTreeMap::from([("daily_window".to_owned(), value.clone())]))
+                .unwrap_or_default();
+            let resolved = resolve_args(&daily_window_args, &manifest.constants).map_err(|defect| {
+                LadderValidationError {
+                    step_id: step.step_id.clone(),
+                    defect,
+                }
+            })?;
+            let is_output_reference = resolved
+                .get("daily_window")
+                .and_then(Value::as_object)
+                .is_some_and(|map| {
+                    map.get("from").and_then(Value::as_str).is_some()
+                        && map.keys().all(|key| key == "from" || key == "default")
+                });
+            if !is_output_reference {
+                crate::tools::hermes_maintenance::validate_daily_window_args(&resolved).map_err(
+                    |defect| LadderValidationError {
+                        step_id: step.step_id.clone(),
+                        defect,
+                    },
+                )?;
             }
         }
     }

@@ -1,4 +1,5 @@
 //! Observe and repair the declared Hermes installation through its native updater.
+mod daily_window;
 use crate::atoms::comparison::{ActionAuthorization, DiffDecision};
 use crate::atoms::r#do::InvocationKey;
 use crate::{OperationOutcome, SoftwareApplyAuthorization};
@@ -501,16 +502,70 @@ pub(crate) fn execute_step(
     software: Option<&SoftwareApplyAuthorization>,
     invocation: Option<&InvocationKey>,
 ) -> Result<OperationOutcome, String> {
+    execute_step_with_outputs(step, receipt_dir, software, invocation).map(|(outcome, _)| outcome)
+}
+
+/// The routine executor carries deferral and once-per-day evidence in-memory
+/// into its outer receipt. Direct tool callers retain the historical outcome-only API.
+pub(crate) fn execute_step_with_outputs(
+    step: &crate::tools::routine::ValidatedStep,
+    receipt_dir: &Path,
+    software: Option<&SoftwareApplyAuthorization>,
+    invocation: Option<&InvocationKey>,
+) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
     validate_args(&step.args)?;
+    let configured_window = step
+        .args
+        .get("daily_window")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let parsed_window = daily_window::parse_args(&step.args)?;
+    let clock = parsed_window
+        .map(|_| daily_window::local_clock())
+        .transpose()?;
+    if let (Some(window), Some(clock), Some(configured)) =
+        (parsed_window, clock.as_ref(), configured_window.as_deref())
+    {
+        if daily_window::outside(window, clock) {
+            let outputs = daily_window::outside_outputs(window, clock, configured)?;
+            return Ok((daily_window_deferred_outcome(&outputs), outputs));
+        }
+    }
     let request = Request::from_args(
         &step.args,
         receipt_dir,
         &step.step_id,
         ReceiptCustody::current(),
     )?;
+    // A same-day engine-owned record is a read-only deferral, not authority to
+    // observe or act. Decide it before NSS owner resolution so this quiet path
+    // cannot open nscd; any non-deferral still resolves and validates the owner
+    // and install root before receipt validation or observation below.
+    let mut daily_permit = if let (Some(window), Some(clock)) = (parsed_window, clock) {
+        let canonical_source_root = canonical_install_root_path(&request.source_root)?;
+        let (permit, deferral) = daily_window::open_permit(window, clock, &canonical_source_root)?;
+        if let Some(outputs) = deferral {
+            return Ok((daily_window_deferred_outcome(&outputs), outputs));
+        }
+        Some(permit)
+    } else {
+        None
+    };
+
     let owner = resolve_owner_context(&request.owner)?;
     validate_caller_identity(&owner)?;
-    let _owner_scope = OwnerContextScope::install(owner);
+    let _owner_scope = OwnerContextScope::install(owner.clone());
+    if parsed_window.is_some() {
+        canonical_install_root(&request.source_root, owner.uid)?;
+    }
+
+    // The optional state guard precedes this leaf's receipt-shape check and
+    // source/Git/network/Hermes path. The routine dispatcher may already have
+    // prepared its generic outer/child receipt directories before this call.
+    // This function deliberately does not acquire engine-run.lock: live update
+    // and transaction callers already hold their non-reentrant EngineRunLockGuard
+    // for the full operation. Generic run-profile callers do not provide that
+    // serialization boundary.
     validate_receipt_shapes_readonly(&request)?;
     let apply = software.is_some();
     let binding_slot = std::cell::RefCell::new(None::<ObservationBinding>);
@@ -561,46 +616,100 @@ pub(crate) fn execute_step(
                     false,
                     None,
                 )?;
-                return Ok(OperationOutcome {
-                    ok: true,
-                    changed: false,
-                    skipped: true,
-                    message: "hermes-maintenance-drift-observed-no-write".into(),
-                    command: None,
-                });
+                return Ok((
+                    OperationOutcome {
+                        ok: true,
+                        changed: false,
+                        skipped: true,
+                        message: "hermes-maintenance-drift-observed-no-write".into(),
+                        command: None,
+                    },
+                    BTreeMap::new(),
+                ));
             }
             if observation.changed {
                 return Err("hermes-maintenance-diff-lost-before-action".into());
             }
-            Ok(OperationOutcome {
-                ok: true,
-                changed: false,
-                skipped: !apply,
-                message: "hermes-maintenance-current".into(),
-                command: None,
-            })
+            Ok((
+                OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: !apply,
+                    message: "hermes-maintenance-current".into(),
+                    command: None,
+                },
+                BTreeMap::new(),
+            ))
         }
         Ok(crate::atoms::comparison::ComparisonRun::Moved { movement, .. }) => {
             let initial = initial_slot
                 .borrow()
                 .clone()
                 .ok_or("hermes-maintenance-initial-observation-missing")?;
+            let mut movement = movement;
+            let mut outputs = BTreeMap::new();
+            if let Some(permit) = daily_permit.as_mut() {
+                if movement.ok && movement.changed && movement.stage == "complete" {
+                    match movement.post_sha.as_deref() {
+                        Some(post_sha) => match permit.record_proven_move(post_sha) {
+                            Ok(recorded) => outputs = recorded,
+                            Err(error) => {
+                                let message = format!(
+                                    "hermes-maintenance-daily-window-record-persistence-failed: {error}"
+                                );
+                                movement.ok = false;
+                                movement.stage = "daily-window-record-persistence-failed".into();
+                                movement.error = Some(message.clone());
+                                outputs = BTreeMap::from([
+                                    (
+                                        "reason".into(),
+                                        Value::String("record-persistence-failed".into()),
+                                    ),
+                                    ("zone_source".into(), Value::String("/etc/localtime".into())),
+                                    ("post_sha".into(), Value::String(post_sha.into())),
+                                    (
+                                        "record_path".into(),
+                                        Value::String(permit.record_path().into()),
+                                    ),
+                                    ("error".into(), Value::String(error)),
+                                ]);
+                            }
+                        },
+                        None => {
+                            let error = "hermes-maintenance-daily-window-post-sha-missing";
+                            movement.ok = false;
+                            movement.stage = "daily-window-record-persistence-failed".into();
+                            movement.error = Some(error.into());
+                            outputs = BTreeMap::from([
+                                (
+                                    "reason".into(),
+                                    Value::String("record-persistence-failed".into()),
+                                ),
+                                ("error".into(), Value::String(error.into())),
+                            ]);
+                        }
+                    }
+                }
+            }
             crate::atoms::attest::hermes_maintenance::receipt(
                 &request,
                 &initial,
                 apply,
                 Some(&movement),
             )?;
-            Ok(OperationOutcome {
-                ok: movement.ok,
-                changed: movement.changed,
-                skipped: false,
-                message: movement
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "hermes-maintenance-native-update-proved".into()),
-                command: None,
-            })
+            Ok((
+                OperationOutcome {
+                    ok: movement.ok,
+                    changed: movement.changed,
+                    skipped: false,
+                    message: movement
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "hermes-maintenance-native-update-proved".into()),
+                    command: None,
+                },
+                outputs,
+            ))
         }
         Err(original_error) => {
             let initial = initial_slot.borrow().clone();
@@ -652,7 +761,41 @@ pub(crate) fn execute_step(
     }
 }
 
+fn daily_window_deferred_outcome(outputs: &BTreeMap<String, Value>) -> OperationOutcome {
+    let text = |key: &str| {
+        outputs
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+    };
+    let message = format!(
+        "hermes-maintenance-daily-window-deferred reason={} local_date={} local_time={} zone_source={} next_window_start={}",
+        text("reason"),
+        text("local_date"),
+        text("local_time"),
+        text("zone_source"),
+        text("next_window_start"),
+    );
+    let message = outputs
+        .get("post_sha")
+        .and_then(Value::as_str)
+        .map(|post_sha| format!("{message} post_sha={post_sha}"))
+        .unwrap_or(message);
+    OperationOutcome {
+        ok: true,
+        changed: false,
+        skipped: true,
+        message,
+        command: None,
+    }
+}
+
+pub(crate) fn validate_daily_window_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
+    daily_window::validate_args(args)
+}
+
 pub(crate) fn validate_args(args: &BTreeMap<String, Value>) -> Result<(), String> {
+    validate_daily_window_args(args)?;
     let owner = args
         .get("owner")
         .and_then(Value::as_str)
@@ -2280,13 +2423,7 @@ fn atomic_write_owned(
 }
 
 fn canonical_install_root(path: &Path, owner_uid: u32) -> Result<PathBuf, String> {
-    let canonical = path.canonicalize().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            "hermes-install-not-installed".to_string()
-        } else {
-            format!("hermes-install-root-unavailable: {error}")
-        }
-    })?;
+    let canonical = canonical_install_root_path(path)?;
     let metadata = fs::symlink_metadata(&canonical)
         .map_err(|error| format!("hermes-install-root-stat-failed: {error}"))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner_uid {
@@ -2296,6 +2433,16 @@ fn canonical_install_root(path: &Path, owner_uid: u32) -> Result<PathBuf, String
         return Err("hermes-install-not-installed".into());
     }
     Ok(canonical)
+}
+
+fn canonical_install_root_path(path: &Path) -> Result<PathBuf, String> {
+    path.canonicalize().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "hermes-install-not-installed".to_string()
+        } else {
+            format!("hermes-install-root-unavailable: {error}")
+        }
+    })
 }
 
 fn canonical_parent_file(path: &Path) -> Result<PathBuf, String> {
