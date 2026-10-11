@@ -261,6 +261,32 @@ fn content_seat_apply_failure(preflight: &ModuleExecution, apply: bool) -> Optio
         .filter(|signal| crate::bands::renew_self::is_content_seat_failure(signal))
 }
 
+fn write_run_refusal_receipt(
+    receipt_dir: &Path,
+    profile: &Profile,
+    apply: bool,
+    reason: &str,
+) -> Result<(), String> {
+    let receipt = serde_json::json!({
+        "schema": "harmonia.run_profile.v1",
+        "ok": false,
+        "changed": false,
+        "mutation": apply,
+        "mode": "refused",
+        "profile_id": profile.id,
+        "identity": profile.identity,
+        "identity_source": crate::device_profile::run_identity_source(),
+        "first_missing_signal": reason,
+    });
+    let fallback_stem = format!("{}-update", profile.id);
+    crate::atoms::attest::convergence_receipts::write_fixed_refusal_receipt(
+        receipt_dir,
+        &fallback_stem,
+        &receipt,
+    )
+    .map_err(|error| format!("{reason}; update-refusal-receipt-failed: {error}"))
+}
+
 #[cfg(feature = "test-facade")]
 fn prepare_rollback_receipt_failure(receipt_dir: &Path) -> Result<(), String> {
     if std::env::var_os("HARMONIA_TEST_ROLLBACK_RECEIPT_UNWRITABLE").as_deref()
@@ -286,6 +312,71 @@ fn prepare_rollback_receipt_failure(receipt_dir: &Path) -> Result<(), String> {
     }
 }
 
+fn valid_run_receipt(receipt_dir: &Path) -> Option<serde_json::Value> {
+    let path = receipt_dir.join("run.json");
+    if !fs::symlink_metadata(&path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let receipt = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    if receipt.get("schema").and_then(serde_json::Value::as_str)
+        != Some("harmonia.run_profile.v1")
+        || receipt.get("ok").and_then(serde_json::Value::as_bool).is_none()
+    {
+        return None;
+    }
+    let mutation = receipt.get("mutation").and_then(serde_json::Value::as_bool)?;
+    let mode = receipt.get("mode").and_then(serde_json::Value::as_str)?;
+    let expected_mode = if mutation { "apply" } else { "report-only" };
+    if mode != expected_mode {
+        return None;
+    }
+    Some(receipt)
+}
+
+fn run_receipt_matches_invocation(
+    receipt_dir: &Path,
+    profile: &Profile,
+    apply: bool,
+) -> bool {
+    let Some(receipt) = valid_run_receipt(receipt_dir) else {
+        return false;
+    };
+    receipt.get("profile_id").and_then(serde_json::Value::as_str)
+        == Some(profile.id.as_str())
+        && receipt.get("identity").and_then(serde_json::Value::as_str)
+            == Some(profile.identity.as_str())
+        && receipt.get("mutation").and_then(serde_json::Value::as_bool) == Some(apply)
+        && receipt.get("mode").and_then(serde_json::Value::as_str)
+            == Some(if apply { "apply" } else { "report-only" })
+}
+
+fn write_early_failed_run_receipt(
+    receipt_dir: &Path,
+    profile: &Profile,
+    module_root: &Path,
+    apply: bool,
+    error: &str,
+) -> Result<(), String> {
+    let signal = transaction_failure_signal(Some(error), "rolling-run-failed-before-receipt");
+    crate::receipts::write_engine_run_receipt_with_duration_and_steps_and_debt(
+        receipt_dir,
+        profile,
+        apply,
+        false,
+        false,
+        profile.modules.len(),
+        0,
+        &signal,
+        module_root,
+        false,
+        0,
+        None,
+        None,
+        None,
+    )
+}
+
 pub(crate) fn rolling_update_run(
     profile: &Profile,
     module_root: &Path,
@@ -298,16 +389,82 @@ pub(crate) fn rolling_update_run(
     try_acquire_lock: fn(&Path) -> Result<ConvergenceLockGuard, ConvergenceLockBusy>,
 ) -> Result<(), String> {
     let _mint_seats = crate::atoms::ask::mint_seats::at_start();
+    let apply = mode.is_software_apply();
+    let retention = match crate::bands::stage_profile::groups::read_device_receipt_retention() {
+        Ok(retention) => retention,
+        Err(reason) => {
+            write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
+            return Err(reason);
+        }
+    };
+    let _convergence_lock = if apply {
+        match try_acquire_lock(&lock_path) {
+            Ok(guard) => Some(guard),
+            Err(ConvergenceLockBusy) => {
+                write_run_refusal_receipt(receipt_dir, profile, apply, "run-in-progress")?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    let policy = match crate::bands::stage_profile::groups::read_device_module_policy() {
+        Ok(policy) => policy,
+        Err(reason) => {
+            write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
+            return Err(reason);
+        }
+    };
     let mut effective_profile = profile.clone();
-    if let Some(declaration) =
-        crate::bands::stage_profile::groups::read_device_module_policy()?.syzygy_declaration
-    {
+    if let Some(declaration) = policy.syzygy_declaration {
         effective_profile.syzygy_declaration = Some(declaration);
     }
     let profile = &effective_profile;
-    let apply = mode.is_software_apply();
-    let run_id = run_id_from_stamp();
-    let effective_receipt_dir = materialize_receipt(receipt_dir, &run_id)?;
+    let requested_run_id = context
+        .map(|context| context.run_id.clone())
+        .unwrap_or_else(run_id_from_stamp);
+    let fallback_stem = format!("{}-update", profile.id);
+    let receipt_parent = receipt_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    crate::atoms::attest::prepare_receipt_parent(receipt_parent)?;
+    let _receipt_parent_lock =
+        match crate::atoms::attest::convergence_receipts::lock_receipt_parent(
+            receipt_dir,
+            "receipt-lifecycle",
+        ) {
+            Ok(guard) => guard,
+            Err(reason) => {
+                write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
+                return Err(reason);
+            }
+        };
+    let family_stem = crate::atoms::attest::convergence_receipts::latest_receipt_stem(
+        receipt_dir,
+        &fallback_stem,
+    );
+    if family_stem.is_some() {
+        if let Err(reason) = crate::atoms::attest::convergence_receipts::ensure_latest_receipt_replaceable(
+            receipt_dir,
+            "receipt-lifecycle",
+        ) {
+            write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
+            return Err(reason);
+        }
+    }
+    let effective_receipt_dir = match materialize_receipt(receipt_dir, &requested_run_id) {
+        Ok(path) => path,
+        Err(reason) => {
+            write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
+            return Err(reason);
+        }
+    };
+    let run_id = family_stem
+        .as_ref()
+        .and_then(|stem| effective_receipt_dir.file_name()?.to_str()?.strip_prefix(&format!("{stem}-")).map(str::to_owned))
+        .unwrap_or(requested_run_id);
+    let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
     fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
     let run = || {
         let carrier = context
@@ -726,24 +883,77 @@ pub(crate) fn rolling_update_run(
         }
         Ok(())
     };
-    if apply {
-        match try_acquire_lock(&lock_path) {
-            Ok(_guard) => run(),
-            Err(ConvergenceLockBusy) => {
-                write_convergence_skipped_receipt(
-                    &effective_receipt_dir,
-                    profile,
-                    apply,
-                    "lock-held",
-                    &lock_path,
-                    receipt_dir,
-                )?;
-                emit_convergence_skipped_stdout(&effective_receipt_dir, "lock-held", &profile.id);
-                Ok(())
-            }
+    let mut run_result = run();
+    let mut lifecycle_receipt_ready =
+        run_receipt_matches_invocation(&effective_receipt_dir, profile, apply);
+    if let Some(run_error) = run_result.as_ref().err().cloned() {
+        let existing_valid_receipt = valid_run_receipt(&effective_receipt_dir).is_some();
+        let failure_receipt_result = if existing_valid_receipt {
+            Ok(())
+        } else {
+            write_early_failed_run_receipt(
+                &effective_receipt_dir,
+                profile,
+                module_root,
+                apply,
+                &run_error,
+            )
+        };
+        let empty_ledger_result = if !existing_valid_receipt
+            || run_receipt_matches_invocation(&effective_receipt_dir, profile, apply)
+        {
+            crate::receipts::write_profile_ledger_run(
+                &effective_receipt_dir,
+                profile,
+                &run_id,
+                &[],
+                retention,
+            )
+        } else {
+            Ok(())
+        };
+        let mut receipt_errors = Vec::new();
+        if let Err(error) = failure_receipt_result {
+            receipt_errors.push(format!("failed-run-receipt-write-failed: {error}"));
         }
+        if let Err(error) = empty_ledger_result {
+            receipt_errors.push(format!("failed-run-ledger-write-failed: {error}"));
+        }
+        lifecycle_receipt_ready = receipt_errors.is_empty()
+            && run_receipt_matches_invocation(&effective_receipt_dir, profile, apply);
+        if !receipt_errors.is_empty() {
+            run_result = Err(format!("{run_error}; {}", receipt_errors.join("; ")));
+        }
+    }
+    let lifecycle_result = if !lifecycle_receipt_ready {
+        Err(format!(
+            "receipt-lifecycle-run-receipt-missing {}",
+            effective_receipt_dir.display()
+        ))
+    } else if let Some(stem) = family_stem.as_deref() {
+        crate::atoms::attest::convergence_receipts::promote_receipt_latest_locked(
+            receipt_dir,
+            &effective_receipt_dir,
+            &run_id,
+            "receipt-lifecycle",
+        )
+        .and_then(|()| {
+            crate::atoms::attest::convergence_receipts::prune_receipt_family_locked(
+                receipt_dir,
+                stem,
+                retention,
+            )
+        })
     } else {
-        run()
+        Ok(())
+    };
+    match (run_result, lifecycle_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(run_error), Ok(())) => Err(run_error),
+        (Ok(()), Err(lifecycle_error)) => Err(lifecycle_error),
+        (Err(run_error), Err(lifecycle_error)) => {
+            Err(format!("{run_error}; receipt-lifecycle-failed: {lifecycle_error}"))
+        }
     }
 }
 
@@ -894,6 +1104,11 @@ pub(crate) fn rolling_update_from_certificate_with_context(
     mode: UpdateMode<'_>,
     context: Option<&crate::RunContext>,
 ) -> Result<(), String> {
+    let materialize = match profile.id.as_str() {
+        "homeserver" => materialize_homeserver_receipt_dir,
+        "homeconsole" => materialize_homeconsole_receipt_dir,
+        _ => materialize_tv_receipt_dir,
+    };
     rolling_update_run(
         profile,
         module_root,
@@ -902,7 +1117,7 @@ pub(crate) fn rolling_update_from_certificate_with_context(
         context,
         enforce_update_suite(profile, module_root)?,
         engine_run_lock_path(),
-        materialize_tv_receipt_dir,
+        materialize,
         try_acquire_homeconsole_update_lock,
     )
 }

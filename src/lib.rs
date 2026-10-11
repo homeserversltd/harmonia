@@ -463,6 +463,29 @@ fn update_apply_requested(args: &[String], invocation: &Invocation) -> bool {
     apply
 }
 
+fn write_cli_run_refusal(
+    receipt_dir: &Path,
+    fallback_stem: &str,
+    apply: bool,
+    profile_id: Option<&str>,
+    reason: &str,
+) -> Result<(), String> {
+    let receipt = json!({
+        "schema": "harmonia.run_profile.v1", "ok": false, "changed": false,
+        "mutation": apply, "mode": "refused", "profile_id": profile_id,
+        "identity": serde_json::Value::Null,
+        "identity_source": device_profile::run_identity_source(),
+        "first_missing_signal": reason,
+    });
+    device_profile::persist_fixed_refusal(
+        receipt_dir,
+        fallback_stem,
+        &receipt,
+        reason,
+        "run-refusal-receipt-failed",
+    )
+}
+
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("interactable") | Some("config-proposal") => {
@@ -482,6 +505,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         ),
         Some("renew-self") => renew_self_command(&args[1..], &invocation),
         Some("update") => {
+            device_profile::validate_update_dispatch(&args[1..], invocation.key())?;
             let apply = update_apply_requested(&args, &invocation);
             if env::var("HARMONIA_TOOLCHAIN_RATCHET_HANDOFF").ok().as_deref() != Some("1") {
                 schedule::reconcile_update_timer(apply, invocation.key())?;
@@ -941,17 +965,46 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             Ok(())
         }
         Some("run-profile") => {
-            let path = args
-                .get(1)
-                .ok_or("run-profile requires <profile-index-json>")?;
             let receipt_dir = receipt_dir_arg(&args)
                 .unwrap_or_else(|| PathBuf::from("target/harmonia-run-profile"));
+            let apply = args.iter().any(|arg| arg == "--apply");
+            let Some(path) = args.get(1) else {
+                let reason = "run-profile requires <profile-index-json>";
+                write_cli_run_refusal(&receipt_dir, "run-profile", apply, None, reason)?;
+                return Err(reason.into());
+            };
+            let module_root = default_module_root(Path::new(path));
+            let profile = match load_profile(Path::new(path)) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    let reason = error.to_string();
+                    write_cli_run_refusal(
+                        &receipt_dir,
+                        "run-profile",
+                        apply,
+                        None,
+                        &reason,
+                    )?;
+                    return Err(reason);
+                }
+            };
+            let fallback_stem = match profile.id.as_str() {
+                "tv" => "tv-update",
+                "homeconsole" => "homeconsole-update",
+                "homeserver" => "homeserver-update",
+                _ => "run-profile",
+            };
             let mode = UpdateMode::from_apply_flag_with_invocation(
-                args.iter().any(|arg| arg == "--apply"),
+                apply,
                 invocation.key(),
             );
-            let module_root = default_module_root(Path::new(path));
-            let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
+            device_profile::validate_receipt_retention_or_refuse(
+                &receipt_dir,
+                fallback_stem,
+                mode.is_software_apply(),
+                Some(&profile.id),
+                device_profile::run_identity_source(),
+            )?;
             let profile_requires_categories = std::fs::read_to_string(path)
                 .ok()
                 .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
@@ -963,7 +1016,18 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 .unwrap_or(false);
             let require_categories =
                 args.iter().any(|arg| arg == "--require-categories") || profile_requires_categories;
-            validate_profile_managed_file_categories(&profile, &module_root, require_categories)?;
+            if let Err(reason) =
+                validate_profile_managed_file_categories(&profile, &module_root, require_categories)
+            {
+                write_cli_run_refusal(
+                    &receipt_dir,
+                    fallback_stem,
+                    mode.is_software_apply(),
+                    Some(&profile.id),
+                    &reason,
+                )?;
+                return Err(reason);
+            }
             if profile.id == "homeserver" && profile.identity == "homeserver" {
                 homeserver_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {

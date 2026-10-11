@@ -1456,14 +1456,13 @@ fn accumulate(
 
 /// StaffStart uses the existing self envelope; it never applies or moves a rung.
 pub(crate) fn announce() -> Result<Value, String> {
-    let run_id = crate::run_id_from_stamp();
     #[cfg(any(test, feature = "test-facade"))]
     let receipt_root = std::env::var_os("HARMONIA_RECEIPTS_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts"));
     #[cfg(not(any(test, feature = "test-facade")))]
     let receipt_root = PathBuf::from("/var/lib/harmonia/receipts");
-    let dir = receipt_root.join(&run_id);
+    let dir = receipt_root.join("ruyi-staff-start");
     let seed_absent = match fs::symlink_metadata(ruyi_path()) {
         Ok(_) => false,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,

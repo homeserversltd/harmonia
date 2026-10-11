@@ -2,8 +2,8 @@ use super::Band;
 use crate::bands::stage_profile::ProfileProjection;
 use crate::module_dispatch::ModuleExecution;
 use crate::receipts::{
-    append_profile_ledger_entry, write_engine_run_receipt_with_duration_and_steps_and_debt,
-    write_json, ProfileLedgerEntry,
+    write_engine_run_receipt_with_duration_and_steps_and_debt, write_json,
+    write_profile_ledger_run, ProfileLedgerEntry,
 };
 use crate::Profile;
 use serde::Serialize;
@@ -241,25 +241,30 @@ pub(crate) fn settle(
     } else {
         state.first_missing_signal.clone()
     };
+    let mut ledger_entries = Vec::new();
     for module_id in &profile.modules {
-        if let Some(s) = state.module_states.get(module_id) {
-            let loaded = projection.modules.get(module_id).map(|p| &p.loaded);
-            append_profile_ledger_entry(
+        if let Some(step) = state.module_states.get(module_id) {
+            let loaded = projection.modules.get(module_id).map(|module| &module.loaded);
+            ledger_entries.push(ProfileLedgerEntry {
+                module_id,
+                ok: step.ok,
+                changed: step.changed,
+                operation_count: step.operation_count,
+                first_missing_signal: step.first_missing_signal.as_deref().unwrap_or("none"),
                 receipt_dir,
-                profile,
-                ProfileLedgerEntry {
-                    run_id: &state.run_id,
-                    module_id,
-                    ok: s.ok,
-                    changed: s.changed,
-                    operation_count: s.operation_count,
-                    first_missing_signal: s.first_missing_signal.as_deref().unwrap_or("none"),
-                    receipt_dir,
-                    module_version: loaded.as_ref().and_then(|v| v.version()),
-                },
-            )?;
+                module_version: loaded.and_then(|module| module.version()),
+            });
         }
     }
+    let ledger_retention =
+        crate::bands::stage_profile::groups::read_device_receipt_retention()?;
+    write_profile_ledger_run(
+        receipt_dir,
+        profile,
+        &state.run_id,
+        &ledger_entries,
+        ledger_retention,
+    )?;
     let (package_pin_witnesses, package_pin_exclusion_set) =
         collect_package_pin_witnesses(receipt_dir);
     write_json(
