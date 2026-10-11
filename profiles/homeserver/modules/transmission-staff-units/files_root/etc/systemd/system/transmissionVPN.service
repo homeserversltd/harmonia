@@ -1,8 +1,11 @@
 [Unit]
 Description=Transmission VPN singleton native service
+Wants=network-online.target
 Requires=hold-port-forward@pia.service
-After=hold-port-forward@pia.service transmissionPIA.service transmission-daemon.service
+After=network-online.target hold-port-forward@pia.service transmissionPIA.service transmission-daemon.service mnt-nas.mount
 Conflicts=transmissionPIA.service transmission-daemon.service
+ConditionPathIsMountPoint=/vault
+ConditionPathIsMountPoint=/mnt/nas
 
 [Service]
 Type=simple
@@ -15,4 +18,4 @@ Restart=on-failure
 RestartSec=10
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=mnt-nas.mount
