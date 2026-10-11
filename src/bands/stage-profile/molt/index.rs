@@ -281,7 +281,7 @@ fn molt_from_source_kind(
             &mut artifacts,
         )?;
     }
-    if mode == MoltMode::Copy && extension.is_some() {
+    if mode == MoltMode::Copy && extension.is_some() && !same_standing_profile {
         let index_path = output_dir.join("index.json");
         let mut materialized: serde_json::Value =
             serde_json::from_slice(&fs::read(&index_path).map_err(|error| error.to_string())?)

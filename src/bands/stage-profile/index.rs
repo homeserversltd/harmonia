@@ -61,14 +61,53 @@ pub(crate) fn resolve_module_dir(
     if lawful_module_manifest_exists(&module_root.join(module_id)) {
         return resolve_module_dir_in_root(module_root, module_id);
     }
-    // Materialized staged indexes carry source lineage only for receipts. Their
-    // module union is local, so never follow that lineage into a base profile.
+    // Materialized staged indexes usually have a complete local union. Older
+    // source_extends-only indexes may omit an included base module; recover only
+    // declared, non-excluded IDs from that base's module seat.
     if let Some(index) = module_root.parent().map(|directory| directory.join("index.json")) {
         let text = std::fs::read_to_string(&index)
             .map_err(|error| format!("profile-index-read-failed {}: {error}", index.display()))?;
         let raw: serde_json::Value = serde_json::from_str(&text)
             .map_err(|error| format!("profile-index-parse-failed {}: {error}", index.display()))?;
-        if raw.get("source_extends").is_some() {
+        let has_active_extends = raw
+            .get("extends")
+            .is_some_and(|value| !value.is_null());
+        if raw.get("source_extends").is_some() && !has_active_extends {
+            let local = module_root.join(module_id);
+            if local.join("sidecar.json").is_file() {
+                return Ok(local);
+            }
+            let excluded = raw
+                .get("source_excludes")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|modules| {
+                    modules
+                        .iter()
+                        .any(|id| id.as_str() == Some(module_id))
+                });
+            if excluded {
+                return Err(format!("profile-source-excluded-module id={module_id}"));
+            }
+            let included = raw
+                .get("modules")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|modules| {
+                    modules
+                        .iter()
+                        .any(|id| id.as_str() == Some(module_id))
+                });
+            if included {
+                if let Some(base_id) = profile_extends(module_root)? {
+                    let overlay_dir = module_root
+                        .parent()
+                        .ok_or("profile-overlay-directory-missing")?;
+                    let profiles_root = overlay_dir
+                        .parent()
+                        .ok_or("profile-extends-root-missing")?;
+                    let base_module_root = profiles_root.join(base_id).join("modules");
+                    return resolve_module_dir_in_root(&base_module_root, module_id);
+                }
+            }
             return resolve_module_dir_in_root(module_root, module_id);
         }
     }
