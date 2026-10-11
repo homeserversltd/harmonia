@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCALTIME_PATH: &str = "/etc/localtime";
+const PASSWD_PATH: &str = "/etc/passwd";
+const PASSWD_MAX_BYTES: u64 = 1024 * 1024;
 const RECORD_BASE: &str = "/var/lib/harmonia";
 const RECORD_DIRECTORY: &str = "hermes-maintenance-days";
 const RECORD_MAX_BYTES: u64 = 4096;
@@ -37,6 +39,7 @@ pub(crate) struct LocalClock {
 #[derive(Debug)]
 pub(crate) struct Permit {
     window: Window,
+    press_start_clock: LocalClock,
     source_root_sha256: String,
     record_path: String,
     directories: SafeDirectories,
@@ -213,8 +216,10 @@ pub(crate) fn open_permit(
     window: Window,
     clock: LocalClock,
     canonical_source_root: &Path,
+    owner_name: &str,
 ) -> Result<(Permit, Option<BTreeMap<String, Value>>), String> {
-    let directories = SafeDirectories::open()?;
+    let install_owner_uid = resolve_local_owner_uid(owner_name)?;
+    let directories = SafeDirectories::open(install_owner_uid)?;
     let source_root_sha256 = digest(canonical_source_root.as_os_str().as_bytes());
     let record_name = format!("{source_root_sha256}.json");
     let record_path = format!("{RECORD_BASE}/{RECORD_DIRECTORY}/{record_name}");
@@ -238,6 +243,7 @@ pub(crate) fn open_permit(
             return Ok((
                 Permit {
                     window,
+                    press_start_clock: clock,
                     source_root_sha256,
                     record_path,
                     directories,
@@ -249,6 +255,7 @@ pub(crate) fn open_permit(
     Ok((
         Permit {
             window,
+            press_start_clock: clock,
             source_root_sha256,
             record_path,
             directories,
@@ -262,6 +269,10 @@ impl Permit {
         &self.record_path
     }
 
+    pub(crate) fn validate_install_owner_uid(&self, install_owner_uid: u32) -> Result<(), String> {
+        validate_base_directory(&self.directories.base, install_owner_uid)
+    }
+
     pub(crate) fn record_proven_move(
         &mut self,
         post_sha: &str,
@@ -269,9 +280,8 @@ impl Permit {
         if !valid_sha(post_sha) {
             return Err("hermes-maintenance-daily-window-post-sha-invalid".into());
         }
-        let completion_clock = local_clock()?;
         let record = json!({
-            "date": completion_clock.date.clone(),
+            "date": self.press_start_clock.date.clone(),
             "post_sha": post_sha,
             "source_root_sha256": self.source_root_sha256.clone(),
         });
@@ -288,8 +298,14 @@ impl Permit {
                 "daily_window".into(),
                 Value::String(format_window(self.window)),
             ),
-            ("local_date".into(), Value::String(completion_clock.date)),
-            ("local_time".into(), Value::String(completion_clock.time)),
+            (
+                "local_date".into(),
+                Value::String(self.press_start_clock.date.clone()),
+            ),
+            (
+                "local_time".into(),
+                Value::String(self.press_start_clock.time.clone()),
+            ),
             ("zone_source".into(), Value::String(LOCALTIME_PATH.into())),
             ("post_sha".into(), Value::String(post_sha.into())),
             (
@@ -301,18 +317,27 @@ impl Permit {
 }
 
 impl SafeDirectories {
-    fn open() -> Result<Self, String> {
-        let base = OpenOptions::new()
+    fn open(install_owner_uid: u32) -> Result<Self, String> {
+        let root = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(RECORD_BASE)
+            .open("/")
             .map_err(|error| {
                 format!("hermes-maintenance-daily-window-record-base-unavailable: {error}")
             })?;
-        validate_engine_directory(&base, "base")?;
+        let var = openat_directory(root.as_raw_fd(), "var").map_err(|error| {
+            format!("hermes-maintenance-daily-window-record-base-unavailable: {error}")
+        })?;
+        let lib = openat_directory(var.as_raw_fd(), "lib").map_err(|error| {
+            format!("hermes-maintenance-daily-window-record-base-unavailable: {error}")
+        })?;
+        let base = openat_directory(lib.as_raw_fd(), "harmonia").map_err(|error| {
+            format!("hermes-maintenance-daily-window-record-base-unavailable: {error}")
+        })?;
+        validate_base_directory(&base, install_owner_uid)?;
         let days = match openat_directory(base.as_raw_fd(), RECORD_DIRECTORY) {
             Ok(directory) => {
-                validate_engine_directory(&directory, "days")?;
+                validate_days_directory(&directory)?;
                 Some(directory)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -433,7 +458,16 @@ impl SafeDirectories {
                 openat_directory(self.base.as_raw_fd(), RECORD_DIRECTORY).map_err(|error| {
                     format!("hermes-maintenance-daily-window-record-directory-unsafe: {error}")
                 })?;
-            validate_engine_directory(&directory, "days")?;
+            if created {
+                validate_days_directory_owner(&directory)?;
+                if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+                    return Err(format!(
+                        "hermes-maintenance-daily-window-record-directory-mode-failed: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+            }
+            validate_days_directory(&directory)?;
             if created && unsafe { libc::fsync(self.base.as_raw_fd()) } != 0 {
                 return Err(format!(
                     "hermes-maintenance-daily-window-record-base-sync-failed: {}",
@@ -552,19 +586,120 @@ fn openat_directory(parent_fd: i32, name: &str) -> std::io::Result<File> {
     }
 }
 
-fn validate_engine_directory(directory: &File, label: &str) -> Result<(), String> {
+fn validate_base_directory(directory: &File, install_owner_uid: u32) -> Result<(), String> {
     let metadata = directory.metadata().map_err(|error| {
-        format!("hermes-maintenance-daily-window-record-{label}-stat-failed: {error}")
+        format!("hermes-maintenance-daily-window-record-base-stat-failed: {error}")
+    })?;
+    if !metadata.is_dir()
+        || !(metadata.uid() == unsafe { libc::geteuid() }
+            || metadata.uid() == 0
+            || metadata.uid() == install_owner_uid)
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err("hermes-maintenance-daily-window-record-base-unsafe".into());
+    }
+    Ok(())
+}
+
+fn validate_days_directory_owner(directory: &File) -> Result<(), String> {
+    let metadata = directory.metadata().map_err(|error| {
+        format!("hermes-maintenance-daily-window-record-days-stat-failed: {error}")
+    })?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err("hermes-maintenance-daily-window-record-days-unsafe".into());
+    }
+    Ok(())
+}
+
+fn validate_days_directory(directory: &File) -> Result<(), String> {
+    let metadata = directory.metadata().map_err(|error| {
+        format!("hermes-maintenance-daily-window-record-days-stat-failed: {error}")
     })?;
     if !metadata.is_dir()
         || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o022 != 0
+        || metadata.mode() & 0o7777 != 0o700
     {
-        return Err(format!(
-            "hermes-maintenance-daily-window-record-{label}-unsafe"
-        ));
+        return Err("hermes-maintenance-daily-window-record-days-unsafe".into());
     }
     Ok(())
+}
+
+fn resolve_local_owner_uid(name: &str) -> Result<u32, String> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err("hermes-maintenance-daily-window-owner-name-invalid".into());
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(PASSWD_PATH)
+        .map_err(|error| {
+            format!("hermes-maintenance-daily-window-owner-passwd-unavailable: {error}")
+        })?;
+    let before = file.metadata().map_err(|error| {
+        format!("hermes-maintenance-daily-window-owner-passwd-stat-failed: {error}")
+    })?;
+    if !before.is_file()
+        || before.uid() != 0
+        || before.nlink() != 1
+        || before.mode() & 0o022 != 0
+        || before.len() > PASSWD_MAX_BYTES
+    {
+        return Err("hermes-maintenance-daily-window-owner-passwd-unsafe".into());
+    }
+    let mut bytes = Vec::with_capacity(before.len() as usize);
+    Read::by_ref(&mut file)
+        .take(PASSWD_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            format!("hermes-maintenance-daily-window-owner-passwd-read-failed: {error}")
+        })?;
+    let after = file.metadata().map_err(|error| {
+        format!("hermes-maintenance-daily-window-owner-passwd-stat-failed: {error}")
+    })?;
+    if bytes.len() as u64 > PASSWD_MAX_BYTES
+        || bytes.len() as u64 != before.len()
+        || after.dev() != before.dev()
+        || after.ino() != before.ino()
+        || after.uid() != before.uid()
+        || after.nlink() != before.nlink()
+        || after.mode() != before.mode()
+        || after.len() != before.len()
+        || after.mtime() != before.mtime()
+        || after.mtime_nsec() != before.mtime_nsec()
+        || after.ctime() != before.ctime()
+        || after.ctime_nsec() != before.ctime_nsec()
+    {
+        return Err("hermes-maintenance-daily-window-owner-passwd-changed-during-read".into());
+    }
+    let contents = std::str::from_utf8(&bytes)
+        .map_err(|_| "hermes-maintenance-daily-window-owner-passwd-invalid")?;
+    let mut resolved_uid = None;
+    for line in contents.lines() {
+        let fields = line.split(':').collect::<Vec<_>>();
+        if fields.first().copied() != Some(name) {
+            continue;
+        }
+        if fields.len() != 7
+            || fields[2].is_empty()
+            || !fields[2].bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err("hermes-maintenance-daily-window-owner-passwd-entry-invalid".into());
+        }
+        let uid = fields[2]
+            .parse::<u32>()
+            .map_err(|_| "hermes-maintenance-daily-window-owner-passwd-entry-invalid")?;
+        if resolved_uid.replace(uid).is_some() {
+            return Err("hermes-maintenance-daily-window-owner-passwd-entry-duplicate".into());
+        }
+    }
+    resolved_uid.ok_or_else(|| {
+        format!("hermes-maintenance-daily-window-owner-account-unknown-{name}")
+    })
 }
 
 fn unlinkat(parent_fd: i32, name: &str) {

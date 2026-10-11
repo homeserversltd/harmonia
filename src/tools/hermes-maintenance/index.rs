@@ -543,7 +543,12 @@ pub(crate) fn execute_step_with_outputs(
     // and install root before receipt validation or observation below.
     let mut daily_permit = if let (Some(window), Some(clock)) = (parsed_window, clock) {
         let canonical_source_root = canonical_install_root_path(&request.source_root)?;
-        let (permit, deferral) = daily_window::open_permit(window, clock, &canonical_source_root)?;
+        let (permit, deferral) = daily_window::open_permit(
+            window,
+            clock,
+            &canonical_source_root,
+            &request.owner,
+        )?;
         if let Some(outputs) = deferral {
             return Ok((daily_window_deferred_outcome(&outputs), outputs));
         }
@@ -553,6 +558,9 @@ pub(crate) fn execute_step_with_outputs(
     };
 
     let owner = resolve_owner_context(&request.owner)?;
+    if let Some(permit) = daily_permit.as_ref() {
+        permit.validate_install_owner_uid(owner.uid)?;
+    }
     validate_caller_identity(&owner)?;
     let _owner_scope = OwnerContextScope::install(owner.clone());
     if parsed_window.is_some() {
@@ -657,7 +665,6 @@ pub(crate) fn execute_step_with_outputs(
                                 let message = format!(
                                     "hermes-maintenance-daily-window-record-persistence-failed: {error}"
                                 );
-                                movement.ok = false;
                                 movement.stage = "daily-window-record-persistence-failed".into();
                                 movement.error = Some(message.clone());
                                 outputs = BTreeMap::from([

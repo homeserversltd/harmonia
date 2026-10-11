@@ -832,21 +832,12 @@ fn validate_routine(
                     defect,
                 }
             })?;
-            let is_output_reference = resolved
-                .get("daily_window")
-                .and_then(Value::as_object)
-                .is_some_and(|map| {
-                    map.get("from").and_then(Value::as_str).is_some()
-                        && map.keys().all(|key| key == "from" || key == "default")
-                });
-            if !is_output_reference {
-                crate::tools::hermes_maintenance::validate_daily_window_args(&resolved).map_err(
-                    |defect| LadderValidationError {
-                        step_id: step.step_id.clone(),
-                        defect,
-                    },
-                )?;
-            }
+            crate::tools::hermes_maintenance::validate_daily_window_args(&resolved).map_err(
+                |defect| LadderValidationError {
+                    step_id: step.step_id.clone(),
+                    defect,
+                },
+            )?;
         }
     }
     Ok(())
