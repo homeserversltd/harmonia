@@ -14,5 +14,3 @@ Where=/mnt/nas_backup
 Type=xfs
 Options=defaults
 
-[Install]
-WantedBy=multi-user.target
