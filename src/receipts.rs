@@ -44,6 +44,28 @@ pub(crate) fn run_id_from_stamp() -> String {
     format!("run-{nanos}")
 }
 
+pub(crate) fn run_id_from_effective_receipt_directory(
+    effective_receipt_dir: &Path,
+    requested_latest_alias: Option<&Path>,
+    fallback_stem: &str,
+    fallback_run_id: &str,
+) -> String {
+    let Some(stem) = requested_latest_alias.and_then(|latest_alias| {
+        crate::atoms::attest::convergence_receipts::latest_receipt_stem(
+            latest_alias,
+            fallback_stem,
+        )
+    }) else {
+        return fallback_run_id.to_owned();
+    };
+    effective_receipt_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(&format!("{stem}-")))
+        .map(str::to_owned)
+        .unwrap_or_else(|| fallback_run_id.to_owned())
+}
+
 pub(crate) fn receipt_root_for(receipt_dir: &Path) -> PathBuf {
     receipt_dir
         .parent()
@@ -368,7 +390,7 @@ fn write_family_profile_ledger_run(
     retention: usize,
     stem: &str,
 ) -> Result<ProfileLedgerWriteReport, String> {
-    let (ordered_run_ids, selection_warnings) =
+    let (mut ordered_run_ids, mut selection_warnings) =
         crate::atoms::attest::convergence_receipts::retained_receipt_run_ids(
             latest_path,
             stem,
@@ -376,7 +398,8 @@ fn write_family_profile_ledger_run(
             Some(run_id),
         )?;
     if !ordered_run_ids.iter().any(|candidate| candidate == run_id) {
-        return Err(format!("profile-ledger-current-run-unobserved {run_id}"));
+        selection_warnings.push(format!("profile-ledger-current-run-unobserved {run_id}"));
+        ordered_run_ids.push(run_id.to_owned());
     }
     let selected_run_ids = ordered_run_ids.iter().cloned().collect::<BTreeSet<_>>();
     let mut ledger = read_profile_ledger_runs(path, retention, Some(&selected_run_ids))?;

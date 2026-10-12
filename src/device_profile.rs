@@ -568,14 +568,34 @@ pub(crate) fn update_from_certificate(
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
     let module_root = default_module_root(&profile_path);
-    crate::atoms::r#do::transaction::rolling_update_from_certificate_with_context(
+    let applied = mode.is_software_apply();
+    let refusal_stem = crate::atoms::attest::convergence_receipts::latest_receipt_stem(
+        &requested_receipt_dir,
+        "update",
+    );
+    let refusal_has_parent = requested_receipt_dir
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty());
+    let result = crate::atoms::r#do::transaction::rolling_update_from_certificate_with_context(
         &profile,
         &module_root,
         &receipt_dir,
         mode,
         context,
         receipt_retention,
-    )
+    );
+    if applied && refusal_has_parent && result.is_ok() {
+        if let Some(stem) = refusal_stem {
+            if let Err(error) = crate::atoms::attest::convergence_receipts::clear_fixed_refusal_after_green(
+                &requested_receipt_dir,
+                &receipt_dir,
+                &stem,
+            ) {
+                eprintln!("receipt-refusal-clear-warning: {error}");
+            }
+        }
+    }
+    result
 }
 
 pub(crate) fn homeconsole_update(

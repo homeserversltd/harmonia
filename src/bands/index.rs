@@ -340,7 +340,14 @@ pub(crate) fn run_profile_engine_with_projection(
         true,
         &format!("profile {}", active_profile.id),
     )?;
-    let run_id = run_id_from_stamp();
+    let fallback_run_id = run_id_from_stamp();
+    let fallback_stem = format!("{}-update", active_profile.id);
+    let run_id = crate::receipts::run_id_from_effective_receipt_directory(
+        receipt_dir,
+        requested_latest_alias,
+        &fallback_stem,
+        &fallback_run_id,
+    );
     let mut state = crate::bands::report_home::RunState {
         run_id: run_id.clone(),
         apply,

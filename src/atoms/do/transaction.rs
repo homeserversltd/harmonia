@@ -439,12 +439,22 @@ pub(crate) fn rolling_update_run(
             return Err(reason);
         }
     };
-    let run_id = family_stem
-        .as_ref()
-        .and_then(|stem| effective_receipt_dir.file_name()?.to_str()?.strip_prefix(&format!("{stem}-")).map(str::to_owned))
-        .unwrap_or(requested_run_id);
+    let run_id = crate::receipts::run_id_from_effective_receipt_directory(
+        &effective_receipt_dir,
+        Some(receipt_dir),
+        &fallback_stem,
+        &requested_run_id,
+    );
     let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
     fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
+    crate::atoms::attest::write_json_atomic(
+        &effective_receipt_dir.join("ruyi.json"),
+        &serde_json::json!({
+            "run_id": run_id,
+            "profile": profile.id,
+            "in_flight": true,
+        }),
+    )?;
     let run = || {
         let carrier = context
             .map(|value| value.carrier.clone())
@@ -920,6 +930,8 @@ pub(crate) fn rolling_update_run(
     }
     let mut report = crate::atoms::attest::convergence_receipts::ReceiptPruneReport::default();
     let mut promoted = false;
+    let mut promotion_attempted = false;
+    let mut prune_attempted = false;
     let mut promotion_status = "skipped";
     let mut promotion_error = None;
     if !lifecycle_receipt_ready {
@@ -930,69 +942,69 @@ pub(crate) fn rolling_update_run(
         report.warnings.push(reason.clone());
         promotion_error = Some(reason);
     } else if let Some(stem) = family_stem.as_deref() {
-        {
-            match crate::atoms::attest::convergence_receipts::lock_receipt_parent(
-                receipt_dir,
-                "receipt-lifecycle",
-            ) {
-                Ok(_parent_lock) => {
-                    match crate::atoms::attest::convergence_receipts::promote_receipt_latest_locked(
-                        receipt_dir,
-                        &effective_receipt_dir,
-                        &run_id,
-                        "receipt-lifecycle",
-                    ) {
-                        Ok(()) => {
-                            promoted = true;
-                            promotion_status = "promoted";
-                            report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked(
-                                receipt_dir,
-                                stem,
-                                receipt_retention,
-                            );
-                            if let Err(error) = crate::atoms::attest::convergence_receipts::clear_fixed_refusal_after_green(
-                                receipt_dir,
-                                &effective_receipt_dir,
-                                stem,
-                            ) {
-                                report.warnings.push(format!("receipt-refusal-clear-warning: {error}"));
-                            }
-                        }
-                        Err(error) => {
-                            promotion_status = "failed";
-                            report.warnings.push(format!("receipt-promotion-failed: {error}"));
-                            promotion_error = Some(error);
-                        }
+        match crate::atoms::attest::convergence_receipts::lock_receipt_parent(
+            receipt_dir,
+            "receipt-lifecycle",
+        ) {
+            Ok(_parent_lock) => {
+                promotion_attempted = true;
+                match crate::atoms::attest::convergence_receipts::promote_receipt_latest_locked(
+                    receipt_dir,
+                    &effective_receipt_dir,
+                    &run_id,
+                    "receipt-lifecycle",
+                ) {
+                    Ok(()) => {
+                        promoted = true;
+                        promotion_status = "promoted";
+                    }
+                    Err(error) => {
+                        promotion_status = "failed";
+                        promotion_error = Some(error);
                     }
                 }
-                Err(reason) if reason.contains("receipt-lifecycle-parent-busy") => {
-                    let reason = reason.replacen(
-                        "receipt-lifecycle-parent-busy",
-                        "receipt-parent-busy",
-                        1,
-                    );
-                    report.warnings.push(reason.clone());
-                    promotion_error = Some(reason);
+                prune_attempted = true;
+                report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked_for_current(
+                    receipt_dir,
+                    stem,
+                    receipt_retention,
+                    &effective_receipt_dir,
+                );
+                if report.pruning_confined {
+                    match crate::receipts::reconcile_profile_ledger_family(
+                        &effective_receipt_dir,
+                        receipt_dir,
+                        profile,
+                        receipt_retention,
+                        stem,
+                    ) {
+                        Ok(warnings) => report.warnings.extend(warnings),
+                        Err(error) => report.warnings.push(format!(
+                            "profile-ledger-retention-reconcile-failed: {error}"
+                        )),
+                    }
                 }
-                Err(reason) => {
-                    promotion_status = "failed";
-                    report.warnings.push(format!("receipt-promotion-lock-failed: {reason}"));
-                    promotion_error = Some(reason);
+                if let Err(error) = crate::atoms::attest::convergence_receipts::clear_fixed_refusal_after_green(
+                    receipt_dir,
+                    &effective_receipt_dir,
+                    stem,
+                ) {
+                    report.warnings.push(format!("receipt-refusal-clear-warning: {error}"));
                 }
             }
-        }
-        if promoted && report.pruning_confined {
-            match crate::receipts::reconcile_profile_ledger_family(
-                &effective_receipt_dir,
-                receipt_dir,
-                profile,
-                receipt_retention,
-                stem,
-            ) {
-                Ok(warnings) => report.warnings.extend(warnings),
-                Err(error) => report.warnings.push(format!(
-                    "profile-ledger-retention-reconcile-failed: {error}"
-                )),
+            Err(reason) if reason.contains("receipt-lifecycle-parent-busy") => {
+                let reason = reason.replacen(
+                    "receipt-lifecycle-parent-busy",
+                    "receipt-parent-busy",
+                    1,
+                );
+                report.warnings.push(reason.clone());
+                promotion_error = Some(reason);
+            }
+            Err(reason) => {
+                promotion_status = "failed";
+                report.warnings.push(format!("receipt-promotion-lock-failed: {reason}"));
+                promotion_error = Some(reason);
             }
         }
     } else {
@@ -1012,10 +1024,11 @@ pub(crate) fn rolling_update_run(
     }
     let lifecycle_projection = serde_json::json!({
         "promotion_status": promotion_status,
+        "promotion_attempted": promotion_attempted,
         "promoted": promoted,
         "promotion_error": promotion_error.clone(),
-        "prune_attempted": promoted,
-        "pruning_confined": if promoted { Some(report.pruning_confined) } else { None },
+        "prune_attempted": prune_attempted,
+        "pruning_confined": if prune_attempted { Some(report.pruning_confined) } else { None },
         "warnings": report.warnings.clone(),
     });
     if lifecycle_receipt_ready {
@@ -1035,6 +1048,14 @@ pub(crate) fn rolling_update_run(
             ));
             report.summarize_warnings();
         }
+    }
+    if promotion_status == "failed" {
+        let error = promotion_error
+            .clone()
+            .unwrap_or_else(|| "receipt-lifecycle-promotion-failed".to_string());
+        println!("receipt_lifecycle.promotion_status=failed");
+        println!("receipt_lifecycle.promotion_error={error}");
+        println!("receipt_lifecycle.first_missing_signal=receipt-promotion-failed");
     }
     if !report.warnings.is_empty() {
         eprintln!("receipt-cleanup-warning: {}", report.warnings.join("; "));
