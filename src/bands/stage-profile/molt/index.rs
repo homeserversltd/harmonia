@@ -467,12 +467,26 @@ fn molt_from_source_kind(
     let pruned_modules = prune_retired_module_dirs(&key, &output_module_root, &profile.modules)?;
 
     let lane = preserve_existing_lane_or_default(&subscription_path);
+    let ref_name = match source_kind {
+        MoltSourceKind::EngineSource => {
+            let head = crate::atoms::ask::pull_repo::source_head(harmonia_root, "owner");
+            if !head.ok {
+                return Err(format!("molt-source-head-failed {}", head.stderr));
+            }
+            let head = head.stdout.trim().to_string();
+            if head.is_empty() {
+                return Err("molt-source-head-empty".to_string());
+            }
+            head
+        }
+        MoltSourceKind::StandingProfile => source_kind.ref_name().to_string(),
+    };
     update_subscription_record_with_invocation(
         &subscription_path,
         SubscriptionUpdate {
             lane,
             source: source_kind.subscription_source(harmonia_root, &profile.id),
-            ref_name: source_kind.ref_name().to_string(),
+            ref_name,
             selected_profile: profile.id.clone(),
             engine_version_received: VERSION.to_string(),
             modules: subscription_modules,
