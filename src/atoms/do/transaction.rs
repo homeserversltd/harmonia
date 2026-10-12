@@ -557,9 +557,15 @@ pub(crate) fn rolling_update_run(
         Ok(projection) => match projection.derive_standing_update_plan(profile, module_root) {
             Ok(plan) => {
                 let mut seen = BTreeSet::new();
-                for target in plan.targets {
-                    if !seen.insert(target.path.clone()) { continue; }
-                    match crate::atoms::projectio::cleanup_stale_temporaries_for_target(&target.path) {
+                let mut targets = plan
+                    .targets
+                    .into_iter()
+                    .map(|target| target.path)
+                    .collect::<Vec<_>>();
+                targets.push(crate::atoms::ask::ruyi::ruyi_path());
+                for target in targets {
+                    if !seen.insert(target.clone()) { continue; }
+                    match crate::atoms::projectio::cleanup_stale_temporaries_for_target(&target) {
                         Ok(removed) => {
                             start_prune_report.deletion_attempts += removed;
                             start_prune_report.deleted_files += removed;
@@ -1096,8 +1102,8 @@ pub(crate) fn rolling_update_run(
                 report = end_report;
                 if let Some(state_root) = receipt_parent.parent().filter(|parent| !parent.as_os_str().is_empty()) {
                     if report.pruning_confined {
-                cleanup_receipt_state_directories(state_root, &mut report);
-            }
+                        cleanup_receipt_state_directories(state_root, &mut report);
+                    }
                 }
                 if report.pruning_confined {
                     match crate::receipts::reconcile_profile_ledger_family(

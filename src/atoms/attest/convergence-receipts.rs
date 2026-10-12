@@ -973,11 +973,15 @@ fn in_flight_state(value: Option<&serde_json::Value>) -> (bool, bool) {
         .get("process_start_ticks")
         .and_then(serde_json::Value::as_u64)
     else {
-        return (true, true);
+        let live = process_is_live(pid, None);
+        return (live, live);
     };
     match process_start_ticks(pid) {
         Some(actual) => (actual == start, false),
-        None => (process_is_live(pid, None), true),
+        None => {
+            let live = process_is_live(pid, None);
+            (live, live)
+        }
     }
 }
 
@@ -1018,18 +1022,21 @@ fn root_candidate(path: &Path, metadata: &std::fs::Metadata) -> Result<ReceiptRo
     let ruyi = read_regular_json(&path.join("ruyi.json"))?;
     let run = read_regular_json(&path.join("run.json"))?;
     let in_flight_marker = read_regular_json(&path.join(".harmonia-in-flight.json"))?;
-    let (mut in_flight, mut ambiguous_in_flight) = if in_flight_marker.is_some() {
+    let complete = run.as_ref().is_some_and(|value| {
+        value.get("schema").and_then(serde_json::Value::as_str)
+            == Some("harmonia.run_profile.v1")
+            && value.get("ok").and_then(serde_json::Value::as_bool).is_some()
+    });
+    let (in_flight, ambiguous_in_flight) = if in_flight_marker.is_some() {
         in_flight_state(in_flight_marker.as_ref())
     } else {
-        in_flight_state(ruyi.as_ref())
+        let (legacy_in_flight, legacy_ambiguous) = in_flight_state(ruyi.as_ref());
+        if complete && legacy_ambiguous {
+            (false, false)
+        } else {
+            (legacy_in_flight, legacy_ambiguous)
+        }
     };
-    if !in_flight && ruyi.as_ref().is_some_and(|value| {
-        value.get("in_flight").and_then(serde_json::Value::as_bool) == Some(true)
-    }) {
-        let (legacy_live, legacy_ambiguous) = in_flight_state(ruyi.as_ref());
-        in_flight |= legacy_live;
-        ambiguous_in_flight |= legacy_live && legacy_ambiguous;
-    }
     let run_id = in_flight_marker
         .as_ref()
         .and_then(|value| value.get("run_id"))
@@ -1051,11 +1058,6 @@ fn root_candidate(path: &Path, metadata: &std::fs::Metadata) -> Result<ReceiptRo
         })
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    let complete = run.as_ref().is_some_and(|value| {
-        value.get("schema").and_then(serde_json::Value::as_str)
-            == Some("harmonia.run_profile.v1")
-            && value.get("ok").and_then(serde_json::Value::as_bool).is_some()
-    });
     let order = metadata
         .modified()
         .ok()
@@ -1238,7 +1240,9 @@ pub(crate) fn retained_receipt_run_ids(
     let (candidates, mut warnings) = scan_receipt_root(&root)?;
     let (aliases, alias_warnings) = latest_alias_targets(&root)?;
     warnings.extend(alias_warnings);
-    if !warnings.is_empty() {
+    if warnings.iter().any(|warning| {
+        !warning.starts_with("receipt-in-flight-marker-ambiguous ")
+    }) {
         return Err(warnings.join("; "));
     }
     let latest_targets = aliases
@@ -1438,7 +1442,9 @@ pub(crate) fn prune_receipt_root_locked(
         }
     };
     report.warnings.extend(alias_warnings);
-    if !report.warnings.is_empty() {
+    if report.warnings.iter().any(|warning| {
+        !warning.starts_with("receipt-in-flight-marker-ambiguous ")
+    }) {
         report.summarize_warnings();
         return report;
     }

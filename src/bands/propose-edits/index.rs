@@ -48,12 +48,13 @@ pub(crate) fn sweep_config_state_receipts() -> Result<bool, String> {
             .interactables
             .into_iter()
             .map(|item| item.id)
+            .filter(|id| is_config_proposal_id(id))
             .filter_map(|id| id.strip_prefix("config-proposal-").map(str::to_owned))
             .collect::<BTreeSet<_>>();
         let mut keep = live_ids;
         CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| {
             keep.extend(ids.borrow().iter().filter_map(|id| {
-                id.strip_prefix("config-proposal-").map(str::to_owned)
+                is_config_proposal_id(id).then(|| id.strip_prefix("config-proposal-").unwrap().to_owned())
             }));
         });
         let entries = match fs::read_dir(&parent) {
@@ -73,6 +74,35 @@ pub(crate) fn sweep_config_state_receipts() -> Result<bool, String> {
             }
             fs::remove_file(entry.path()).map_err(|error| format!("config-state-sweep-remove-failed {}: {error}", entry.path().display()))?;
             removed = true;
+        }
+        if let Some(source_root) = proposal_sources_root(&parent, false)? {
+            let entries = fs::read_dir(&source_root)
+                .map_err(|error| format!("config-proposal-source-sweep-read-failed {}: {error}", source_root.display()))?;
+            let mut source_removed = false;
+            for entry in entries {
+                let entry = entry.map_err(|error| format!("config-proposal-source-sweep-entry-failed {}: {error}", source_root.display()))?;
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                let Some(id) = name.strip_suffix(".source").filter(|id| is_config_proposal_id(id)) else { continue };
+                let file_type = entry.file_type().map_err(|error| format!("config-proposal-source-sweep-type-failed {}: {error}", entry.path().display()))?;
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if !file_type.is_file() {
+                    return Err(format!("config-proposal-source-sweep-collision {}", entry.path().display()));
+                }
+                if keep.contains(id.strip_prefix("config-proposal-").unwrap()) {
+                    continue;
+                }
+                fs::remove_file(entry.path()).map_err(|error| format!("config-proposal-source-sweep-remove-failed {}: {error}", entry.path().display()))?;
+                source_removed = true;
+            }
+            if source_removed {
+                File::open(&source_root)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|error| format!("config-proposal-source-sweep-sync-failed {}: {error}", source_root.display()))?;
+                removed = true;
+            }
         }
         Ok(removed)
     })
@@ -111,6 +141,57 @@ fn stable_id(surface: &Path, live_sha: &str, reference_sha: &str) -> String {
     let digest =
         Sha256::digest(format!("{}:{live_sha}:{reference_sha}", surface.display()).as_bytes());
     format!("config-proposal-{}", &format!("{digest:x}")[..16])
+}
+
+fn is_config_proposal_id(id: &str) -> bool {
+    id.strip_prefix("config-proposal-")
+        .is_some_and(|key| key.len() == 16 && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+}
+
+fn proposal_sources_root(parent: &Path, create: bool) -> Result<Option<PathBuf>, String> {
+    let absolute_parent = if parent.is_absolute() {
+        parent.to_path_buf()
+    } else if parent.as_os_str().is_empty() || parent == Path::new(".") {
+        std::env::current_dir().map_err(|error| format!("config-proposal-source-cwd-failed: {error}"))?
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("config-proposal-source-cwd-failed: {error}"))?
+            .join(parent)
+    };
+    let parent = crate::atoms::attest::convergence_receipts::validate_cleanup_root(&absolute_parent)?;
+    let root = parent.join("proposal-sources");
+    match fs::symlink_metadata(&root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::atoms::attest::prepare_receipt_parent(&root)?;
+        }
+        Err(error) => return Err(format!("config-proposal-source-root-observe-failed {}: {error}", root.display())),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() => {
+            return Err(format!("config-proposal-source-root-collision {}", root.display()));
+        }
+        Ok(_) => {}
+    }
+    let root = crate::atoms::attest::convergence_receipts::validate_cleanup_root(&root)?;
+    if root.parent() != Some(parent.as_path()) {
+        return Err(format!("config-proposal-source-root-not-direct-child {}", root.display()));
+    }
+    Ok(Some(root))
+}
+
+fn materialize_proposal_reference(
+    feed_path: &Path,
+    id: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    if !is_config_proposal_id(id) {
+        return Err("config-proposal-source-id-invalid".to_string());
+    }
+    let parent = feed_path.parent().unwrap_or_else(|| Path::new("."));
+    let root = proposal_sources_root(parent, true)?
+        .ok_or_else(|| "config-proposal-source-root-missing".to_string())?;
+    let snapshot = root.join(format!("{id}.source"));
+    crate::atoms::attest::write_bytes_atomic(&snapshot, bytes)?;
+    Ok(snapshot)
 }
 
 pub(crate) fn persist_feed(
@@ -363,6 +444,8 @@ fn refresh_interactables_at_path_with_policy(
         let live_sha = format!("{:x}", Sha256::digest(&live_bytes));
         let reference_sha = format!("{:x}", Sha256::digest(&reference_bytes));
         let id = stable_id(&entry.target, &live_sha, &reference_sha);
+        let reference_source = materialize_proposal_reference(path, &id, &reference_bytes)?;
+        let reference_source_id = reference_source.to_string_lossy().into_owned();
         let prior_for_target = feed
             .interactables
             .iter()
@@ -380,7 +463,7 @@ fn refresh_interactables_at_path_with_policy(
         let recognized = interactables::recognize_against_known_goods(
             &live_bytes,
             &[interactables::RecognitionCandidate {
-                reference_id: &entry.source.to_string_lossy(),
+                reference_id: &reference_source_id,
                 bytes: &reference_bytes,
             }],
         )
@@ -408,9 +491,9 @@ fn refresh_interactables_at_path_with_policy(
             &state_receipt,
             &serde_json::json!({
                 "schema": "harmonia.config_state.v1", "config_state": state, "id": id.clone(),
-                "target": entry.target.clone(), "reference": entry.source.clone(), "score": score,
+                "target": entry.target.clone(), "reference": reference_source.clone(), "score": score,
                 "live_sha": live_sha.clone(), "reference_sha": reference_sha.clone(),
-                "threshold": threshold, "reference_id": entry.source.clone()
+                "threshold": threshold, "reference_id": reference_source.clone()
             }),
         )?;
         if score < threshold {
@@ -426,7 +509,7 @@ fn refresh_interactables_at_path_with_policy(
                 config_state: state.to_string(),
                 score,
                 reference_id: Some(recognized.reference_id),
-                nearest_reference: Some(entry.source.clone()),
+                nearest_reference: Some(reference_source.clone()),
                 target: entry.target.clone(),
                 live_sha: live_sha.clone(),
                 reference_sha: reference_sha.clone(),
@@ -442,7 +525,7 @@ fn refresh_interactables_at_path_with_policy(
             description: manifest.description.clone(),
             kind: "hard-stamp".into(),
             target_path: Some(entry.target.clone()),
-            reference_source_path: Some(entry.source.clone()),
+            reference_source_path: Some(reference_source.clone()),
             drift,
             created_at,
             refreshed_at: now.clone(),
@@ -499,7 +582,7 @@ fn refresh_interactables_at_path_with_policy(
             config_state: state.to_string(),
             score,
             reference_id: Some(recognized.reference_id),
-            nearest_reference: Some(entry.source.clone()),
+            nearest_reference: Some(reference_source),
             target: entry.target.clone(),
             live_sha,
             reference_sha,
