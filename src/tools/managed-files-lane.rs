@@ -863,32 +863,28 @@ pub(crate) fn managed_files_step_with_authorization(
         if !target_exists {
             first_missing_signal.get_or_insert(missing_signal.clone());
         }
-        atoms::attest::attest(
-            &attest_log,
-            &crate::atoms::Receipt {
-                atom: "managed-files".into(),
-                ok: target_exists,
-                drift: crate::atoms::Drift::File {
-                    expected_sha256: expected,
-                    actual_sha256: actual,
-                },
-                message: format!(
-                    "state=known-good path={} target_exists={} apply=false{}{}",
-                    path.display(),
-                    target_exists,
-                    if target_exists {
-                        String::new()
-                    } else {
-                        format!(" first_missing_signal={missing_signal}")
+        if !target_exists {
+            atoms::attest::attest(
+                &attest_log,
+                &crate::atoms::Receipt {
+                    atom: "managed-files".into(),
+                    ok: false,
+                    drift: crate::atoms::Drift::File {
+                        expected_sha256: expected,
+                        actual_sha256: actual,
                     },
-                    file.legacy_transition_note
-                        .as_deref()
-                        .map(|note| format!(" {note}"))
-                        .unwrap_or_default()
-                ),
-            },
-            &[],
-        )?;
+                    message: format!(
+                        "state=known-good path={} target_exists=false first_missing_signal={missing_signal}{}",
+                        path.display(),
+                        file.legacy_transition_note
+                            .as_deref()
+                            .map(|note| format!(" {note}"))
+                            .unwrap_or_default()
+                    ),
+                },
+                &[],
+            )?;
+        }
     }
     for file in proposals {
         let target = PathBuf::from(&file.path);
@@ -997,10 +993,12 @@ pub(crate) fn managed_files_step_with_authorization(
             drift: crate::atoms::Drift::Current,
             message: attestation_message,
         };
-        if let Some(witness) = witness {
-            atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness)?;
-        } else {
-            atoms::attest::attest(&attest_log, &receipt, &[])?;
+        if !file_ok || observed.changed || observed.ownership_changed {
+            if let Some(witness) = witness {
+                atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness)?;
+            } else {
+                atoms::attest::attest(&attest_log, &receipt, &[])?;
+            }
         }
     }
     if let Some(signal) = first_missing_signal {

@@ -1191,7 +1191,9 @@ pub(crate) fn same_root_directory_sync(
         drift: Drift::Current,
         message: format!("directory-sync diff={diff_decision} movement=none changed=false blocker={blocker}"),
     };
-    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
+    if !(ok && diff_decision == "empty") {
+        crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
+    }
     write_compatibility_projection(
         &receipt_dir.join(format!("{step_id}.json")),
         &json!({

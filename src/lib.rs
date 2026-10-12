@@ -529,15 +529,6 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             match validate_ladder(&manifest) {
                 Ok(steps) => {
                     println!("schema=harmonia.ladder.validate.v1");
-                    hyalos::forward_receipt(
-                        "schema=harmonia.ladder.validate.v1",
-                        &format!("schema=harmonia.ladder.validate.v1 ok={}", true),
-                        Some(
-                            serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": true}),
-                        ),
-                        Some(true),
-                        None,
-                    );
                     println!("ok=true");
                     println!("module_id={}", manifest.id);
                     println!("version={}", manifest.version);
@@ -547,15 +538,6 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 }
                 Err(err) => {
                     println!("schema=harmonia.ladder.validate.v1");
-                    hyalos::forward_receipt(
-                        "schema=harmonia.ladder.validate.v1",
-                        &format!("schema=harmonia.ladder.validate.v1 ok={}", false),
-                        Some(
-                            serde_json::json!({"schema": "harmonia.ladder.validate.v1", "ok": false}),
-                        ),
-                        Some(false),
-                        None,
-                    );
                     println!("ok=false");
                     println!("module_id={}", manifest.id);
                     println!("version={}", manifest.version);
@@ -892,13 +874,6 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 })
                 .collect::<Vec<_>>();
             println!("schema=harmonia.profile.inspect.v1");
-            hyalos::forward_receipt(
-                "schema=harmonia.profile.inspect.v1",
-                &format!("schema=harmonia.profile.inspect.v1 ok={}", true),
-                Some(serde_json::json!({"schema": "harmonia.profile.inspect.v1", "ok": true})),
-                Some(true),
-                None,
-            );
             println!("ok=true");
             println!("profile_id={}", profile.id);
             println!("identity={}", profile.identity);
@@ -1350,13 +1325,6 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
 
 pub(crate) fn toolbelt() -> Result<(), String> {
     println!("schema=harmonia.toolbelt.v1");
-    hyalos::forward_receipt(
-        "schema=harmonia.toolbelt.v1",
-        &format!("schema=harmonia.toolbelt.v1 ok={}", true),
-        Some(serde_json::json!({"schema": "harmonia.toolbelt.v1", "ok": true})),
-        Some(true),
-        None,
-    );
     println!("ok=true");
     println!("tool_count={}", tools::all().len());
     for declaration in tools::declaration::all()? {

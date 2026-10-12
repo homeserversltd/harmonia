@@ -392,10 +392,8 @@ pub(crate) fn execute_group_live_probe(
 
 // Arcadia fast-check ownership: preserve the legacy CLI surface while keeping
 // source comparison and SHA probes in the Compare band.
-use serde_json::json;
 use std::time::Instant;
-use crate::{CmdResult, hyalos};
-use crate::{write_command_receipt, write_json};
+use crate::CmdResult;
 
 
 pub(crate) fn homeconsole_arcadia_check(
@@ -413,7 +411,6 @@ pub(crate) fn homeconsole_arcadia_check(
             profile.id, profile.identity
         ));
     }
-    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let started = Instant::now();
     let current_sha = fs::read_to_string(current_sha_file)
         .ok()
@@ -459,33 +456,7 @@ pub(crate) fn homeconsole_arcadia_check(
         _ => false,
     };
     let elapsed_ms = started.elapsed().as_millis();
-    write_command_receipt(receipt_dir, "arcadia-upstream-sha", &remote)?;
-    write_json(
-        &receipt_dir.join("run.json"),
-        &json!({
-            "schema": "harmonia.arcadia_fast_check.v1",
-            "ok": ok,
-            "mutation": false,
-            "profile_id": profile.id,
-            "profile_family": profile.identity,
-            "repo": repo,
-            "branch": branch,
-            "current_sha_file": current_sha_file,
-            "current_sha": current_sha,
-            "upstream_sha": upstream_sha,
-            "update_available": update_available,
-            "first_missing_signal": first_missing_signal,
-            "elapsed_ms": elapsed_ms,
-        }),
-    )?;
     println!("schema=harmonia.arcadia_fast_check.v1");
-    hyalos::forward_receipt(
-        "schema=harmonia.arcadia_fast_check.v1",
-        &format!("schema=harmonia.arcadia_fast_check.v1 ok={}", ok),
-        Some(serde_json::json!({"schema": "harmonia.arcadia_fast_check.v1", "ok": ok})),
-        Some(ok),
-            None,
-);
     println!("ok={}", ok);
     println!("update_available={}", update_available);
     println!(

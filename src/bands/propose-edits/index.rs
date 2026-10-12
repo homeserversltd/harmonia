@@ -165,22 +165,24 @@ fn persist_feed_locked(
         &records,
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
     )?;
-    crate::atoms::attest::attest(
-        &path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("proposals.attest.jsonl"),
-        &crate::atoms::Receipt {
-            atom: "propose-edits".into(),
-            ok: true,
-            drift: crate::atoms::Drift::Current,
-            message: format!(
-                "proposal-persistence-transition count={}",
-                feed.interactables.len()
-            ),
-        },
-        &[],
-    )?;
+    if writes > 0 {
+        crate::atoms::attest::attest(
+            &path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("proposals.attest.jsonl"),
+            &crate::atoms::Receipt {
+                atom: "propose-edits".into(),
+                ok: true,
+                drift: crate::atoms::Drift::Current,
+                message: format!(
+                    "proposal-persistence-transition count={}",
+                    feed.interactables.len()
+                ),
+            },
+            &[],
+        )?;
+    }
     Ok(writes)
 }
 
@@ -438,20 +440,6 @@ fn refresh_interactables_at_path_with_policy(
             remove_ids,
             sort_by_id: true,
         },
-    )?;
-    let log = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("proposals.attest.jsonl");
-    crate::atoms::attest::attest(
-        &log,
-        &crate::atoms::Receipt {
-            atom: "propose-edits".into(),
-            ok: true,
-            drift: crate::atoms::Drift::Current,
-            message: format!("proposal-feed-refreshed count={}", feed.interactables.len()),
-        },
-        &[],
     )?;
     Ok(recognitions)
 }

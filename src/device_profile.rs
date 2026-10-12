@@ -45,10 +45,28 @@ fn emit_fixed_refusal_stdout(receipt: &serde_json::Value) {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("refused");
     println!("schema={schema}");
-    crate::hyalos::forward_receipt(
-        &format!("schema={schema}"),
-        &format!("schema={schema} ok={ok} first_missing_signal={reason}"),
-        Some(receipt.clone()),
+    let bounded_schema = crate::hyalos::bounded_json_string(schema, 96);
+    let bounded_reason = crate::hyalos::bounded_json_string(reason, 320);
+    let mut metadata = json!({
+        "schema": bounded_schema,
+        "outcome": "refused",
+        "ok": ok,
+        "first_missing_signal": bounded_reason,
+    });
+    for field in ["changed", "mutation"] {
+        if let Some(value) = receipt.get(field).and_then(serde_json::Value::as_bool) {
+            metadata[field] = json!(value);
+        }
+    }
+    for field in ["mode", "profile_id", "identity_source"] {
+        if let Some(value) = receipt.get(field).and_then(serde_json::Value::as_str) {
+            metadata[field] = json!(crate::hyalos::bounded_json_string(value, 96));
+        }
+    }
+    crate::hyalos::forward_bounded_receipt(
+        &bounded_schema,
+        &format!("schema={bounded_schema} outcome=refused"),
+        Some(metadata),
         Some(ok),
         None,
     );

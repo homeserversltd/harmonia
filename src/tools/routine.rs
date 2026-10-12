@@ -828,6 +828,50 @@ fn routine_hyalos_intent(
     Some((kind, correlation_id))
 }
 
+fn routine_child_failure_signal(detail: &Value, routine_signal: Option<&str>) -> String {
+    if let Some(signal) = detail
+        .get("first_missing_signal")
+        .and_then(Value::as_str)
+        .filter(|signal| *signal != "none")
+    {
+        return crate::hyalos::bounded_json_string(signal, 320);
+    }
+    if let Some(signal) = routine_signal.filter(|signal| *signal != "none") {
+        return crate::hyalos::bounded_json_string(signal, 320);
+    }
+    if let Some(message) = detail.get("message").and_then(Value::as_str) {
+        return crate::hyalos::bounded_json_string(message, 320);
+    }
+    let Some(blocked_by) = detail.get("blocked_by") else {
+        return "routine-child-failed".into();
+    };
+    if let Some(blocked_by) = blocked_by.as_str() {
+        return format!(
+            "blocked-by-{}",
+            crate::hyalos::bounded_json_string(blocked_by, 256)
+        );
+    }
+    let Some(fields) = blocked_by.as_object() else {
+        return "routine-child-failed".into();
+    };
+    let step_id = fields
+        .get("step_id")
+        .and_then(Value::as_str)
+        .map(|value| crate::hyalos::bounded_json_string(value, 128));
+    let origin_band = fields
+        .get("origin_band")
+        .and_then(Value::as_str)
+        .map(|value| crate::hyalos::bounded_json_string(value, 96));
+    match (step_id, origin_band) {
+        (Some(step_id), Some(origin_band)) => {
+            format!("blocked-by-step={step_id}-band={origin_band}")
+        }
+        (Some(step_id), None) => format!("blocked-by-step={step_id}"),
+        (None, Some(origin_band)) => format!("blocked-by-band={origin_band}"),
+        (None, None) => "routine-child-failed".into(),
+    }
+}
+
 fn emit_routine_child_outcome(
     intent: Option<&(String, String)>,
     child: &ProjectedRoutineChild,
@@ -835,6 +879,7 @@ fn emit_routine_child_outcome(
     ok: bool,
     changed: bool,
     detail: &Value,
+    routine_signal: Option<&str>,
     apply: bool,
 ) {
     let Some((kind, correlation_id)) = intent else {
@@ -843,19 +888,39 @@ fn emit_routine_child_outcome(
     if !apply {
         return;
     }
-    crate::hyalos::forward_receipt(
-        kind,
-        &format!("routine child={} outcome={status}", child.name),
-        Some(json!({
-            "child": child.name,
-            "tool": child.tool,
-            "permutation": child.permutation,
-            "state": status,
-            "changed": changed,
-            "detail": detail,
-        })),
+    if ok && !changed {
+        return;
+    }
+    let bounded_child = crate::hyalos::bounded_json_string(&child.name, 128);
+    let bounded_tool = crate::hyalos::bounded_json_string(&child.tool, 96);
+    let bounded_permutation = crate::hyalos::bounded_json_string(&child.permutation, 96);
+    let bounded_status = crate::hyalos::bounded_json_string(status, 48);
+    let bounded_kind = crate::hyalos::bounded_json_string(kind, 96);
+    let bounded_correlation = crate::hyalos::bounded_json_string(correlation_id, 96);
+    let mut metadata = json!({
+        "child": bounded_child,
+        "tool": bounded_tool,
+        "permutation": bounded_permutation,
+        "state": bounded_status,
+        "changed": changed,
+    });
+    if !ok {
+        let signal = routine_child_failure_signal(detail, routine_signal);
+        metadata["first_missing_signal"] = json!(
+            crate::hyalos::bounded_json_string(&signal, 320)
+        );
+    }
+    let message = format!(
+        "routine child={} outcome={}",
+        crate::hyalos::bounded_json_string(&child.name, 128),
+        crate::hyalos::bounded_json_string(status, 48)
+    );
+    crate::hyalos::forward_bounded_receipt(
+        &bounded_kind,
+        &message,
+        Some(metadata),
         Some(ok),
-        Some(correlation_id),
+        Some(&bounded_correlation),
     );
 }
 
@@ -992,6 +1057,7 @@ pub(crate) fn execute_routine(
                 false,
                 false,
                 &detail,
+                state.first_missing_signal.as_deref(),
                 apply,
             );
             crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;
@@ -1301,6 +1367,7 @@ pub(crate) fn execute_routine(
             child_ok,
             child_changed,
             &extra,
+            state.first_missing_signal.as_deref(),
             apply,
         );
         crate::write_json(&child_dir.join("routine-child.json"), &receipt)?;

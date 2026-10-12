@@ -2552,19 +2552,35 @@ fn forward_preflight_receipt(
     component: &str,
     engine_component_ignored: Option<&str>,
 ) {
+    if ok && !changed {
+        return;
+    }
+    let outcome = if ok { "changed" } else { "failed" };
+    let mode = if apply { "apply" } else { "plan" };
+    let mutation = if changed { "changed" } else { "none" };
     let ignored_component_line =
         match ignored_engine_component_receipt_line(engine_component_ignored) {
             line if line.is_empty() => line,
             line => format!(" {line}"),
         };
-    crate::hyalos::forward_receipt(
+    crate::hyalos::forward_bounded_receipt(
         "harmonia.renew_self.preflight",
         &format!(
-            "ok={ok} apply={apply} changed={changed} first_missing_signal={first_missing_signal}{ignored_component_line}"
+            "child=engine-preflight outcome={outcome} mode={mode} changed={changed} first_missing_signal={first_missing_signal}{ignored_component_line}"
         ),
-        Some(
-            json!({"ok": ok, "apply": apply, "changed": changed, "first_missing_signal": first_missing_signal, "compiled_component": component, "engine_component_ignored": engine_component_ignored, "attest_owner": "hyalos.forward_receipt"}),
-        ),
+        Some(json!({
+            "schema": PREFLIGHT_SCHEMA,
+            "child": "engine-preflight",
+            "outcome": outcome,
+            "mode": mode,
+            "mutation": mutation,
+            "ok": ok,
+            "apply": apply,
+            "changed": changed,
+            "first_missing_signal": first_missing_signal,
+            "compiled_component": component,
+            "engine_component_ignored": engine_component_ignored,
+        })),
         Some(ok),
         None,
     );

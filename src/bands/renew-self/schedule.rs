@@ -257,7 +257,11 @@ pub(crate) fn reconcile_update_timer(
         true,
         None,
     );
-    forward_cadence_receipt(&receipt);
+    if !receipt["ok"].as_bool().unwrap_or(false)
+        || receipt["movement"].as_str() != Some("none")
+    {
+        forward_cadence_receipt(&receipt);
+    }
     println!("{}", receipt);
     Ok(receipt)
 }

@@ -5,6 +5,9 @@ pub(crate) fn attest(log: &Path, ok: bool, changed: bool, message: &str) -> Resu
     // Only a successful transition whose observed after-state is Current may
     // use Drift::Current; planned or failed drift must remain visible.
     let after_is_current = message.contains("after=Current");
+    if ok && !changed && after_is_current {
+        return Ok(());
+    }
     crate::atoms::attest::attest(
         log,
         &Receipt {

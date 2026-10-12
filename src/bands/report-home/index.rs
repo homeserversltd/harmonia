@@ -73,6 +73,7 @@ pub(crate) struct EngineArtifactExhaustionDebt {
 
 #[derive(Clone, Debug)]
 pub(crate) struct DeferredRunSummary {
+    pub run_id: String,
     pub profile_id: String,
     pub apply: bool,
     pub ok: bool,
@@ -222,6 +223,156 @@ fn closing_module_steps(state: &RunState, receipt_dir: &Path) -> Vec<serde_json:
         .collect()
 }
 
+fn forward_module_outcome(
+    profile_id: &str,
+    module_id: &str,
+    ok: Option<bool>,
+    changed: bool,
+    operation_count: Option<usize>,
+    first_missing_signal: Option<&str>,
+    run_id: Option<&str>,
+) {
+    let profile_id = crate::hyalos::bounded_json_string(profile_id, 96);
+    let module_id = crate::hyalos::bounded_json_string(module_id, 96);
+    let outcome = match ok {
+        Some(false) => "failed",
+        Some(true) if changed => "changed",
+        Some(true) => "unchanged",
+        None => "not-run",
+    };
+    let mut metadata = json!({
+        "profile_id": profile_id,
+        "module": module_id,
+        "state": outcome,
+        "changed": changed,
+    });
+    if let Some(ok) = ok {
+        metadata["ok"] = json!(ok);
+    }
+    if let Some(operation_count) = operation_count {
+        metadata["operation_count"] = json!(operation_count);
+    }
+    if ok == Some(false) {
+        let signal = first_missing_signal
+            .filter(|signal| *signal != "none")
+            .unwrap_or("module-failed");
+        metadata["first_missing_signal"] =
+            json!(crate::hyalos::bounded_json_string(signal, 320));
+    }
+    let message = format!(
+        "profile={profile_id} module={module_id} outcome={outcome}"
+    );
+    let correlation_id = run_id.map(|id| crate::hyalos::bounded_json_string(id, 96));
+    crate::hyalos::forward_bounded_receipt(
+        "harmonia.module.outcome",
+        &message,
+        Some(metadata),
+        ok,
+        correlation_id.as_deref(),
+    );
+}
+
+fn forward_module_outcomes_from_states(
+    profile: &Profile,
+    module_states: &BTreeMap<String, ModuleExecution>,
+    run_id: Option<&str>,
+) {
+    for module_id in &profile.modules {
+        let state = module_states.get(module_id);
+        forward_module_outcome(
+            &profile.id,
+            module_id,
+            state.map(|state| state.ok),
+            state.is_some_and(|state| state.changed),
+            state.map(|state| state.operation_count),
+            state.and_then(|state| state.first_missing_signal.as_deref()),
+            run_id,
+        );
+    }
+}
+
+fn forward_module_outcomes_from_steps(
+    profile: &Profile,
+    module_steps: &[serde_json::Value],
+    run_id: Option<&str>,
+) {
+    for module_id in &profile.modules {
+        let step = module_steps.iter().find(|step| {
+            step.get("module").and_then(serde_json::Value::as_str)
+                == Some(module_id.as_str())
+        });
+        let observed = step.and_then(|step| step.get("observed"));
+        forward_module_outcome(
+            &profile.id,
+            module_id,
+            observed.and_then(|value| value.get("ok")).and_then(serde_json::Value::as_bool),
+            observed
+                .and_then(|value| value.get("changed"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            None,
+            observed
+                .and_then(|value| value.get("first_missing_signal"))
+                .and_then(serde_json::Value::as_str),
+            run_id,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn forward_run_outcome(
+    profile_id: &str,
+    run_id: Option<&str>,
+    ok: bool,
+    changed: bool,
+    overall_ok: bool,
+    degraded: bool,
+    module_count: usize,
+    operation_count: usize,
+    duration_ms: u128,
+    first_missing_signal: &str,
+    engine_debt_signal: Option<&str>,
+    module_debt_signal: Option<&str>,
+) {
+    let profile_id = crate::hyalos::bounded_json_string(profile_id, 96);
+    let mut metadata = json!({
+        "schema": "harmonia.run_profile.v1",
+        "ok": ok,
+        "changed": changed,
+        "profile_id": profile_id,
+        "module_count": module_count,
+        "operation_count": operation_count,
+        "duration_ms": duration_ms,
+        "degraded": degraded,
+        "overall_ok": overall_ok,
+    });
+    if first_missing_signal != "none" {
+        metadata["first_missing_signal"] =
+            json!(crate::hyalos::bounded_json_string(first_missing_signal, 320));
+    }
+    if let Some(signal) = engine_debt_signal {
+        metadata["engine_debt_first_missing_signal"] =
+            json!(crate::hyalos::bounded_json_string(signal, 320));
+    }
+    if let Some(signal) = module_debt_signal {
+        metadata["module_artifact_debt_first_missing_signal"] =
+            json!(crate::hyalos::bounded_json_string(signal, 320));
+    }
+    let message = if degraded {
+        format!("schema=harmonia.run_profile.v1 ok={ok} degraded=true overall_ok=false")
+    } else {
+        format!("schema=harmonia.run_profile.v1 ok={ok}")
+    };
+    let correlation_id = run_id.map(|id| crate::hyalos::bounded_json_string(id, 96));
+    crate::hyalos::forward_bounded_receipt(
+        "schema=harmonia.run_profile.v1",
+        &message,
+        Some(metadata),
+        Some(overall_ok),
+        correlation_id.as_deref(),
+    );
+}
+
 pub(crate) fn settle(
     state: RunState,
     profile: &Profile,
@@ -291,6 +442,7 @@ pub(crate) fn settle(
         };
         let module_steps = closing_module_steps(&state, receipt_dir);
         carrier.borrow_mut().deferred_terminal_summary = Some(DeferredRunSummary {
+            run_id: state.run_id.clone(),
             profile_id: profile.id.clone(),
             apply: state.apply,
             ok: state.ok && state.module_states.values().all(|step| step.ok),
@@ -340,31 +492,29 @@ pub(crate) fn settle(
     let run_ok = state.ok && state.module_states.values().all(|step| step.ok);
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
     let overall_ok = run_ok && !degraded;
-    let mut forwarded = json!({
-        "schema":"harmonia.run_profile.v1",
-        "ok":run_ok,
-        "module_artifact_debt":module_artifact_debt.clone(),
-    });
-    if let Some(debt) = engine_debt.as_ref() {
-        forwarded["engine_debt"] = debt.clone();
+    forward_module_outcomes_from_states(profile, &state.module_states, Some(&state.run_id));
+    if state.changed || !overall_ok {
+        forward_run_outcome(
+            &profile.id,
+            Some(&state.run_id),
+            run_ok,
+            state.changed,
+            overall_ok,
+            degraded,
+            state.module_count,
+            state.operation_count,
+            state.run_started.elapsed().as_millis(),
+            &first_missing_signal,
+            state
+                .engine_debt
+                .as_ref()
+                .map(|debt| debt.first_missing_signal.as_str()),
+            module_artifact_debt
+                .first()
+                .and_then(|debt| debt.get("first_missing_signal"))
+                .and_then(serde_json::Value::as_str),
+        );
     }
-    if degraded {
-        forwarded["degraded"] = json!(true);
-        forwarded["overall_ok"] = json!(false);
-    } else {
-        forwarded["overall_ok"] = json!(overall_ok);
-    }
-    crate::hyalos::forward_receipt(
-        "schema=harmonia.run_profile.v1",
-        &if degraded {
-            format!("schema=harmonia.run_profile.v1 ok={run_ok} degraded=true overall_ok=false")
-        } else {
-            format!("schema=harmonia.run_profile.v1 ok={run_ok}")
-        },
-        Some(forwarded),
-        Some(overall_ok),
-        None,
-    );
     println!("ok={}", state.ok);
     if degraded {
         println!("degraded=true");
@@ -437,34 +587,30 @@ pub(crate) fn finalize_deferred_terminal(
     println!("schema=harmonia.run_profile.v1");
     let degraded = engine_debt.is_some() || !summary.module_artifact_debt.is_empty();
     let overall_ok = summary.ok && !degraded;
-    let mut forwarded = json!({
-        "schema":"harmonia.run_profile.v1",
-        "ok":summary.ok,
-        "module_artifact_debt":summary.module_artifact_debt.clone(),
-    });
-    if let Some(debt) = engine_debt.as_ref() {
-        forwarded["engine_debt"] = debt.clone();
+    forward_module_outcomes_from_steps(profile, &summary.module_steps, Some(&summary.run_id));
+    if summary.changed || !overall_ok {
+        forward_run_outcome(
+            &summary.profile_id,
+            Some(&summary.run_id),
+            summary.ok,
+            summary.changed,
+            overall_ok,
+            degraded,
+            summary.module_count,
+            summary.operation_count,
+            summary.duration_ms,
+            &summary.first_missing_signal,
+            summary
+                .engine_debt
+                .as_ref()
+                .map(|debt| debt.first_missing_signal.as_str()),
+            summary
+                .module_artifact_debt
+                .first()
+                .and_then(|debt| debt.get("first_missing_signal"))
+                .and_then(serde_json::Value::as_str),
+        );
     }
-    if degraded {
-        forwarded["degraded"] = json!(true);
-        forwarded["overall_ok"] = json!(false);
-    } else {
-        forwarded["overall_ok"] = json!(overall_ok);
-    }
-    crate::hyalos::forward_receipt(
-        "schema=harmonia.run_profile.v1",
-        &if degraded {
-            format!(
-                "schema=harmonia.run_profile.v1 ok={} degraded=true overall_ok=false",
-                summary.ok
-            )
-        } else {
-            format!("schema=harmonia.run_profile.v1 ok={}", summary.ok)
-        },
-        Some(forwarded),
-        Some(overall_ok),
-        None,
-    );
     println!("ok={}", summary.ok);
     if degraded {
         println!("degraded=true");
