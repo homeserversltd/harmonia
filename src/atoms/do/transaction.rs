@@ -387,15 +387,33 @@ fn finish_receipt_run_marker(
         latest_path,
         "receipt-run-marker-finish",
     )?;
+    let current_pid = std::process::id();
+    let current_start_ticks =
+        crate::atoms::attest::convergence_receipts::current_process_start_ticks();
     let path = receipt_dir.join("ruyi.json");
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_file() => {
             if let Some(mut marker) = crate::atoms::attest::convergence_receipts::read_regular_json(&path)? {
                 let matches_run = marker.get("run_id").and_then(serde_json::Value::as_str) == Some(run_id)
                     && marker.get("profile").and_then(serde_json::Value::as_str) == Some(profile);
-                if matches_run && marker.get("in_flight").and_then(serde_json::Value::as_bool) == Some(true) {
-                    marker["in_flight"] = serde_json::Value::Bool(false);
-                    crate::atoms::attest::write_json_atomic(&path, &marker)?;
+                let owned_by_current_process = marker
+                    .get("pid")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(u64::from(current_pid))
+                    && marker
+                        .get("process_start_ticks")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_none_or(|start| current_start_ticks == Some(start));
+                if matches_run
+                    && owned_by_current_process
+                    && marker.get("in_flight").and_then(serde_json::Value::as_bool) == Some(true)
+                {
+                    if let Some(fields) = marker.as_object_mut() {
+                        fields.remove("in_flight");
+                        fields.remove("pid");
+                        fields.remove("process_start_ticks");
+                        crate::atoms::attest::write_json_atomic(&path, &marker)?;
+                    }
                 }
             }
         }
@@ -408,7 +426,11 @@ fn finish_receipt_run_marker(
         Some(marker)
             if marker.get("run_id").and_then(serde_json::Value::as_str) == Some(run_id)
                 && marker.get("profile").and_then(serde_json::Value::as_str) == Some(profile)
-                && marker.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(std::process::id())) =>
+                && marker.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(current_pid))
+                && marker
+                    .get("process_start_ticks")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_none_or(|start| current_start_ticks == Some(start)) =>
         {
             match fs::remove_file(&in_flight_path) {
                 Ok(()) => Ok(()),

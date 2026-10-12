@@ -278,7 +278,7 @@ fn validated_receipt_root(root: &Path, error_prefix: &str) -> Result<(PathBuf, u
 }
 
 fn has_regular_receipt_marker(directory: &Path) -> Result<bool, String> {
-    for marker in ["run.json", "ruyi.json"] {
+    for marker in ["run.json", "ruyi.json", ".harmonia-in-flight.json"] {
         let path = directory.join(marker);
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => return Ok(true),
@@ -1027,28 +1027,42 @@ fn root_candidate(path: &Path, metadata: &std::fs::Metadata) -> Result<ReceiptRo
             == Some("harmonia.run_profile.v1")
             && value.get("ok").and_then(serde_json::Value::as_bool).is_some()
     });
-    let (in_flight, ambiguous_in_flight) = if in_flight_marker.is_some() {
-        in_flight_state(in_flight_marker.as_ref())
+    let (legacy_in_flight, legacy_ambiguous) = in_flight_state(ruyi.as_ref());
+    let legacy_pid = ruyi
+        .as_ref()
+        .and_then(|value| value.get("pid"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok());
+    let live_legacy_owner = legacy_in_flight && legacy_pid.is_some();
+    let (dedicated_in_flight, dedicated_ambiguous) =
+        in_flight_state(in_flight_marker.as_ref());
+    let (in_flight, ambiguous_in_flight) = if live_legacy_owner {
+        (legacy_in_flight, legacy_ambiguous)
+    } else if in_flight_marker.is_some() {
+        (dedicated_in_flight, dedicated_ambiguous)
     } else {
-        let (legacy_in_flight, legacy_ambiguous) = in_flight_state(ruyi.as_ref());
         if complete && legacy_ambiguous {
             (false, false)
         } else {
             (legacy_in_flight, legacy_ambiguous)
         }
     };
-    let run_id = in_flight_marker
-        .as_ref()
+    let preferred_marker = if live_legacy_owner {
+        ruyi.as_ref()
+    } else {
+        in_flight_marker.as_ref()
+    };
+    let fallback_legacy_marker = (!live_legacy_owner).then_some(ruyi.as_ref()).flatten();
+    let run_id = preferred_marker
         .and_then(|value| value.get("run_id"))
-        .or_else(|| ruyi.as_ref().and_then(|value| value.get("run_id")))
+        .or_else(|| fallback_legacy_marker.and_then(|value| value.get("run_id")))
         .or_else(|| run.as_ref().and_then(|value| value.get("run_id")))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    let profile_id = in_flight_marker
-        .as_ref()
+    let profile_id = preferred_marker
         .and_then(|value| value.get("profile").or_else(|| value.get("profile_id")))
         .or_else(|| {
-            ruyi.as_ref()
+            fallback_legacy_marker
                 .and_then(|value| value.get("profile").or_else(|| value.get("profile_id")))
         })
         .or_else(|| {
@@ -1064,12 +1078,11 @@ fn root_candidate(path: &Path, metadata: &std::fs::Metadata) -> Result<ReceiptRo
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos())
         .or_else(|| {
-            in_flight_marker
-                .as_ref()
+            preferred_marker
                 .and_then(|value| value.get("started_at_unix_ns"))
                 .and_then(serde_json::Value::as_u64)
                 .or_else(|| {
-                    ruyi.as_ref()
+                    fallback_legacy_marker
                         .and_then(|value| value.get("started_at_unix_ns"))
                         .and_then(serde_json::Value::as_u64)
                 })
@@ -1173,6 +1186,14 @@ fn scan_receipt_root(root: &Path) -> Result<(Vec<ReceiptRootCandidate>, Vec<Stri
             continue;
         }
         let path = entry.path();
+        match has_regular_receipt_marker(&path) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                warnings.push(error);
+                continue;
+            }
+        }
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
