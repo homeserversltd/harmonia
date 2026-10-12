@@ -195,34 +195,10 @@ fn observe_uncached() -> StampObservation {
         match fetch_candidate_stamp(&locator) {
             Ok(fetched) => {
                 observation.stamp_source = Some(fetched.stamp_source.clone());
-                if fetched.bytes.len() > MAX_STAMP_BYTES {
-                    receipt["final_state"] = json!({
-                        "disposition":"invalid",
-                        "signal":"wukong-staff-stamp-oversized",
-                        "selected_release":fetched.selected_release,
-                        "stamp_source":fetched.stamp_source,
-                    });
-                    observation.signal = "wukong-staff-stamp-invalid".into();
-                    observation.verdict = Some("INVALID".into());
-                    observation.attempts.push(receipt);
-                    return observation;
-                }
-                let Some(stamp_line) = trim_extraction_padding(&fetched.bytes) else {
-                    receipt["final_state"] = json!({
-                        "disposition":"invalid",
-                        "signal":"wukong-staff-stamp-encoding-invalid",
-                        "selected_release":fetched.selected_release,
-                        "stamp_source":fetched.stamp_source,
-                    });
-                    observation.signal = "wukong-staff-stamp-invalid".into();
-                    observation.verdict = Some("INVALID".into());
-                    observation.attempts.push(receipt);
-                    return observation;
-                };
-
-                match parse_collective_stamp(stamp_line) {
+                match parse_collective_stamp(&fetched.bytes) {
                     Err((verdict, signal)) => {
-                        observation.key_id = stamp_key_id_hint(stamp_line);
+                        observation.key_id = trim_extraction_padding(&fetched.bytes)
+                            .and_then(stamp_key_id_hint);
                         receipt["final_state"] = json!({
                             "disposition":"selected",
                             "verdict":verdict,
@@ -313,7 +289,7 @@ fn observe_uncached() -> StampObservation {
                                         "disposition":"invalid",
                                         "signal":signal,
                                     }));
-                                    last_invalid = Some(signal);
+                                    last_unavailable = signal;
                                 }
                             }
                         }
@@ -344,25 +320,20 @@ fn observe_uncached() -> StampObservation {
                     }
                 }
             }
-            Err((reason, selected_release)) => {
-                if reason == "wukong-staff-stamp-response-oversized" {
-                    observation.stamp_source = Some(locator.clone());
-                    observation.signal = "wukong-staff-stamp-invalid".into();
-                    observation.verdict = Some("INVALID".into());
-                    receipt["final_state"] = json!({
-                        "disposition":"invalid",
-                        "signal":reason,
-                        "selected_release":selected_release,
-                        "stamp_source":locator,
-                    });
-                    observation.attempts.push(receipt);
-                    return observation;
-                }
-                receipt["final_state"] = json!({
+            Err((reason, selected_release, http_status)) => {
+                let mut final_state = json!({
                     "disposition":"unavailable",
                     "signal":reason,
                     "selected_release":selected_release,
                 });
+                if reason == "wukong-staff-stamp-response-oversized" {
+                    observation.stamp_source = Some(locator.clone());
+                    final_state["stamp_source"] = json!(locator);
+                }
+                if let Some(status) = http_status {
+                    final_state["http_status"] = json!(status);
+                }
+                receipt["final_state"] = final_state;
                 observation.signal = reason;
                 observation.attempts.push(receipt);
             }
@@ -483,7 +454,13 @@ fn candidate_strings(value: &Value) -> Vec<String> {
     output
 }
 
-fn request(url: &str, max_bytes: usize) -> Result<(u16, Vec<u8>), String> {
+struct HttpResponse {
+    status: u16,
+    body: Vec<u8>,
+    oversized: bool,
+}
+
+fn request(url: &str, max_bytes: usize) -> Result<HttpResponse, String> {
     let url =
         safe_https_url(url).ok_or_else(|| "wukong-staff-source-candidate-invalid".to_string())?;
     let credential = match crate::atoms::forge_credential::resolve_for_url(&url) {
@@ -509,7 +486,7 @@ fn request(url: &str, max_bytes: usize) -> Result<(u16, Vec<u8>), String> {
         "--proto-redir",
         "=https",
         "--write-out",
-        "\n%{http_code}",
+        "%{stderr}\n%{http_code}\n",
     ]);
     if credential.is_some() {
         command.args(["--config", "-"]).stdin(Stdio::piped());
@@ -519,7 +496,7 @@ fn request(url: &str, max_bytes: usize) -> Result<(u16, Vec<u8>), String> {
     let mut child = command
         .arg(&url)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| "wukong-staff-stamp-unreachable".to_string())?;
     if let Some(token) = credential.as_deref() {
@@ -544,21 +521,54 @@ fn request(url: &str, max_bytes: usize) -> Result<(u16, Vec<u8>), String> {
         .stdout
         .take()
         .ok_or_else(|| "wukong-staff-stamp-unreachable".to_string())?;
-    let max_output = max_bytes.saturating_add(32);
-    let mut output = Vec::with_capacity(max_output.min(MAX_HTTP_BODY + 32));
-    let read_result = stdout
-        .by_ref()
-        .take(max_output as u64)
-        .read_to_end(&mut output);
-    if read_result.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("wukong-staff-stamp-unreachable".into());
+    let mut body = Vec::with_capacity(max_bytes.min(MAX_HTTP_BODY));
+    let mut oversized = false;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = match stdout.read(&mut buffer) {
+            Ok(count) => count,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("wukong-staff-stamp-unreachable".into());
+            }
+        };
+        if count == 0 {
+            break;
+        }
+        if !oversized {
+            let retained = count.min(max_bytes.saturating_sub(body.len()));
+            body.extend_from_slice(&buffer[..retained]);
+            oversized = retained < count;
+        }
     }
-    if output.len() >= max_output {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("wukong-staff-stamp-response-oversized".into());
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "wukong-staff-stamp-unreachable".to_string())?;
+    let mut status_tail = [0u8; 5];
+    let mut status_tail_len = 0;
+    loop {
+        let count = match stderr.read(&mut buffer) {
+            Ok(count) => count,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("wukong-staff-stamp-unreachable".into());
+            }
+        };
+        if count == 0 {
+            break;
+        }
+        for byte in &buffer[..count] {
+            if status_tail_len < status_tail.len() {
+                status_tail[status_tail_len] = *byte;
+                status_tail_len += 1;
+            } else {
+                status_tail.copy_within(1.., 0);
+                status_tail[status_tail.len() - 1] = *byte;
+            }
+        }
     }
     let status = child
         .wait()
@@ -566,19 +576,18 @@ fn request(url: &str, max_bytes: usize) -> Result<(u16, Vec<u8>), String> {
     if !status.success() {
         return Err("wukong-staff-stamp-unreachable".into());
     }
-    let split = output
-        .iter()
-        .rposition(|byte| *byte == b'\n')
+    let status_code = (status_tail_len == status_tail.len()
+        && status_tail[0] == b'\n'
+        && status_tail[4] == b'\n')
+        .then(|| std::str::from_utf8(&status_tail[1..4]).ok())
+        .flatten()
+        .and_then(|value| value.parse::<u16>().ok())
         .ok_or_else(|| "wukong-staff-stamp-http-status-invalid".to_string())?;
-    let status_code = std::str::from_utf8(&output[split + 1..])
-        .ok()
-        .and_then(|value| value.trim().parse::<u16>().ok())
-        .ok_or_else(|| "wukong-staff-stamp-http-status-invalid".to_string())?;
-    let body = output[..split].to_vec();
-    if body.len() > max_bytes {
-        return Err("wukong-staff-stamp-response-oversized".into());
-    }
-    Ok((status_code, body))
+    Ok(HttpResponse {
+        status: status_code,
+        body,
+        oversized,
+    })
 }
 
 fn curl_authorization_config(token: &str) -> Option<String> {
@@ -634,32 +643,43 @@ impl FetchedStamp {
     }
 }
 
-fn fetch_candidate_stamp(locator: &str) -> Result<FetchedStamp, (String, String)> {
+fn fetch_candidate_stamp(locator: &str) -> Result<FetchedStamp, (String, String, Option<u16>)> {
     if let Some((api, authority, repo_path)) = release_endpoint(locator) {
-        return fetch_release_stamp(&api, &authority, &repo_path);
+        return fetch_release_stamp(&api, &authority, &repo_path)
+            .map_err(|(signal, release)| (signal, release, None));
     }
     let safe_locator = safe_https_url(locator).ok_or_else(|| {
         (
             "wukong-staff-source-candidate-invalid".into(),
             "unknown".into(),
+            None,
         )
     })?;
     if !is_file_url(&safe_locator) {
         return Err((
             "wukong-staff-source-candidate-invalid".into(),
             "unknown".into(),
+            None,
         ));
     }
-    let (status, bytes) = request(&safe_locator, MAX_STAMP_BYTES)
-        .map_err(|reason| (reason, "plain-https-file".into()))?;
-    if !(200..300).contains(&status) {
+    let response = request(&safe_locator, MAX_STAMP_BYTES)
+        .map_err(|reason| (reason, "plain-https-file".into(), None))?;
+    if !(200..300).contains(&response.status) {
         return Err((
             "wukong-staff-stamp-http-unavailable".into(),
             "plain-https-file".into(),
+            Some(response.status),
+        ));
+    }
+    if response.oversized {
+        return Err((
+            "wukong-staff-stamp-response-oversized".into(),
+            "plain-https-file".into(),
+            None,
         ));
     }
     Ok(FetchedStamp {
-        bytes,
+        bytes: response.body,
         stamp_source: safe_locator.clone(),
         selected_release: "plain-https-file".into(),
         key_asset_url: None,
@@ -675,21 +695,21 @@ fn fetch_release_stamp(
     let mut releases = Vec::<Value>::new();
     for page_number in 1..=MAX_RELEASE_PAGES {
         let url = format!("{api}?limit={RELEASES_PER_PAGE}&page={page_number}");
-        let (status, bytes) = request(&url, MAX_HTTP_BODY).map_err(|reason| {
-            let signal = if reason == "wukong-staff-stamp-response-oversized" {
-                "wukong-staff-release-list-oversized".to_string()
-            } else {
-                reason
-            };
-            (signal, "release-listing".into())
-        })?;
-        if !(200..300).contains(&status) {
+        let response = request(&url, MAX_HTTP_BODY)
+            .map_err(|reason| (reason, "release-listing".into()))?;
+        if response.oversized {
+            return Err((
+                "wukong-staff-release-list-oversized".into(),
+                "release-listing".into(),
+            ));
+        }
+        if !(200..300).contains(&response.status) {
             return Err((
                 "wukong-staff-release-list-unavailable".into(),
                 "release-listing".into(),
             ));
         }
-        let page: Vec<Value> = serde_json::from_slice(&bytes).map_err(|_| {
+        let page: Vec<Value> = serde_json::from_slice(&response.body).map_err(|_| {
             (
                 "wukong-staff-release-list-malformed".into(),
                 "release-listing".into(),
@@ -732,14 +752,21 @@ fn fetch_release_stamp(
             selected_release,
         ));
     };
-    let (status, bytes) = request(&stamp_url, MAX_STAMP_BYTES)
+    let response = request(&stamp_url, MAX_STAMP_BYTES)
         .map_err(|reason| (reason, selected_release.clone()))?;
-    if !(200..300).contains(&status) {
+    if response.oversized {
+        return Err((
+            "wukong-staff-stamp-response-oversized".into(),
+            selected_release,
+        ));
+    }
+    if !(200..300).contains(&response.status) {
         return Err((
             "wukong-staff-stamp-http-unavailable".into(),
             selected_release,
         ));
     }
+    let bytes = response.body;
     let key_asset_name = format!(
         "keys/{}.txt",
         stamp_key_id_hint_from_bytes(&bytes).unwrap_or_default()
@@ -890,7 +917,9 @@ struct ParsedStamp {
     terms: std::collections::BTreeMap<String, String>,
 }
 
-fn parse_collective_stamp(line: &str) -> Result<ParsedStamp, (String, String)> {
+fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
+    let line = trim_extraction_padding(bytes)
+        .ok_or_else(|| ("INVALID".into(), "wukong-staff-stamp-encoding-invalid".into()))?;
     if !line.starts_with("MGLA1|") {
         if line.starts_with("MGLA") {
             return Err(("UNKNOWN".into(), "wukong-staff-stamp-unknown".into()));
@@ -1004,25 +1033,25 @@ fn read_key_candidate(candidate: &str) -> Result<String, KeyReadFailure> {
     }
     let locator = safe_https_url(candidate)
         .ok_or_else(|| KeyReadFailure::Invalid("wukong-staff-key-candidate-invalid".into()))?;
-    let (status, bytes) = match request(&locator, MAX_KEY_LINE_BYTES) {
+    let response = match request(&locator, MAX_KEY_LINE_BYTES) {
         Ok(response) => response,
-        Err(reason) if reason == "wukong-staff-stamp-response-oversized" => {
-            return Err(KeyReadFailure::Invalid(
-                "wukong-staff-key-line-oversized".into(),
-            ));
-        }
         Err(_) => {
             return Err(KeyReadFailure::Unavailable(
                 "wukong-staff-key-line-unavailable".into(),
             ));
         }
     };
-    if !(200..300).contains(&status) {
+    if response.oversized {
+        return Err(KeyReadFailure::Unavailable(
+            "wukong-staff-key-line-oversized".into(),
+        ));
+    }
+    if !(200..300).contains(&response.status) {
         return Err(KeyReadFailure::Unavailable(
             "wukong-staff-key-line-unavailable".into(),
         ));
     }
-    let line = trim_extraction_padding(&bytes)
+    let line = trim_extraction_padding(&response.body)
         .ok_or_else(|| KeyReadFailure::Invalid("wukong-staff-key-line-invalid".into()))?;
     if line.is_empty() {
         return Err(KeyReadFailure::Invalid(
