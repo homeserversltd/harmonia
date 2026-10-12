@@ -44,7 +44,7 @@ impl MoltSourceKind {
 
     fn subscription_source(self, harmonia_root: &Path, profile_id: &str) -> String {
         match self {
-            Self::EngineSource => format!("molt:{}", harmonia_root.display()),
+            Self::EngineSource => harmonia_root.display().to_string(),
             Self::StandingProfile => harmonia_root
                 .join("profiles")
                 .join(profile_id)
