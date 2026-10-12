@@ -384,24 +384,22 @@ pub(crate) fn rolling_update_run(
     mode: UpdateMode<'_>,
     context: Option<&crate::RunContext>,
     suite_debt: Option<String>,
+    receipt_retention: usize,
     lock_path: PathBuf,
     materialize_receipt: fn(&Path, &str) -> Result<PathBuf, String>,
     try_acquire_lock: fn(&Path) -> Result<ConvergenceLockGuard, ConvergenceLockBusy>,
 ) -> Result<(), String> {
     let _mint_seats = crate::atoms::ask::mint_seats::at_start();
     let apply = mode.is_software_apply();
-    let retention = match crate::bands::stage_profile::groups::read_device_receipt_retention() {
-        Ok(retention) => retention,
-        Err(reason) => {
-            write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
-            return Err(reason);
-        }
-    };
     let _convergence_lock = if apply {
         match try_acquire_lock(&lock_path) {
             Ok(guard) => Some(guard),
             Err(ConvergenceLockBusy) => {
-                write_run_refusal_receipt(receipt_dir, profile, apply, "run-in-progress")?;
+                crate::atoms::attest::convergence_receipts::emit_convergence_skipped_stdout(
+                    receipt_dir,
+                    "lock-held",
+                    &profile.id,
+                );
                 return Ok(());
             }
         }
@@ -502,6 +500,8 @@ pub(crate) fn rolling_update_run(
                 &execution_projection,
                 context,
                 Some(&carrier),
+                receipt_retention,
+                Some(receipt_dir),
                 false,
             );
         }
@@ -536,6 +536,8 @@ pub(crate) fn rolling_update_run(
             &execution_projection,
             context,
             Some(&carrier),
+            receipt_retention,
+            Some(receipt_dir),
             true,
         );
         let (changed, operation_count) = carrier
@@ -904,11 +906,21 @@ pub(crate) fn rolling_update_run(
         {
             crate::receipts::write_profile_ledger_run(
                 &effective_receipt_dir,
+                Some(receipt_dir),
                 profile,
                 &run_id,
                 &[],
-                retention,
+                receipt_retention,
             )
+            .map(|ledger_report| {
+                if let Err(error) = crate::receipts::record_profile_ledger_projection(
+                    &effective_receipt_dir,
+                    receipt_retention,
+                    &ledger_report,
+                ) {
+                    eprintln!("profile-ledger-projection-warning: {error}");
+                }
+            })
         } else {
             Ok(())
         };
@@ -938,11 +950,35 @@ pub(crate) fn rolling_update_run(
             "receipt-lifecycle",
         )
         .and_then(|()| {
-            crate::atoms::attest::convergence_receipts::prune_receipt_family_locked(
+            let mut report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked(
                 receipt_dir,
                 stem,
-                retention,
-            )
+                receipt_retention,
+            );
+            match crate::receipts::reconcile_profile_ledger_family(
+                &effective_receipt_dir,
+                receipt_dir,
+                profile,
+                receipt_retention,
+                stem,
+            ) {
+                Ok(warnings) => report.warnings.extend(warnings),
+                Err(error) => report.warnings.push(format!(
+                    "profile-ledger-retention-reconcile-failed: {error}"
+                )),
+            }
+            if let Err(error) = crate::receipts::record_receipt_cleanup(
+                &effective_receipt_dir,
+                &report,
+            ) {
+                report.warnings.push(format!(
+                    "receipt-cleanup-projection-write-failed: {error}"
+                ));
+            }
+            for warning in &report.warnings {
+                eprintln!("receipt-cleanup-warning: {warning}");
+            }
+            Ok(())
         })
     } else {
         Ok(())
@@ -1103,6 +1139,7 @@ pub(crate) fn rolling_update_from_certificate_with_context(
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
     context: Option<&crate::RunContext>,
+    receipt_retention: usize,
 ) -> Result<(), String> {
     let materialize = match profile.id.as_str() {
         "homeserver" => materialize_homeserver_receipt_dir,
@@ -1116,6 +1153,7 @@ pub(crate) fn rolling_update_from_certificate_with_context(
         mode,
         context,
         enforce_update_suite(profile, module_root)?,
+        receipt_retention,
         engine_run_lock_path(),
         materialize,
         try_acquire_homeconsole_update_lock,

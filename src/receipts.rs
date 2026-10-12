@@ -112,14 +112,67 @@ fn ledger_run_key(value: &serde_json::Value, index: usize) -> String {
         .unwrap_or_else(|| format!("legacy-row-{index}"))
 }
 
+struct ProfileLedgerRead {
+    runs: VecDeque<(String, Vec<serde_json::Value>)>,
+    max_sequence: u64,
+    seen_run_ids: BTreeSet<String>,
+    unparsable_lines: usize,
+    read_warnings: Vec<String>,
+}
+
 fn read_profile_ledger_runs(
     path: &Path,
     retention: usize,
-) -> Result<(VecDeque<(String, Vec<serde_json::Value>)>, Option<u64>), String> {
-    let file = match File::open(path) {
+    selected_run_ids: Option<&BTreeSet<String>>,
+) -> Result<ProfileLedgerRead, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("profile-ledger-read-failed {}: {error}", path.display())),
+    };
+    let Some(metadata) = metadata else {
+        return Ok(ProfileLedgerRead {
+            runs: VecDeque::new(),
+            max_sequence: 0,
+            seen_run_ids: BTreeSet::new(),
+            unparsable_lines: 0,
+            read_warnings: Vec::new(),
+        });
+    };
+    if !metadata.file_type().is_file() {
+        return Err(format!("profile-ledger-collision {}", path.display()));
+    }
+    #[cfg(unix)]
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+    };
+    #[cfg(not(unix))]
+    let opened = File::open(path);
+    #[cfg(unix)]
+    let metadata_matches = {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let expected_owner = (unsafe { libc::geteuid() }, unsafe { libc::getegid() });
+        (metadata.uid(), metadata.gid()) == expected_owner
+            && metadata.permissions().mode() & 0o7777 == 0o644
+    };
+    #[cfg(not(unix))]
+    let metadata_matches = true;
+    let file = match opened {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok((VecDeque::new(), None))
+        Err(error)
+            if error.kind() == io::ErrorKind::PermissionDenied && !metadata_matches =>
+        {
+            return Ok(ProfileLedgerRead {
+                runs: VecDeque::new(),
+                max_sequence: 0,
+                seen_run_ids: BTreeSet::new(),
+                unparsable_lines: 0,
+                read_warnings: vec!["profile-ledger-unreadable-metadata-mismatch".to_string()],
+            });
         }
         Err(error) => {
             return Err(format!(
@@ -133,7 +186,9 @@ fn read_profile_ledger_runs(
     let mut line_number = 0usize;
     let mut runs = VecDeque::new();
     let mut previous_key: Option<String> = None;
-    let mut last_sequence = None;
+    let mut max_sequence = 0u64;
+    let mut seen_run_ids = BTreeSet::new();
+    let mut unparsable_lines = 0usize;
     loop {
         line.clear();
         if reader
@@ -150,41 +205,48 @@ fn read_profile_ledger_runs(
         if line.is_empty() {
             continue;
         }
-        let value = serde_json::from_slice::<serde_json::Value>(&line).map_err(|error| {
-            format!(
-                "profile-ledger-row-invalid {} line={line_number}: {error}",
-                path.display()
-            )
-        })?;
+        let value = match serde_json::from_slice::<serde_json::Value>(&line) {
+            Ok(value) => value,
+            Err(_) => {
+                unparsable_lines += 1;
+                continue;
+            }
+        };
         let key = ledger_run_key(&value, line_number - 1);
-        // Each run writes its module rows contiguously; retention counts run IDs, not lines.
+        seen_run_ids.insert(key.clone());
+        if let Some(sequence) = value.get("sequence").and_then(serde_json::Value::as_u64) {
+            max_sequence = max_sequence.max(sequence);
+        }
         if previous_key.as_deref() != Some(key.as_str()) {
             previous_key = Some(key.clone());
-            last_sequence = None;
-            if retention > 0 {
-                runs.push_back((key, Vec::new()));
-                while runs.len() > retention {
+            let retain_run = selected_run_ids
+                .map(|selected| selected.contains(&key))
+                .unwrap_or(retention > 0);
+            if retain_run {
+                runs.push_back((key.clone(), Vec::new()));
+                while selected_run_ids.is_none() && runs.len() > retention {
                     runs.pop_front();
                 }
             }
         }
-        if let Some(sequence) = value.get("sequence").and_then(serde_json::Value::as_u64) {
-            last_sequence = Some(
-                last_sequence.map_or(sequence, |previous: u64| previous.max(sequence)),
-            );
-        }
-        if retention > 0 {
-            if let Some((_, rows)) = runs.back_mut() {
-                rows.push(value);
+        let retain_run = selected_run_ids
+            .map(|selected| selected.contains(&key))
+            .unwrap_or(retention > 0);
+        if retain_run {
+            if let Some((existing_key, rows)) = runs.back_mut() {
+                if existing_key == &key {
+                    rows.push(value);
+                }
             }
         }
     }
-    Ok((runs, last_sequence))
-}
-
-fn run_stamp_sequence(run_id: &str) -> Option<u64> {
-    let stamp = run_id.strip_prefix("run-")?.split('-').next()?;
-    stamp.parse::<u64>().ok()
+    Ok(ProfileLedgerRead {
+        runs,
+        max_sequence,
+        seen_run_ids,
+        unparsable_lines,
+        read_warnings: Vec::new(),
+    })
 }
 
 fn serialize_profile_ledger_runs(
@@ -201,15 +263,6 @@ fn serialize_profile_ledger_runs(
     Ok(bytes)
 }
 
-#[derive(Clone)]
-struct ReceiptFamilyRun {
-    run_id: String,
-    stamp: u128,
-    collision: u128,
-    displaced: bool,
-    path: PathBuf,
-}
-
 fn receipt_family_stem(receipt_dir: &Path, run_id: &str) -> Option<String> {
     let name = receipt_dir.file_name()?.to_str()?;
     let suffix = format!("-{run_id}");
@@ -219,105 +272,6 @@ fn receipt_family_stem(receipt_dir: &Path, run_id: &str) -> Option<String> {
     .then(|| stem.to_owned())
 }
 
-fn receipt_family_runs(
-    receipt_dir: &Path,
-    stem: &str,
-) -> Result<Vec<ReceiptFamilyRun>, String> {
-    let parent = receipt_dir
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let entries = fs::read_dir(parent).map_err(|error| {
-        format!(
-            "profile-ledger-family-read-failed {}: {error}",
-            parent.display()
-        )
-    })?;
-    let prefix = format!("{stem}-");
-    let mut family = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let path = entry.path();
-        if !entry
-            .file_type()
-            .map_err(|error| {
-                format!(
-                    "profile-ledger-family-observe-failed {}: {error}",
-                    path.display()
-                )
-            })?
-            .is_dir()
-        {
-            continue;
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        let Some((stamp, collision, displaced)) =
-            crate::atoms::attest::convergence_receipts::parse_family_run(&name, stem)
-        else {
-            continue;
-        };
-        let Some(suffix) = name.strip_prefix(&prefix) else {
-            continue;
-        };
-        let run_id = suffix
-            .strip_prefix("displaced-")
-            .unwrap_or(suffix)
-            .to_owned();
-        family.push(ReceiptFamilyRun {
-            run_id,
-            stamp,
-            collision,
-            displaced,
-            path,
-        });
-    }
-    family.sort_by(|left, right| {
-        (left.stamp, left.collision, left.displaced, &left.path).cmp(&(
-            right.stamp,
-            right.collision,
-            right.displaced,
-            &right.path,
-        ))
-    });
-    let mut seen = BTreeSet::new();
-    family.retain(|run| seen.insert(run.run_id.clone()));
-    Ok(family)
-}
-
-fn family_run_sequence(
-    family: &[ReceiptFamilyRun],
-    current_index: usize,
-    ledger_rows: &BTreeMap<String, Vec<serde_json::Value>>,
-) -> u64 {
-    let mut previous = None;
-    for (index, run) in family.iter().take(current_index).enumerate() {
-        let Some(sequence) = ledger_rows
-            .get(&run.run_id)
-            .into_iter()
-            .flatten()
-            .filter_map(|row| row.get("sequence").and_then(serde_json::Value::as_u64))
-            .max()
-        else {
-            continue;
-        };
-        previous = Some((index, sequence));
-    }
-    if let Some((previous_index, sequence)) = previous {
-        let steps = u64::try_from(current_index.saturating_sub(previous_index)).unwrap_or(u64::MAX);
-        if let Some(sequence) = sequence.checked_add(steps) {
-            return sequence;
-        }
-    }
-    let base = family
-        .first()
-        .and_then(|run| u64::try_from(run.stamp).ok())
-        .or_else(|| family.get(current_index).and_then(|run| run_stamp_sequence(&run.run_id)))
-        .unwrap_or(1);
-    base.checked_add(u64::try_from(current_index).unwrap_or(u64::MAX))
-        .unwrap_or(u64::MAX)
-}
 
 fn profile_ledger_row(
     profile: &Profile,
@@ -344,118 +298,132 @@ fn profile_ledger_row(
     })
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProfileLedgerWriteReport {
+    pub(crate) unparsable_lines: usize,
+    pub(crate) read_warnings: Vec<String>,
+}
+
+fn fresh_profile_ledger_rows(
+    profile: &Profile,
+    run_id: &str,
+    entries: &[ProfileLedgerEntry<'_>],
+    max_sequence: &mut u64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let stamped_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    entries
+        .iter()
+        .map(|entry| {
+            *max_sequence = max_sequence
+                .checked_add(1)
+                .ok_or_else(|| "profile-ledger-sequence-exhausted".to_string())?;
+            Ok(profile_ledger_row(
+                profile,
+                run_id,
+                *max_sequence,
+                stamped_at_unix_ms,
+                entry,
+            ))
+        })
+        .collect()
+}
+
 fn write_direct_profile_ledger_run(
     path: &Path,
     profile: &Profile,
     run_id: &str,
     entries: &[ProfileLedgerEntry<'_>],
     retention: usize,
-) -> Result<(), String> {
-    let (mut runs, last_sequence) = read_profile_ledger_runs(path, retention)?;
-    let existing_index = runs
-        .iter()
-        .position(|(existing_run_id, _)| existing_run_id == run_id);
-
-    if entries.is_empty() {
-        if existing_index.is_none() {
-            while runs.len() > retention.saturating_sub(1) {
-                runs.pop_front();
-            }
-        }
-    } else if retention > 0 {
-        let sequence = existing_index
-            .and_then(|index| runs.get(index))
-            .and_then(|(_, rows)| {
-                rows.iter()
-                    .filter_map(|row| row.get("sequence").and_then(serde_json::Value::as_u64))
-                    .max()
-            })
-            .or_else(|| last_sequence.and_then(|sequence| sequence.checked_add(1)))
-            .or_else(|| run_stamp_sequence(run_id))
-            .unwrap_or(1);
-        if let Some(index) = existing_index {
-            runs.remove(index);
-        }
-        let stamped_at_unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0);
-        let current = entries
-            .iter()
-            .map(|entry| {
-                profile_ledger_row(profile, run_id, sequence, stamped_at_unix_ms, entry)
-            })
-            .collect();
-        runs.push_back((run_id.to_owned(), current));
-        while runs.len() > retention {
-            runs.pop_front();
+) -> Result<ProfileLedgerWriteReport, String> {
+    let mut ledger = read_profile_ledger_runs(path, retention, None)?;
+    if !entries.is_empty() && retention > 0 && !ledger.seen_run_ids.contains(run_id) {
+        let current = fresh_profile_ledger_rows(
+            profile,
+            run_id,
+            entries,
+            &mut ledger.max_sequence,
+        )?;
+        ledger.runs.push_back((run_id.to_owned(), current));
+        while ledger.runs.len() > retention {
+            ledger.runs.pop_front();
         }
     }
-
-    let bytes = serialize_profile_ledger_runs(runs)?;
-    crate::atoms::attest::write_receipt_bytes_atomic(path, &bytes).map(|_| ())
+    let bytes = serialize_profile_ledger_runs(ledger.runs)?;
+    crate::atoms::attest::write_profile_ledger_bytes_atomic(path, &bytes)?;
+    Ok(ProfileLedgerWriteReport {
+        unparsable_lines: ledger.unparsable_lines,
+        read_warnings: ledger.read_warnings,
+    })
 }
 
 fn write_family_profile_ledger_run(
     path: &Path,
-    receipt_dir: &Path,
+    latest_path: &Path,
     profile: &Profile,
     run_id: &str,
     entries: &[ProfileLedgerEntry<'_>],
     retention: usize,
     stem: &str,
-) -> Result<(), String> {
-    let family = receipt_family_runs(receipt_dir, stem)?;
-    let current_index = family
-        .iter()
-        .position(|run| run.run_id == run_id)
-        .ok_or_else(|| format!("profile-ledger-current-run-unobserved {run_id}"))?;
-    let (existing_runs, _) = read_profile_ledger_runs(path, retention)?;
+) -> Result<ProfileLedgerWriteReport, String> {
+    let (ordered_run_ids, selection_warnings) =
+        crate::atoms::attest::convergence_receipts::retained_receipt_run_ids(
+            latest_path,
+            stem,
+            retention,
+            Some(run_id),
+        )?;
+    if !ordered_run_ids.iter().any(|candidate| candidate == run_id) {
+        return Err(format!("profile-ledger-current-run-unobserved {run_id}"));
+    }
+    let selected_run_ids = ordered_run_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut ledger = read_profile_ledger_runs(path, retention, Some(&selected_run_ids))?;
     let mut ledger_rows = BTreeMap::<String, Vec<serde_json::Value>>::new();
-    for (existing_run_id, rows) in existing_runs {
+    for (existing_run_id, rows) in ledger.runs.drain(..) {
         ledger_rows.entry(existing_run_id).or_default().extend(rows);
     }
-    if retention > 0 && !entries.is_empty() && !ledger_rows.contains_key(run_id) {
-        let sequence = family_run_sequence(&family, current_index, &ledger_rows);
-        let stamped_at_unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0);
-        let current = entries
-            .iter()
-            .map(|entry| {
-                profile_ledger_row(profile, run_id, sequence, stamped_at_unix_ms, entry)
-            })
-            .collect();
+    if retention > 0 && !entries.is_empty() && !ledger.seen_run_ids.contains(run_id) {
+        let current = fresh_profile_ledger_rows(
+            profile,
+            run_id,
+            entries,
+            &mut ledger.max_sequence,
+        )?;
         ledger_rows.insert(run_id.to_owned(), current);
     }
-    let first_retained = family.len().saturating_sub(retention);
-    let retained_runs = family[first_retained..]
-        .iter()
-        .filter_map(|run| {
+    let retained_runs = ordered_run_ids
+        .into_iter()
+        .filter_map(|retained_run_id| {
             ledger_rows
-                .remove(&run.run_id)
-                .map(|rows| (run.run_id.clone(), rows))
+                .remove(&retained_run_id)
+                .map(|rows| (retained_run_id, rows))
         })
         .collect();
     let bytes = serialize_profile_ledger_runs(retained_runs)?;
-    crate::atoms::attest::write_receipt_bytes_atomic(path, &bytes).map(|_| ())
+    crate::atoms::attest::write_profile_ledger_bytes_atomic(path, &bytes)?;
+    Ok(ProfileLedgerWriteReport {
+        unparsable_lines: ledger.unparsable_lines,
+        read_warnings: ledger.read_warnings.into_iter().chain(selection_warnings).collect(),
+    })
 }
 
 /// Keep a bounded atomic snapshot of recent profile-ledger runs.
 pub(crate) fn write_profile_ledger_run(
     receipt_dir: &Path,
+    latest_path: Option<&Path>,
     profile: &Profile,
     run_id: &str,
     entries: &[ProfileLedgerEntry<'_>],
     retention: usize,
-) -> Result<(), String> {
+) -> Result<ProfileLedgerWriteReport, String> {
     let path = profile_ledger_path(receipt_dir, profile);
     let _ledger_lock = lock_profile_ledger(&path)?;
     if let Some(stem) = receipt_family_stem(receipt_dir, run_id) {
         return write_family_profile_ledger_run(
             &path,
-            receipt_dir,
+            latest_path.unwrap_or(receipt_dir),
             profile,
             run_id,
             entries,
@@ -464,6 +432,110 @@ pub(crate) fn write_profile_ledger_run(
         );
     }
     write_direct_profile_ledger_run(&path, profile, run_id, entries, retention)
+}
+
+/// After latest promotion/pruning, drop ledger rows whose receipt directories
+/// are no longer retained, using the same run-set selector as pruning.
+pub(crate) fn reconcile_profile_ledger_family(
+    effective_receipt_dir: &Path,
+    latest_path: &Path,
+    profile: &Profile,
+    retention: usize,
+    stem: &str,
+) -> Result<Vec<String>, String> {
+    let path = profile_ledger_path(effective_receipt_dir, profile);
+    let _ledger_lock = lock_profile_ledger(&path)?;
+    let (ordered_run_ids, mut warnings) =
+        crate::atoms::attest::convergence_receipts::retained_receipt_run_ids(
+            latest_path,
+            stem,
+            retention,
+            None,
+        )?;
+    let selected_run_ids = ordered_run_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let ledger = read_profile_ledger_runs(&path, retention, Some(&selected_run_ids))?;
+    let mut rows_by_run = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for (run_id, rows) in ledger.runs {
+        rows_by_run.entry(run_id).or_default().extend(rows);
+    }
+    let retained_runs = ordered_run_ids
+        .into_iter()
+        .filter_map(|run_id| rows_by_run.remove(&run_id).map(|rows| (run_id, rows)))
+        .collect();
+    let bytes = serialize_profile_ledger_runs(retained_runs)?;
+    warnings.extend(ledger.read_warnings);
+    if ledger.unparsable_lines > 0 {
+        warnings.push(format!("profile-ledger-unparsable-lines={}", ledger.unparsable_lines));
+    }
+    crate::atoms::attest::write_profile_ledger_bytes_atomic(&path, &bytes)?;
+    Ok(warnings)
+}
+
+fn update_run_receipt_projection(
+    receipt_dir: &Path,
+    field: &str,
+    projection: serde_json::Value,
+) -> Result<(), String> {
+    let path = receipt_dir.join("run.json");
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("run-receipt-projection-observe-failed {}: {error}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("run-receipt-projection-collision {}", path.display()));
+    }
+    let bytes = fs::read(&path)
+        .map_err(|error| format!("run-receipt-projection-read-failed {}: {error}", path.display()))?;
+    let mut receipt = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map_err(|error| format!("run-receipt-projection-parse-failed {}: {error}", path.display()))?;
+    if receipt.get("schema").and_then(serde_json::Value::as_str)
+        != Some("harmonia.run_profile.v1")
+    {
+        return Err(format!("run-receipt-projection-schema-mismatch {}", path.display()));
+    }
+    let object = receipt
+        .as_object_mut()
+        .ok_or_else(|| format!("run-receipt-projection-not-object {}", path.display()))?;
+    object.insert(field.to_owned(), projection);
+    write_json(&path, &receipt)
+}
+
+pub(crate) fn record_profile_ledger_projection(
+    receipt_dir: &Path,
+    retention: usize,
+    report: &ProfileLedgerWriteReport,
+) -> Result<(), String> {
+    update_run_receipt_projection(
+        receipt_dir,
+        "profile_ledger",
+        json!({
+            "retention": retention,
+            "unparsable_lines": report.unparsable_lines,
+            "read_warnings": report.read_warnings,
+        }),
+    )
+}
+
+pub(crate) fn record_receipt_cleanup(
+    receipt_dir: &Path,
+    report: &crate::atoms::attest::convergence_receipts::ReceiptPruneReport,
+) -> Result<(), String> {
+    let cleanup = json!({
+        "deletion_attempts": report.deletion_attempts,
+        "deletion_attempt_cap": crate::atoms::attest::convergence_receipts::RECEIPT_PRUNE_ATTEMPT_CAP,
+        "deleted_directories": report.deleted_directories,
+        "capped": report.capped,
+        "retained_run_ids": report.retained_run_ids,
+        "prune_warnings": report.warnings,
+    });
+    update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup.clone())?;
+    crate::atoms::attest::append_jsonl(
+        &receipt_dir.join("events.jsonl"),
+        &json!({
+            "event": "receipt-cleanup",
+            "ok": report.warnings.is_empty() && !report.capped,
+            "changed": report.deleted_directories > 0,
+            "receipt_cleanup": cleanup,
+        }),
+    )
 }
 
 pub(crate) fn write_tool_receipt(

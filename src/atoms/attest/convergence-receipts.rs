@@ -166,6 +166,22 @@ pub(crate) fn ensure_latest_receipt_replaceable(
 ) -> Result<(), String> {
     match std::fs::symlink_metadata(latest_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Ok(()),
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            match std::fs::remove_dir_all(latest_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(format!(
+                        "{error_prefix}-latest-garbage-remove-failed {}: {error}",
+                        latest_path.display()
+                    ));
+                }
+            }
+            let parent = latest_path.parent().unwrap_or_else(|| Path::new("."));
+            std::fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| format!("{error_prefix}-latest-garbage-sync-failed: {error}"))
+        }
         Ok(_) => Err(format!(
             "{error_prefix}-latest-nonsymlink-occupied {}",
             latest_path.display()
@@ -316,33 +332,70 @@ pub(crate) fn parse_family_run(name: &str, stem: &str) -> Option<(u128, u128, bo
     Some((stamp.parse().ok()?, collision, displaced))
 }
 
-fn latest_target_path(latest_path: &Path) -> Option<PathBuf> {
-    let metadata = std::fs::symlink_metadata(latest_path).ok()?;
-    if !metadata.file_type().is_symlink() {
-        return None;
-    }
-    let target = std::fs::read_link(latest_path).ok()?;
-    let target = if target.is_absolute() {
-        target
-    } else {
-        latest_path.parent().unwrap_or_else(|| Path::new(".")).join(target)
-    };
-    Some(std::fs::canonicalize(&target).unwrap_or(target))
+pub(crate) const RECEIPT_PRUNE_ATTEMPT_CAP: usize = 500;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ReceiptPruneReport {
+    pub(crate) deletion_attempts: usize,
+    pub(crate) deleted_directories: usize,
+    pub(crate) capped: bool,
+    pub(crate) retained_run_ids: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
-/// Prune an exact receipt family while the caller owns its parent flock.
-pub(crate) fn prune_receipt_family_locked(
+#[derive(Clone, Debug)]
+struct ReceiptRunCandidate {
+    run_id: String,
+    stamp: String,
+    collision: u128,
+    displaced: bool,
+    family: bool,
+    path: PathBuf,
+}
+
+fn receipt_ledger_run_id(candidate: &ReceiptRunCandidate) -> String {
+    candidate.run_id.clone()
+}
+
+fn legacy_staff_run_id(name: &str) -> Option<String> {
+    let digits = name.strip_prefix("run-")?;
+    (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| name.to_owned())
+}
+
+fn compare_decimal(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = left.trim_start_matches('0');
+    let right = right.trim_start_matches('0');
+    let left = if left.is_empty() { "0" } else { left };
+    let right = if right.is_empty() { "0" } else { right };
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+fn receipt_run_candidates(
     latest_path: &Path,
     stem: &str,
-    retention: usize,
-) -> Result<(), String> {
+) -> Result<(Vec<ReceiptRunCandidate>, Vec<String>), String> {
     let parent = latest_path.parent().unwrap_or_else(|| Path::new("."));
     let entries = std::fs::read_dir(parent)
         .map_err(|error| format!("receipt-family-read-failed {}: {error}", parent.display()))?;
-    let mut family = Vec::new();
+    let mut candidates = Vec::new();
+    let mut warnings = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                warnings.push(format!("receipt-family-entry-read-failed: {error}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                warnings.push(format!("receipt-family-entry-observe-failed {}: {error}", path.display()));
+                continue;
+            }
+        };
         if !file_type.is_dir() {
             continue;
         }
@@ -350,38 +403,235 @@ pub(crate) fn prune_receipt_family_locked(
             continue;
         };
         if let Some((stamp, collision, displaced)) = parse_family_run(&name, stem) {
-            family.push((stamp, collision, displaced, entry.path()));
+            let prefix = format!("{stem}-");
+            let suffix = name.strip_prefix(&prefix).unwrap_or_default();
+            let run_id = suffix.to_owned();
+            candidates.push(ReceiptRunCandidate {
+                run_id,
+                stamp: stamp.to_string(),
+                collision,
+                displaced,
+                family: true,
+                path,
+            });
+        } else if let Some(run_id) = legacy_staff_run_id(&name) {
+            let stamp = run_id.strip_prefix("run-").unwrap_or_default().to_owned();
+            candidates.push(ReceiptRunCandidate {
+                run_id,
+                stamp,
+                collision: 0,
+                displaced: false,
+                family: false,
+                path,
+            });
         }
     }
-    family.sort_by(|left, right| {
-        (left.0, left.1, left.2, &left.3).cmp(&(right.0, right.1, right.2, &right.3))
+    candidates.sort_by(|left, right| {
+        compare_decimal(&left.stamp, &right.stamp)
+            .then(left.collision.cmp(&right.collision))
+            .then(left.displaced.cmp(&right.displaced))
+            .then(left.path.cmp(&right.path))
     });
-    let latest_target = latest_target_path(latest_path);
-    let latest_target = latest_target.as_deref().map(|path| {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-    });
-    let mut retained = std::collections::BTreeSet::new();
-    if let Some(target) = latest_target.as_ref() {
-        if let Some((_, _, _, path)) = family.iter().find(|(_, _, _, path)| {
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) == *target
-        }) {
-            retained.insert(path.clone());
+    Ok((candidates, warnings))
+}
+
+fn latest_target_path(latest_path: &Path) -> Result<Option<PathBuf>, String> {
+    let metadata = match std::fs::symlink_metadata(latest_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("receipt-latest-observe-failed {}: {error}", latest_path.display())),
+    };
+    if metadata.file_type().is_dir() {
+        // A real directory at the alias path is garbage removed by promotion
+        // under the same parent lock; it is not a run target to preserve.
+        return Ok(None);
+    }
+    if !metadata.file_type().is_symlink() {
+        return Err(format!("receipt-latest-not-symlink {}", latest_path.display()));
+    }
+    let target = std::fs::read_link(latest_path)
+        .map_err(|error| format!("receipt-latest-link-read-failed {}: {error}", latest_path.display()))?;
+    let target = if target.is_absolute() {
+        target
+    } else {
+        latest_path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    Ok(Some(std::fs::canonicalize(&target).unwrap_or(target)))
+}
+
+fn comparable_receipt_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn successful_aggregate_run(candidate: &ReceiptRunCandidate) -> bool {
+    let path = candidate.path.join("run.json");
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(receipt) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    candidate.family
+        && receipt.get("schema").and_then(serde_json::Value::as_str)
+            == Some("harmonia.run_profile.v1")
+        && receipt.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+        && receipt.get("suite_ok").and_then(serde_json::Value::as_bool) != Some(false)
+}
+
+struct ReceiptRetentionSelection {
+    paths: std::collections::BTreeSet<PathBuf>,
+    run_ids: std::collections::BTreeSet<String>,
+}
+
+fn select_retained_receipt_runs(
+    candidates: &[ReceiptRunCandidate],
+    latest_target: Option<&Path>,
+    retention: usize,
+    current_run_id: Option<&str>,
+) -> ReceiptRetentionSelection {
+    let mut selection = ReceiptRetentionSelection {
+        paths: std::collections::BTreeSet::new(),
+        run_ids: std::collections::BTreeSet::new(),
+    };
+    let mut retain = |candidate: &ReceiptRunCandidate| {
+        selection.paths.insert(candidate.path.clone());
+        selection.run_ids.insert(candidate.run_id.clone());
+    };
+    if let Some(target) = latest_target {
+        if let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| comparable_receipt_path(&candidate.path) == comparable_receipt_path(target))
+        {
+            retain(candidate);
         }
     }
-    for (_, _, _, path) in family.iter().rev() {
-        if retained.len() >= retention {
+    for candidate in candidates.iter().rev().filter(|candidate| candidate.family).take(retention) {
+        retain(candidate);
+    }
+    if let Some(candidate) = candidates.iter().rev().find(|candidate| successful_aggregate_run(candidate)) {
+        retain(candidate);
+    }
+    if let Some(run_id) = current_run_id {
+        for candidate in candidates
+            .iter()
+            .filter(|candidate| candidate.family && candidate.run_id.as_str() == run_id)
+        {
+            retain(candidate);
+        }
+    }
+    selection
+}
+
+/// Run IDs corresponding to the same retained set used by post-promotion pruning.
+pub(crate) fn retained_receipt_run_ids(
+    latest_path: &Path,
+    stem: &str,
+    retention: usize,
+    current_run_id: Option<&str>,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let (candidates, mut warnings) = receipt_run_candidates(latest_path, stem)?;
+    let latest_target = match latest_target_path(latest_path) {
+        Ok(target) => target,
+        Err(warning) => {
+            warnings.push(warning);
+            None
+        }
+    };
+    let retained = select_retained_receipt_runs(
+        &candidates,
+        latest_target.as_deref(),
+        retention,
+        current_run_id,
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    let run_ids = candidates
+        .iter()
+        .filter(|candidate| retained.run_ids.contains(&candidate.run_id))
+        .filter_map(|candidate| {
+            let run_id = receipt_ledger_run_id(candidate);
+            seen.insert(run_id.clone()).then_some(run_id)
+        })
+        .collect();
+    Ok((run_ids, warnings))
+}
+
+/// Prune exact receipt families and old staff announce run directories while
+/// the caller owns the receipt-parent flock. Prune failures are warnings.
+pub(crate) fn prune_receipt_family_locked(
+    latest_path: &Path,
+    stem: &str,
+    retention: usize,
+) -> ReceiptPruneReport {
+    let mut report = ReceiptPruneReport::default();
+    let (candidates, scan_warnings) = match receipt_run_candidates(latest_path, stem) {
+        Ok(scan) => scan,
+        Err(error) => {
+            report.warnings.push(error);
+            return report;
+        }
+    };
+    report.warnings.extend(scan_warnings);
+    let latest_target = match latest_target_path(latest_path) {
+        Ok(target) => target,
+        Err(error) => {
+            report.warnings.push(error);
+            return report;
+        }
+    };
+    let selection = select_retained_receipt_runs(&candidates, latest_target.as_deref(), retention, None);
+    let mut retained_seen = std::collections::BTreeSet::new();
+    report.retained_run_ids = candidates
+        .iter()
+        .filter(|candidate| selection.paths.contains(&candidate.path))
+        .filter_map(|candidate| {
+            retained_seen
+                .insert(candidate.run_id.clone())
+                .then(|| candidate.run_id.clone())
+        })
+        .collect();
+    let mut parent_changed = false;
+    for candidate in &candidates {
+        if selection.paths.contains(&candidate.path) {
+            continue;
+        }
+        if report.deletion_attempts >= RECEIPT_PRUNE_ATTEMPT_CAP {
+            report.capped = true;
             break;
         }
-        retained.insert(path.clone());
-    }
-    for (_, _, _, path) in family {
-        if !retained.contains(&path) {
-            std::fs::remove_dir_all(&path).map_err(|error| {
-                format!("receipt-family-prune-failed {}: {error}", path.display())
-            })?;
+        report.deletion_attempts += 1;
+        match std::fs::remove_dir_all(&candidate.path) {
+            Ok(()) => {
+                report.deleted_directories += 1;
+                parent_changed = true;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => report.warnings.push(format!(
+                "receipt-prune-failed {}: {error}",
+                candidate.path.display()
+            )),
         }
     }
-    Ok(())
+    if report.capped {
+        let remaining = candidates.iter().filter(|candidate| !selection.paths.contains(&candidate.path)).count()
+            .saturating_sub(report.deletion_attempts);
+        report.warnings.push(format!(
+            "receipt-prune-attempt-cap-reached cap={} remaining={remaining}",
+            RECEIPT_PRUNE_ATTEMPT_CAP
+        ));
+    }
+    if parent_changed {
+        let parent = latest_path.parent().unwrap_or_else(|| Path::new("."));
+        if let Err(error) = std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
+            report.warnings.push(format!("receipt-prune-parent-sync-failed {}: {error}", parent.display()));
+        }
+    }
+    report
 }
 
 /// Store early refusals beside a family without creating its parent or a run directory.
@@ -484,11 +734,20 @@ pub(crate) fn emit_convergence_skipped_stdout(receipt_dir: &Path, reason: &str, 
     println!("schema=harmonia.convergence.skipped.v1");
     hyalos::forward_receipt(
         "schema=harmonia.convergence.skipped.v1",
-        &format!("schema=harmonia.convergence.skipped.v1 ok={}", true),
-        Some(serde_json::json!({"schema": "harmonia.convergence.skipped.v1", "ok": true})),
+        &format!(
+            "schema=harmonia.convergence.skipped.v1 ok=true reason={reason}"
+        ),
+        Some(serde_json::json!({
+            "schema": "harmonia.convergence.skipped.v1",
+            "ok": true,
+            "changed": false,
+            "reason": reason,
+            "profile_id": profile_id,
+            "first_missing_signal": reason,
+        })),
         Some(true),
-            None,
-);
+        None,
+    );
     println!("ok=true");
     println!("changed=false");
     println!("profile_id={profile_id}");

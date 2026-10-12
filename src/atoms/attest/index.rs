@@ -54,7 +54,7 @@ pub(crate) mod write_file;
 use super::Receipt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
@@ -1305,6 +1305,121 @@ pub(crate) fn write_receipt_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<bo
         File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| format!("receipt-parent-sync-failed {}: {error}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result.map(|()| true)
+}
+
+/// Heal only the profile-ledger's file metadata through atomic replacement.
+/// Generic receipt writes retain their strict owner and mode refusals.
+pub(crate) fn write_profile_ledger_bytes_atomic(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<bool, String> {
+    let target = match fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!("profile-ledger-observe-failed {}: {error}", path.display()))
+        }
+    };
+    let expected_owner = proposal_owner(ProposalOwnerPolicy::CurrentProcess);
+    if let Some(metadata) = &target {
+        if !metadata.file_type().is_file() {
+            return Err(format!("profile-ledger-collision {}", path.display()));
+        }
+        #[cfg(unix)]
+        let metadata_matches = {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.uid(), metadata.gid()) == expected_owner
+                && metadata.permissions().mode() & 0o7777 == 0o644
+        };
+        #[cfg(not(unix))]
+        let metadata_matches = true;
+        if metadata_matches {
+            #[cfg(unix)]
+            let mut current = open_nofollow_read(path)
+                .map_err(|error| format!("profile-ledger-read-failed {}: {error}", path.display()))?;
+            #[cfg(not(unix))]
+            let mut current = File::open(path)
+                .map_err(|error| format!("profile-ledger-read-failed {}: {error}", path.display()))?;
+            let mut current_bytes = Vec::new();
+            current
+                .read_to_end(&mut current_bytes)
+                .map_err(|error| format!("profile-ledger-read-failed {}: {error}", path.display()))?;
+            if current_bytes == bytes {
+                return Ok(false);
+            }
+        }
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("profile-ledger-parent-missing {}", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("profile-ledger-name-invalid {}", path.display()))?;
+    prepare_receipt_parent(parent)?;
+    let sequence = JSON_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{name}.harmonia-ledger-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let result = (|| -> Result<(), String> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options
+            .mode(0o644)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut file = options
+            .open(&temp)
+            .map_err(|error| format!("profile-ledger-temp-create-failed {}: {error}", temp.display()))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("profile-ledger-temp-write-failed {}: {error}", temp.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (uid, gid) = expected_owner;
+            if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+                return Err(format!(
+                    "profile-ledger-temp-owner-failed {}: {}",
+                    temp.display(),
+                    std::io::Error::last_os_error()
+                ));
+            }
+            file.set_permissions(fs::Permissions::from_mode(0o644))
+                .map_err(|error| format!("profile-ledger-temp-mode-failed {}: {error}", temp.display()))?;
+            use std::os::unix::fs::MetadataExt;
+            let metadata = file.metadata().map_err(|error| error.to_string())?;
+            if (metadata.uid(), metadata.gid()) != expected_owner
+                || metadata.permissions().mode() & 0o7777 != 0o644
+            {
+                return Err(format!("profile-ledger-temp-metadata-mismatch {}", temp.display()));
+            }
+        }
+        file.sync_all()
+            .map_err(|error| format!("profile-ledger-temp-sync-failed {}: {error}", temp.display()))?;
+        drop(file);
+        fs::rename(&temp, path).map_err(|error| {
+            format!("profile-ledger-atomic-promote-failed {} -> {}: {error}", temp.display(), path.display())
+        })?;
+        verify_receipt_owner(path)?;
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("profile-ledger-final-observe-failed {}: {error}", path.display()))?;
+        if !metadata.file_type().is_file() {
+            return Err(format!("profile-ledger-final-collision {}", path.display()));
+        }
+        #[cfg(unix)]
+        if metadata.permissions().mode() & 0o7777 != 0o644 {
+            return Err(format!("profile-ledger-final-mode-mismatch {}", path.display()));
+        }
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("profile-ledger-parent-sync-failed {}: {error}", parent.display()))?;
         Ok(())
     })();
     if result.is_err() {

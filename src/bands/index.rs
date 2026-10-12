@@ -264,8 +264,19 @@ pub(crate) fn run_profile_engine(
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode,
+    receipt_retention: usize,
 ) -> Result<(), String> {
-    run_profile_engine_with_preflight(profile, module_root, receipt_dir, mode, false, None, None)
+    run_profile_engine_with_preflight(
+        profile,
+        module_root,
+        receipt_dir,
+        mode,
+        receipt_retention,
+        None,
+        false,
+        None,
+        None,
+    )
 }
 
 pub(crate) fn run_profile_engine_with_preflight(
@@ -273,6 +284,8 @@ pub(crate) fn run_profile_engine_with_preflight(
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
+    receipt_retention: usize,
+    requested_latest_alias: Option<&Path>,
     skip_preflight: bool,
     completed_preflight: Option<ModuleExecution>,
     suite_debt: Option<&str>,
@@ -291,6 +304,8 @@ pub(crate) fn run_profile_engine_with_preflight(
         &projection,
         None,
         None,
+        receipt_retention,
+        requested_latest_alias,
         false,
     )
 }
@@ -306,6 +321,8 @@ pub(crate) fn run_profile_engine_with_projection(
     projection: &ProfileProjection,
     context: Option<&crate::RunContext>,
     carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
+    receipt_retention: usize,
+    requested_latest_alias: Option<&Path>,
     materialize_on_stage: bool,
 ) -> Result<(), String> {
     crate::receipts::clear_config_state_receipts(receipt_dir)?;
@@ -341,6 +358,8 @@ pub(crate) fn run_profile_engine_with_projection(
         transaction_state: serde_json::Value::Null,
         settlement: None,
         defer_terminal: materialize_on_stage,
+        receipt_retention,
+        requested_latest_alias: requested_latest_alias.map(Path::to_path_buf),
     };
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
     let mut halted_steps: HaltedSteps = BTreeMap::new();
@@ -802,6 +821,8 @@ pub(crate) fn run_profile_engine_with_projection(
                         transaction_state: serde_json::Value::Null,
                         settlement: None,
                         defer_terminal: false,
+                        receipt_retention,
+                        requested_latest_alias: None,
                     },
                 );
                 final_result = Some(crate::bands::report_home::settle(

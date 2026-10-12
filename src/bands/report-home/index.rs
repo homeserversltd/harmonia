@@ -9,7 +9,7 @@ use crate::Profile;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
@@ -85,6 +85,9 @@ pub(crate) struct DeferredRunSummary {
     pub operation_count: usize,
     pub duration_ms: u128,
     pub module_steps: Vec<serde_json::Value>,
+    pub receipt_retention: usize,
+    pub ledger_unparsable_lines: usize,
+    pub ledger_read_warnings: Vec<String>,
 }
 
 pub(crate) struct RunState {
@@ -104,6 +107,8 @@ pub(crate) struct RunState {
     pub transaction_state: serde_json::Value,
     pub settlement: Option<SettlementOutcome>,
     pub defer_terminal: bool,
+    pub receipt_retention: usize,
+    pub requested_latest_alias: Option<PathBuf>,
 }
 
 pub(crate) fn collect_package_pin_witnesses(
@@ -256,14 +261,13 @@ pub(crate) fn settle(
             });
         }
     }
-    let ledger_retention =
-        crate::bands::stage_profile::groups::read_device_receipt_retention()?;
-    write_profile_ledger_run(
+    let ledger_report = write_profile_ledger_run(
         receipt_dir,
+        state.requested_latest_alias.as_deref(),
         profile,
         &state.run_id,
         &ledger_entries,
-        ledger_retention,
+        state.receipt_retention,
     )?;
     let (package_pin_witnesses, package_pin_exclusion_set) =
         collect_package_pin_witnesses(receipt_dir);
@@ -299,6 +303,9 @@ pub(crate) fn settle(
             operation_count: state.operation_count,
             duration_ms: state.run_started.elapsed().as_millis(),
             module_steps,
+            receipt_retention: state.receipt_retention,
+            ledger_unparsable_lines: ledger_report.unparsable_lines,
+            ledger_read_warnings: ledger_report.read_warnings,
         });
         return match settlement {
             SettlementOutcome::Success | SettlementOutcome::ReportOnlyFailure => Ok(()),
@@ -322,6 +329,13 @@ pub(crate) fn settle(
         engine_debt.as_ref(),
         Some(&module_artifact_debt),
     )?;
+    if let Err(error) = crate::receipts::record_profile_ledger_projection(
+        receipt_dir,
+        state.receipt_retention,
+        &ledger_report,
+    ) {
+        eprintln!("profile-ledger-projection-warning: {error}");
+    }
     println!("schema=harmonia.run_profile.v1");
     let run_ok = state.ok && state.module_states.values().all(|step| step.ok);
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
@@ -410,6 +424,16 @@ pub(crate) fn finalize_deferred_terminal(
         engine_debt.as_ref(),
         Some(&summary.module_artifact_debt),
     )?;
+    if let Err(error) = crate::receipts::record_profile_ledger_projection(
+        receipt_dir,
+        summary.receipt_retention,
+        &crate::receipts::ProfileLedgerWriteReport {
+            unparsable_lines: summary.ledger_unparsable_lines,
+            read_warnings: summary.ledger_read_warnings,
+        },
+    ) {
+        eprintln!("profile-ledger-projection-warning: {error}");
+    }
     println!("schema=harmonia.run_profile.v1");
     let degraded = engine_debt.is_some() || !summary.module_artifact_debt.is_empty();
     let overall_ok = summary.ok && !degraded;

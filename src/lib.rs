@@ -998,7 +998,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 apply,
                 invocation.key(),
             );
-            device_profile::validate_receipt_retention_or_refuse(
+            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
                 &receipt_dir,
                 fallback_stem,
                 mode.is_software_apply(),
@@ -1029,13 +1029,13 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 return Err(reason);
             }
             if profile.id == "homeserver" && profile.identity == "homeserver" {
-                homeserver_update(&profile, &module_root, &receipt_dir, mode)
+                homeserver_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
-                homeconsole_update(&profile, &module_root, &receipt_dir, mode)
+                homeconsole_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
             } else if is_tv_update_profile(&profile) {
-                tv_update(&profile, &module_root, &receipt_dir, mode)
+                tv_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
             } else {
-                run_profile_engine(&profile, &module_root, &receipt_dir, mode)
+                run_profile_engine(&profile, &module_root, &receipt_dir, mode, receipt_retention)
             }
         }
         Some("capsule") => {
@@ -1120,7 +1120,14 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("homeserver")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            homeserver_update(&profile, &module_root, &receipt_dir, mode)
+            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
+                &receipt_dir,
+                "homeserver-update",
+                mode.is_software_apply(),
+                Some(&profile.id),
+                device_profile::run_identity_source(),
+            )?;
+            homeserver_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
         }
         Some("homeconsole-update") => {
             let path = args
@@ -1135,7 +1142,14 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            homeconsole_update(&profile, &module_root, &receipt_dir, mode)
+            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
+                &receipt_dir,
+                "homeconsole-update",
+                mode.is_software_apply(),
+                Some(&profile.id),
+                device_profile::run_identity_source(),
+            )?;
+            homeconsole_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
         }
         Some("tv-update") => {
             let path = args
@@ -1149,7 +1163,14 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            tv_update(&profile, &module_root, &receipt_dir, mode)
+            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
+                &receipt_dir,
+                "tv-update",
+                mode.is_software_apply(),
+                Some(&profile.id),
+                device_profile::run_identity_source(),
+            )?;
+            tv_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
         }
         Some("update-module") => update_module_command(&args, invocation.key()),
         Some("homeconsole-local-ai-update") => {
