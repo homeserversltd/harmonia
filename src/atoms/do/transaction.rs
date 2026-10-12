@@ -377,6 +377,71 @@ fn write_early_failed_run_receipt(
     )
 }
 
+fn finish_receipt_run_marker(
+    latest_path: &Path,
+    receipt_dir: &Path,
+    run_id: &str,
+    profile: &str,
+) -> Result<(), String> {
+    let _parent_lock = crate::atoms::attest::convergence_receipts::lock_receipt_parent_exclusive(
+        latest_path,
+        "receipt-run-marker-finish",
+    )?;
+    let path = receipt_dir.join("ruyi.json");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            if let Some(mut marker) = crate::atoms::attest::convergence_receipts::read_regular_json(&path)? {
+                let matches_run = marker.get("run_id").and_then(serde_json::Value::as_str) == Some(run_id)
+                    && marker.get("profile").and_then(serde_json::Value::as_str) == Some(profile);
+                if matches_run && marker.get("in_flight").and_then(serde_json::Value::as_bool) == Some(true) {
+                    marker["in_flight"] = serde_json::Value::Bool(false);
+                    crate::atoms::attest::write_json_atomic(&path, &marker)?;
+                }
+            }
+        }
+        Ok(_) => return Err(format!("receipt-run-marker-not-regular {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("receipt-run-marker-observe-failed {}: {error}", path.display())),
+    }
+    let in_flight_path = receipt_dir.join(".harmonia-in-flight.json");
+    match crate::atoms::attest::convergence_receipts::read_regular_json(&in_flight_path)? {
+        Some(marker)
+            if marker.get("run_id").and_then(serde_json::Value::as_str) == Some(run_id)
+                && marker.get("profile").and_then(serde_json::Value::as_str) == Some(profile)
+                && marker.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(std::process::id())) =>
+        {
+            match fs::remove_file(&in_flight_path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("receipt-run-marker-remove-failed {}: {error}", in_flight_path.display())),
+            }
+        }
+        Some(_) => Err(format!("receipt-run-marker-identity-mismatch {}", in_flight_path.display())),
+        None => Ok(()),
+    }
+}
+
+fn cleanup_receipt_state_directories(state_root: &Path, report: &mut crate::atoms::attest::convergence_receipts::ReceiptPruneReport) {
+    for name in ["engine-replacements", "hand-bless"] {
+        match crate::atoms::attest::convergence_receipts::remove_exact_root_child_directory(state_root, name) {
+            Ok(true) => {
+                report.deletion_attempts += 1;
+                report.deleted_directories += 1;
+            }
+            Ok(false) => {}
+            Err(error) => report.warnings.push(error),
+        }
+    }
+    match crate::atoms::attest::convergence_receipts::remove_exact_root_file(state_root, "proposals.attest.jsonl") {
+        Ok(true) => {
+            report.deletion_attempts += 1;
+            report.deleted_files += 1;
+        }
+        Ok(false) => {}
+        Err(error) => report.warnings.push(error),
+    }
+}
+
 pub(crate) fn rolling_update_run(
     profile: &Profile,
     module_root: &Path,
@@ -432,6 +497,10 @@ pub(crate) fn rolling_update_run(
         receipt_dir,
         &fallback_stem,
     );
+    let _receipt_start_lock = crate::atoms::attest::convergence_receipts::lock_receipt_parent_exclusive(
+        receipt_dir,
+        "receipt-start",
+    )?;
     let effective_receipt_dir = match materialize_receipt(receipt_dir, &requested_run_id) {
         Ok(path) => path,
         Err(reason) => {
@@ -447,14 +516,63 @@ pub(crate) fn rolling_update_run(
     );
     let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
     fs::create_dir_all(&effective_receipt_dir).map_err(|e| e.to_string())?;
+    let in_flight_marker = serde_json::json!({
+        "run_id": run_id,
+        "profile": profile.id,
+        "in_flight": true,
+        "pid": std::process::id(),
+        "process_start_ticks": crate::atoms::attest::convergence_receipts::current_process_start_ticks(),
+        "started_at_unix_ns": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+            .unwrap_or_default(),
+    });
     crate::atoms::attest::write_json_atomic(
         &effective_receipt_dir.join("ruyi.json"),
-        &serde_json::json!({
-            "run_id": run_id,
-            "profile": profile.id,
-            "in_flight": true,
-        }),
+        &in_flight_marker,
     )?;
+    crate::atoms::attest::write_json_atomic(
+        &effective_receipt_dir.join(".harmonia-in-flight.json"),
+        &in_flight_marker,
+    )?;
+    let current_ledger = crate::receipts::profile_ledger_path(receipt_dir, profile);
+    let mut start_prune_report = crate::atoms::attest::convergence_receipts::prune_receipt_root_locked(
+        receipt_dir,
+        receipt_retention,
+        Some(&effective_receipt_dir),
+        Some(&current_ledger),
+    );
+    if start_prune_report.pruning_confined {
+        if let Some(state_root) = receipt_parent.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            cleanup_receipt_state_directories(state_root, &mut start_prune_report);
+        } else {
+            start_prune_report.warnings.push("receipt-state-root-unavailable".to_string());
+        }
+    }
+    match crate::bands::stage_profile::projection::load_profile_projection(
+        profile,
+        module_root,
+        &policy.disabled_modules,
+    ) {
+        Ok(projection) => match projection.derive_standing_update_plan(profile, module_root) {
+            Ok(plan) => {
+                let mut seen = BTreeSet::new();
+                for target in plan.targets {
+                    if !seen.insert(target.path.clone()) { continue; }
+                    match crate::atoms::projectio::cleanup_stale_temporaries_for_target(&target.path) {
+                        Ok(removed) => {
+                            start_prune_report.deletion_attempts += removed;
+                            start_prune_report.deleted_files += removed;
+                        }
+                        Err(error) => start_prune_report.warnings.push(error),
+                    }
+                }
+            }
+            Err(error) => start_prune_report.warnings.push(format!("projectio-temp-cleanup-plan-failed: {error}")),
+        },
+        Err(error) => start_prune_report.warnings.push(format!("projectio-temp-cleanup-projection-failed: {error}")),
+    }
+    drop(_receipt_start_lock);
     let run = || {
         let carrier = context
             .map(|value| value.carrier.clone())
@@ -928,7 +1046,7 @@ pub(crate) fn rolling_update_run(
             run_result = Err(format!("{run_error}; {}", receipt_errors.join("; ")));
         }
     }
-    let mut report = crate::atoms::attest::convergence_receipts::ReceiptPruneReport::default();
+    let mut report = start_prune_report;
     let mut promoted = false;
     let mut promotion_attempted = false;
     let mut prune_attempted = false;
@@ -964,12 +1082,23 @@ pub(crate) fn rolling_update_run(
                     }
                 }
                 prune_attempted = true;
-                report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked_for_current(
+                let mut end_report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked_for_current(
                     receipt_dir,
                     stem,
                     receipt_retention,
                     &effective_receipt_dir,
+                    &current_ledger,
                 );
+                end_report.deletion_attempts += report.deletion_attempts;
+                end_report.deleted_directories += report.deleted_directories;
+                end_report.deleted_files += report.deleted_files;
+                end_report.warnings.extend(std::mem::take(&mut report.warnings));
+                report = end_report;
+                if let Some(state_root) = receipt_parent.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+                    if report.pruning_confined {
+                cleanup_receipt_state_directories(state_root, &mut report);
+            }
+                }
                 if report.pruning_confined {
                     match crate::receipts::reconcile_profile_ledger_family(
                         &effective_receipt_dir,
@@ -1011,6 +1140,14 @@ pub(crate) fn rolling_update_run(
         report
             .warnings
             .push("receipt-promotion-skipped: receipt-family-stem-unavailable".to_string());
+    }
+    if let Err(error) = finish_receipt_run_marker(
+        receipt_dir,
+        &effective_receipt_dir,
+        &run_id,
+        &profile.id,
+    ) {
+        report.warnings.push(format!("receipt-run-marker-finish-failed: {error}"));
     }
     report.summarize_warnings();
     if let Err(error) = crate::receipts::record_receipt_cleanup(

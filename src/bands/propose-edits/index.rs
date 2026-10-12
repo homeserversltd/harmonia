@@ -10,11 +10,73 @@ use crate::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+thread_local! {
+    static CURRENT_CONFIG_RECOGNITION_IDS: RefCell<BTreeSet<String>> = RefCell::new(BTreeSet::new());
+}
+
+pub(crate) fn reset_config_state_recognitions() {
+    CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| ids.borrow_mut().clear());
+}
+
+fn remember_config_state_recognition(id: &str) {
+    CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| { ids.borrow_mut().insert(id.to_owned()); });
+}
+
+pub(crate) fn sweep_config_state_receipts() -> Result<bool, String> {
+    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    let parent = path.parent().ok_or_else(|| "config-state-parent-missing".to_string())?;
+    match fs::symlink_metadata(parent) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("config-state-parent-observe-failed {}: {error}", parent.display())),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() => {
+            return Err(format!("config-state-parent-not-real-directory {}", parent.display()));
+        }
+        Ok(_) => {}
+    }
+    let parent = crate::atoms::attest::convergence_receipts::validate_cleanup_root(parent)?;
+    crate::atoms::attest::with_proposal_projection_lock(&path, || {
+        let live_ids = interactables::load_feed(&path)?
+            .interactables
+            .into_iter()
+            .map(|item| item.id)
+            .filter_map(|id| id.strip_prefix("config-proposal-").map(str::to_owned))
+            .collect::<BTreeSet<_>>();
+        let mut keep = live_ids;
+        CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| {
+            keep.extend(ids.borrow().iter().filter_map(|id| {
+                id.strip_prefix("config-proposal-").map(str::to_owned)
+            }));
+        });
+        let entries = match fs::read_dir(&parent) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(format!("config-state-sweep-read-failed {}: {error}", parent.display())),
+        };
+        let mut removed = false;
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("config-state-sweep-entry-failed: {error}"))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(key) = name.strip_prefix("config-state-").and_then(|name| name.strip_suffix(".json")) else { continue };
+            if key.is_empty() || key.contains('/') || keep.contains(key) { continue; }
+            if !entry.file_type().map_err(|error| format!("config-state-sweep-type-failed {}: {error}", entry.path().display()))?.is_file() {
+                continue;
+            }
+            fs::remove_file(entry.path()).map_err(|error| format!("config-state-sweep-remove-failed {}: {error}", entry.path().display()))?;
+            removed = true;
+        }
+        Ok(removed)
+    })
+}
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::ProposeEdits)
@@ -165,24 +227,11 @@ fn persist_feed_locked(
         &records,
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
     )?;
-    if writes > 0 {
-        crate::atoms::attest::attest(
-            &path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("proposals.attest.jsonl"),
-            &crate::atoms::Receipt {
-                atom: "propose-edits".into(),
-                ok: true,
-                drift: crate::atoms::Drift::Current,
-                message: format!(
-                    "proposal-persistence-transition count={}",
-                    feed.interactables.len()
-                ),
-            },
-            &[],
-        )?;
-    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    crate::atoms::attest::convergence_receipts::remove_exact_root_file(
+        parent,
+        "proposals.attest.jsonl",
+    )?;
     Ok(writes)
 }
 
@@ -314,27 +363,20 @@ fn refresh_interactables_at_path_with_policy(
         let live_sha = format!("{:x}", Sha256::digest(&live_bytes));
         let reference_sha = format!("{:x}", Sha256::digest(&reference_bytes));
         let id = stable_id(&entry.target, &live_sha, &reference_sha);
-        let prior_silence = feed
+        let prior_for_target = feed
             .interactables
             .iter()
             .find(|e| e.target_path.as_deref() == Some(entry.target.as_path()))
+            .cloned();
+        let prior_silence = prior_for_target
+            .as_ref()
             .map(|e| (e.silenced, e.silenced_at.clone()))
             .unwrap_or((false, None));
-        let created_at = feed
-            .interactables
-            .iter()
-            .find(|e| e.id == id)
-            .map(|e| e.created_at.clone())
+        let prior_same_id = feed.interactables.iter().find(|item| item.id == id).cloned();
+        let created_at = prior_same_id
+            .as_ref()
+            .map(|item| item.created_at.clone())
             .unwrap_or_else(|| now.clone());
-        // A new pair supersedes stale offers for this surface only.
-        remove_ids.extend(
-            feed.interactables
-                .iter()
-                .filter(|e| e.target_path.as_deref() == Some(entry.target.as_path()))
-                .map(|e| e.id.clone()),
-        );
-        feed.interactables
-            .retain(|e| e.target_path.as_deref() != Some(entry.target.as_path()));
         let recognized = interactables::recognize_against_known_goods(
             &live_bytes,
             &[interactables::RecognitionCandidate {
@@ -361,6 +403,7 @@ fn refresh_interactables_at_path_with_policy(
                 "config-state-{}.json",
                 id.strip_prefix("config-proposal-").unwrap_or(&id)
             ));
+        remember_config_state_recognition(&id);
         crate::atoms::attest::write_json_atomic(
             &state_receipt,
             &serde_json::json!({
@@ -371,6 +414,14 @@ fn refresh_interactables_at_path_with_policy(
             }),
         )?;
         if score < threshold {
+            remove_ids.extend(
+                feed.interactables
+                    .iter()
+                    .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
+                    .map(|item| item.id.clone()),
+            );
+            feed.interactables
+                .retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
             recognitions.push(ConfigRecognition {
                 config_state: state.to_string(),
                 score,
@@ -384,7 +435,7 @@ fn refresh_interactables_at_path_with_policy(
             continue;
         }
         let interactable_id = id.clone();
-        feed.interactables.push(Interactable {
+        let mut refreshed = Interactable {
             id: id.clone(),
             module_id: manifest.id.clone(),
             name: format!("{}: {}", manifest.id, entry.relative_path),
@@ -414,8 +465,36 @@ fn refresh_interactables_at_path_with_policy(
             completion_check: format!("sha256:{reference_sha}"),
             evidence: serde_json::Value::Null,
             extra: serde_json::Map::new(),
-        });
-        upsert_ids.insert(interactable_id.clone());
+        };
+        if let Some(prior) = &prior_same_id {
+            refreshed.created_at = prior.created_at.clone();
+            refreshed.refreshed_at = prior.refreshed_at.clone();
+            refreshed.available_at = prior.available_at.clone();
+            refreshed.silenced = prior.silenced;
+            refreshed.silenced_at = prior.silenced_at.clone();
+            refreshed.has_run = prior.has_run;
+            refreshed.evidence = prior.evidence.clone();
+            refreshed.extra = prior.extra.clone();
+        }
+        let unchanged = prior_same_id.as_ref()
+            .is_some_and(|prior| serde_json::to_value(prior).ok() == serde_json::to_value(&refreshed).ok());
+        if !unchanged {
+            // A changed offer supersedes the prior set for this surface.
+            remove_ids.extend(
+                feed.interactables
+                    .iter()
+                    .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
+                    .map(|item| item.id.clone()),
+            );
+            feed.interactables
+                .retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
+            if let Some(prior) = &prior_same_id {
+                refreshed.available_at = prior.available_at.clone();
+            }
+            refreshed.refreshed_at = now.clone();
+            feed.interactables.push(refreshed);
+            upsert_ids.insert(interactable_id.clone());
+        }
         recognitions.push(ConfigRecognition {
             config_state: state.to_string(),
             score,

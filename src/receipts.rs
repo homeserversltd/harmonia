@@ -541,12 +541,16 @@ pub(crate) fn record_receipt_cleanup(
     receipt_dir: &Path,
     report: &mut crate::atoms::attest::convergence_receipts::ReceiptPruneReport,
 ) -> Result<(), String> {
+    if let Err(error) = crate::bands::propose_edits::sweep_config_state_receipts() {
+        report.warnings.push(format!("config-state-sweep-failed: {error}"));
+    }
     report.summarize_warnings();
     let cleanup = json!({
         "deletion_attempts": report.deletion_attempts,
-        "deletion_attempt_cap": crate::atoms::attest::convergence_receipts::RECEIPT_PRUNE_ATTEMPT_CAP,
+        "deletion_attempt_cap": null,
         "deleted_directories": report.deleted_directories,
-        "capped": report.capped,
+        "deleted_files": report.deleted_files,
+        "capped": false,
         "retained_run_ids": report.retained_run_ids,
         "prune_warnings": report.warnings,
     });
@@ -555,8 +559,8 @@ pub(crate) fn record_receipt_cleanup(
         &receipt_dir.join("events.jsonl"),
         &json!({
             "event": "receipt-cleanup",
-            "ok": report.warnings.is_empty() && !report.capped,
-            "changed": report.deleted_directories > 0,
+            "ok": report.warnings.is_empty(),
+            "changed": report.deleted_directories > 0 || report.deleted_files > 0,
             "receipt_cleanup": cleanup,
         }),
     )
@@ -590,27 +594,8 @@ pub(crate) fn write_tool_receipt(
 struct ConfigSurfaceReceipt { config_state: String, score: f64, reference_id: String, id: String, target: String }
 
 pub(crate) fn clear_config_state_receipts(receipt_dir: &Path) -> Result<(), String> {
-    let entries = match fs::read_dir(receipt_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
-
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("config-state-") || !name.ends_with(".json") {
-            continue;
-        }
-        // `file_type` does not follow symlinks, so only direct regular files
-        // matching the exact receipt name are eligible for removal.
-        if entry.file_type().map_err(|error| error.to_string())?.is_file() {
-            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
-        }
-    }
-    clear_config_plane_witness_receipts(receipt_dir)?;
-    Ok(())
+    crate::bands::propose_edits::reset_config_state_recognitions();
+    clear_config_plane_witness_receipts(receipt_dir)
 }
 
 const CONFIG_PLANE_WITNESS_MAX_DEPTH: usize = 8;
