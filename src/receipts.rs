@@ -516,8 +516,9 @@ pub(crate) fn record_profile_ledger_projection(
 
 pub(crate) fn record_receipt_cleanup(
     receipt_dir: &Path,
-    report: &crate::atoms::attest::convergence_receipts::ReceiptPruneReport,
+    report: &mut crate::atoms::attest::convergence_receipts::ReceiptPruneReport,
 ) -> Result<(), String> {
+    report.summarize_warnings();
     let cleanup = json!({
         "deletion_attempts": report.deletion_attempts,
         "deletion_attempt_cap": crate::atoms::attest::convergence_receipts::RECEIPT_PRUNE_ATTEMPT_CAP,

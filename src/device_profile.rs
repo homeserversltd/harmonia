@@ -424,6 +424,10 @@ pub(crate) fn update_from_certificate(
     invocation: crate::Invocation,
 ) -> Result<(), String> {
     let context = invocation.context();
+    let refused_run_id = context
+        .map(|context| context.run_id.clone())
+        .unwrap_or_else(crate::receipts::run_id_from_stamp);
+    let _run_id_guard = crate::receipts::RunIdGuard::enter(&refused_run_id);
     let requested_receipt_dir = receipt_dir_arg(args)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-latest"));
     let write_early_refusal = |receipt: serde_json::Value,
@@ -463,12 +467,24 @@ pub(crate) fn update_from_certificate(
     let _run_lock = match try_acquire_engine_run_lock() {
         Ok(guard) => guard,
         Err(EngineRunLockFailure::Busy) => {
-            crate::atoms::attest::convergence_receipts::emit_convergence_skipped_stdout(
-                &requested_receipt_dir,
-                "lock-held",
-                "unknown",
-            );
-            return Ok(());
+            let reason = "run-in-progress";
+            write_early_refusal(
+                json!({
+                    "schema": "harmonia.run_profile.v1",
+                    "ok": false,
+                    "mutation": mode.is_software_apply(),
+                    "mode": "refused",
+                    "profile_id": serde_json::Value::Null,
+                    "identity": serde_json::Value::Null,
+                    "identity_source": "certificate",
+                    "lock_path": engine_run_lock_path(),
+                    "first_missing_signal": reason,
+                }),
+                reason,
+                "update-refusal-receipt-failed",
+                false,
+            )?;
+            return Err(reason.to_string());
         }
         Err(EngineRunLockFailure::Unavailable(reason)) => {
             write_early_refusal(

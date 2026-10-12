@@ -406,6 +406,10 @@ pub(crate) fn rolling_update_run(
     } else {
         None
     };
+    let requested_run_id = context
+        .map(|context| context.run_id.clone())
+        .unwrap_or_else(run_id_from_stamp);
+    let _run_id_guard = crate::receipts::RunIdGuard::enter(&requested_run_id);
     let policy = match crate::bands::stage_profile::groups::read_device_module_policy() {
         Ok(policy) => policy,
         Err(reason) => {
@@ -418,39 +422,16 @@ pub(crate) fn rolling_update_run(
         effective_profile.syzygy_declaration = Some(declaration);
     }
     let profile = &effective_profile;
-    let requested_run_id = context
-        .map(|context| context.run_id.clone())
-        .unwrap_or_else(run_id_from_stamp);
     let fallback_stem = format!("{}-update", profile.id);
     let receipt_parent = receipt_dir
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+        .ok_or_else(|| "receipt-dir-parentless-path".to_string())?;
     crate::atoms::attest::prepare_receipt_parent(receipt_parent)?;
-    let _receipt_parent_lock =
-        match crate::atoms::attest::convergence_receipts::lock_receipt_parent(
-            receipt_dir,
-            "receipt-lifecycle",
-        ) {
-            Ok(guard) => guard,
-            Err(reason) => {
-                write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
-                return Err(reason);
-            }
-        };
     let family_stem = crate::atoms::attest::convergence_receipts::latest_receipt_stem(
         receipt_dir,
         &fallback_stem,
     );
-    if family_stem.is_some() {
-        if let Err(reason) = crate::atoms::attest::convergence_receipts::ensure_latest_receipt_replaceable(
-            receipt_dir,
-            "receipt-lifecycle",
-        ) {
-            write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
-            return Err(reason);
-        }
-    }
     let effective_receipt_dir = match materialize_receipt(receipt_dir, &requested_run_id) {
         Ok(path) => path,
         Err(reason) => {
@@ -937,24 +918,70 @@ pub(crate) fn rolling_update_run(
             run_result = Err(format!("{run_error}; {}", receipt_errors.join("; ")));
         }
     }
-    let lifecycle_result = if !lifecycle_receipt_ready {
-        Err(format!(
+    let mut report = crate::atoms::attest::convergence_receipts::ReceiptPruneReport::default();
+    let mut promoted = false;
+    let mut promotion_status = "skipped";
+    let mut promotion_error = None;
+    if !lifecycle_receipt_ready {
+        let reason = format!(
             "receipt-lifecycle-run-receipt-missing {}",
             effective_receipt_dir.display()
-        ))
+        );
+        report.warnings.push(reason.clone());
+        promotion_error = Some(reason);
     } else if let Some(stem) = family_stem.as_deref() {
-        crate::atoms::attest::convergence_receipts::promote_receipt_latest_locked(
-            receipt_dir,
-            &effective_receipt_dir,
-            &run_id,
-            "receipt-lifecycle",
-        )
-        .and_then(|()| {
-            let mut report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked(
+        {
+            match crate::atoms::attest::convergence_receipts::lock_receipt_parent(
                 receipt_dir,
-                stem,
-                receipt_retention,
-            );
+                "receipt-lifecycle",
+            ) {
+                Ok(_parent_lock) => {
+                    match crate::atoms::attest::convergence_receipts::promote_receipt_latest_locked(
+                        receipt_dir,
+                        &effective_receipt_dir,
+                        &run_id,
+                        "receipt-lifecycle",
+                    ) {
+                        Ok(()) => {
+                            promoted = true;
+                            promotion_status = "promoted";
+                            report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked(
+                                receipt_dir,
+                                stem,
+                                receipt_retention,
+                            );
+                            if let Err(error) = crate::atoms::attest::convergence_receipts::clear_fixed_refusal_after_green(
+                                receipt_dir,
+                                &effective_receipt_dir,
+                                stem,
+                            ) {
+                                report.warnings.push(format!("receipt-refusal-clear-warning: {error}"));
+                            }
+                        }
+                        Err(error) => {
+                            promotion_status = "failed";
+                            report.warnings.push(format!("receipt-promotion-failed: {error}"));
+                            promotion_error = Some(error);
+                        }
+                    }
+                }
+                Err(reason) if reason.contains("receipt-lifecycle-parent-busy") => {
+                    let reason = reason.replacen(
+                        "receipt-lifecycle-parent-busy",
+                        "receipt-parent-busy",
+                        1,
+                    );
+                    report.warnings.push(reason.clone());
+                    promotion_error = Some(reason);
+                }
+                Err(reason) => {
+                    promotion_status = "failed";
+                    report.warnings.push(format!("receipt-promotion-lock-failed: {reason}"));
+                    promotion_error = Some(reason);
+                }
+            }
+        }
+        if promoted && report.pruning_confined {
             match crate::receipts::reconcile_profile_ledger_family(
                 &effective_receipt_dir,
                 receipt_dir,
@@ -967,30 +994,52 @@ pub(crate) fn rolling_update_run(
                     "profile-ledger-retention-reconcile-failed: {error}"
                 )),
             }
-            if let Err(error) = crate::receipts::record_receipt_cleanup(
-                &effective_receipt_dir,
-                &report,
-            ) {
-                report.warnings.push(format!(
-                    "receipt-cleanup-projection-write-failed: {error}"
-                ));
-            }
-            for warning in &report.warnings {
-                eprintln!("receipt-cleanup-warning: {warning}");
-            }
-            Ok(())
-        })
+        }
     } else {
-        Ok(())
-    };
-    match (run_result, lifecycle_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(run_error), Ok(())) => Err(run_error),
-        (Ok(()), Err(lifecycle_error)) => Err(lifecycle_error),
-        (Err(run_error), Err(lifecycle_error)) => {
-            Err(format!("{run_error}; receipt-lifecycle-failed: {lifecycle_error}"))
+        report
+            .warnings
+            .push("receipt-promotion-skipped: receipt-family-stem-unavailable".to_string());
+    }
+    report.summarize_warnings();
+    if let Err(error) = crate::receipts::record_receipt_cleanup(
+        &effective_receipt_dir,
+        &mut report,
+    ) {
+        report.warnings.push(format!(
+            "receipt-cleanup-projection-write-failed: {error}"
+        ));
+        report.summarize_warnings();
+    }
+    let lifecycle_projection = serde_json::json!({
+        "promotion_status": promotion_status,
+        "promoted": promoted,
+        "promotion_error": promotion_error.clone(),
+        "prune_attempted": promoted,
+        "pruning_confined": if promoted { Some(report.pruning_confined) } else { None },
+        "warnings": report.warnings.clone(),
+    });
+    if lifecycle_receipt_ready {
+        let run_path = effective_receipt_dir.join("run.json");
+        let lifecycle_projection_result = (|| -> Result<(), String> {
+            let mut receipt = valid_run_receipt(&effective_receipt_dir)
+                .ok_or_else(|| format!("receipt-lifecycle-run-receipt-unavailable {}", run_path.display()))?;
+            let object = receipt
+                .as_object_mut()
+                .ok_or_else(|| format!("receipt-lifecycle-run-receipt-not-object {}", run_path.display()))?;
+            object.insert("receipt_lifecycle".to_string(), lifecycle_projection);
+            write_json(&run_path, &receipt)
+        })();
+        if let Err(error) = lifecycle_projection_result {
+            report.warnings.push(format!(
+                "receipt-lifecycle-projection-write-failed: {error}"
+            ));
+            report.summarize_warnings();
         }
     }
+    if !report.warnings.is_empty() {
+        eprintln!("receipt-cleanup-warning: {}", report.warnings.join("; "));
+    }
+    run_result
 }
 
 fn write_transaction_failure_run_receipt(
