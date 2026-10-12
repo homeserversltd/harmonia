@@ -11,7 +11,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const REGISTER_PATH: &str = "/etc/appliance/xenia.json";
 const UNIT_ROOT: &str = "/etc/systemd/system";
@@ -515,30 +515,34 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 );
             }
         }
-        if !face {
-            step.steps.retain(|child| child.name == "pull-repo");
-            continue;
-        }
-        let build = step
+        let pull = step
             .steps
             .iter()
-            .position(|c| c.name == "build")
-            .ok_or("xenia-build-missing")?;
+            .position(|c| c.name == "pull-repo")
+            .ok_or("xenia-pull-repo-missing")?;
+        let mut seat_args = BTreeMap::from([
+            ("id".into(), json!(id)),
+            ("owner".into(), json!(owner)),
+            ("seat".into(), json!(seat)),
+        ]);
+        if face {
+            seat_args.insert("bin".into(), json!(bin));
+        }
         step.steps.insert(
-            build,
+            pull,
             RoutineStep {
                 name: "seat-present".into(),
                 tool: "xenia-runtime".into(),
                 permutation: Some("seat-present".into()),
-                args: BTreeMap::from([
-                    ("id".into(), json!(id)),
-                    ("owner".into(), json!(owner)),
-                    ("seat".into(), json!(seat)),
-                    ("bin".into(), json!(bin)),
-                ]),
+                args: seat_args,
                 extra: BTreeMap::new(),
             },
         );
+        if !face {
+            step.steps
+                .retain(|child| matches!(child.name.as_str(), "seat-present" | "pull-repo"));
+            continue;
+        }
         let reload = step
             .steps
             .iter()
@@ -567,11 +571,20 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
                 extra: BTreeMap::new(),
             },
         );
+        let daemon_reload = step
+            .steps
+            .iter_mut()
+            .find(|child| child.name == "service-daemon-reload")
+            .ok_or("xenia-daemon-reload-missing")?;
+        daemon_reload.args.insert(
+            "managed_files_changed".into(),
+            json!({"from":"unit-render.changed"}),
+        );
         if let Some(health) = step.steps.iter_mut().find(|c| c.name == "health-proof") {
             health.permutation = Some("status-door".into());
             health.args = BTreeMap::from([
                 ("id".into(), json!(id.clone())),
-                ("resolved_commit".into(), json!({"from":"pull-repo.resolved_commit"})),
+                ("resolved_commit".into(), json!({"from":"build.source_build_sha"})),
                 ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
                 ("health_route".into(), json!(health_route(&entry))),
             ]);
@@ -610,11 +623,7 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
             ("id".into(), json!(id)),
             (
                 "source_sha".into(),
-                if clone {
-                    json!({"from":"health-proof.running_source_sha"})
-                } else {
-                    json!({"from":"pull-repo.resolved_commit"})
-                },
+                json!({"from":"health-proof.running_source_sha"}),
             ),
             ("health".into(), json!({"from":"health-proof.health"})),
             ("endpoint".into(), json!({"from":"health-proof.endpoint"})),
@@ -867,53 +876,108 @@ fn xenia_same_inode(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool
     left.dev() == right.dev() && left.ino() == right.ino()
 }
 
-fn open_xenia_seat_directory(path: &Path) -> Result<File, String> {
+fn open_xenia_seat_parent(path: &Path) -> Result<(File, CString), String> {
     if !path.is_absolute() || path == Path::new("/") {
         return Err("xenia-seat-path-invalid".into());
     }
-    let mut directory =
-        File::open("/").map_err(|error| format!("xenia-seat-root-open-failed: {error}"))?;
-    let mut traversed = false;
+    let mut components = Vec::new();
     for component in path.components() {
         match component {
             Component::RootDir => {}
-            Component::Normal(name) => {
-                traversed = true;
-                let name = CString::new(name.as_bytes())
-                    .map_err(|_| "xenia-seat-path-invalid".to_string())?;
-                let fd = unsafe {
-                    libc::openat(
-                        directory.as_raw_fd(),
-                        name.as_ptr(),
-                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
-                };
-                if fd < 0 {
-                    let error = std::io::Error::last_os_error();
-                    return match error.raw_os_error() {
-                        Some(libc::ENOENT) => Err("seat-absent".into()),
-                        Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
-                            Err("xenia-seat-path-symlink-or-not-directory".into())
-                        }
-                        _ => Err(format!("xenia-seat-open-failed: {error}")),
-                    };
-                }
-                directory = unsafe { File::from_raw_fd(fd) };
-            }
+            Component::Normal(name) => components.push(name),
             Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
                 return Err("xenia-seat-path-invalid".into());
             }
         }
     }
-    if !traversed
-        || !directory
-            .metadata()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-    {
-        return Err("seat-absent".into());
+    let name = components
+        .pop()
+        .ok_or_else(|| "xenia-seat-path-invalid".to_string())?;
+    let mut directory =
+        File::open("/").map_err(|error| format!("xenia-seat-root-open-failed: {error}"))?;
+    for component in components {
+        let component = CString::new(component.as_bytes())
+            .map_err(|_| "xenia-seat-path-invalid".to_string())?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ENOENT) => Err("xenia-seat-parent-absent".into()),
+                Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
+                    Err("xenia-seat-path-symlink-or-not-directory".into())
+                }
+                _ => Err(format!("xenia-seat-parent-open-failed: {error}")),
+            };
+        }
+        directory = unsafe { File::from_raw_fd(fd) };
     }
-    Ok(directory)
+    let name = CString::new(name.as_bytes()).map_err(|_| "xenia-seat-path-invalid".to_string())?;
+    Ok((directory, name))
+}
+
+fn open_xenia_seat_directory(path: &Path) -> Result<File, String> {
+    let (parent, name) = open_xenia_seat_parent(path)?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOENT) => Err("seat-absent".into()),
+            Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
+                Err("xenia-seat-path-symlink-or-not-directory".into())
+            }
+            _ => Err(format!("xenia-seat-open-failed: {error}")),
+        };
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+fn create_xenia_seat_directory(path: &Path) -> Result<File, String> {
+    let (parent, name) = open_xenia_seat_parent(path)?;
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o750) } != 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::EEXIST) => Err("xenia-seat-path-changed-before-create".into()),
+            Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
+                Err("xenia-seat-path-symlink-or-not-directory".into())
+            }
+            _ => Err(format!("xenia-seat-create-failed: {error}")),
+        };
+    }
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(format!("xenia-seat-created-open-failed: {error}"));
+    }
+    let created = unsafe { File::from_raw_fd(fd) };
+    let created_metadata = created
+        .metadata()
+        .map_err(|error| format!("xenia-seat-created-stat-failed: {error}"))?;
+    let named = open_xenia_seat_directory(path)?;
+    let named_metadata = named
+        .metadata()
+        .map_err(|error| format!("xenia-seat-created-final-stat-failed: {error}"))?;
+    if !xenia_same_inode(&created_metadata, &named_metadata) {
+        return Err("xenia-seat-path-changed-after-create".into());
+    }
+    Ok(created)
 }
 
 fn open_xenia_seat_file(directory: &File, name: &OsStr) -> Result<Option<File>, String> {
@@ -1000,10 +1064,6 @@ fn xenia_seat_present(
     let (uid, gid) = crate::atoms::r#do::pull_repo::xenia_owner_ids(owner)
         .map_err(|_| "xenia-install-owner-unknown".to_string())?;
     let seat_path = Path::new(seat);
-    let seat_directory = open_xenia_seat_directory(seat_path)?;
-    let seat_before = seat_directory
-        .metadata()
-        .map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
 
     let mut requested_files = Vec::<(String, OsString)>::new();
     if let Some(value) = args.get("bin").filter(|value| !value.is_null()) {
@@ -1022,6 +1082,63 @@ fn xenia_seat_present(
         requested_files.push(("engine".into(), name));
     }
     requested_files.push(("listen".into(), OsString::from("listen")));
+
+    let (seat_directory, created) = match open_xenia_seat_directory(seat_path) {
+        Ok(directory) => (directory, false),
+        Err(reason) if reason == "seat-absent" && !apply => {
+            let mut planned_labels = BTreeMap::<String, Vec<String>>::new();
+            for (label, name) in &requested_files {
+                planned_labels
+                    .entry(name.to_string_lossy().into_owned())
+                    .or_default()
+                    .push(label.clone());
+            }
+            let planned_files = planned_labels
+                .into_iter()
+                .map(|(name, labels)| {
+                    (
+                        labels.join("+"),
+                        json!({"name":name,"owner_before":null,"owner_after":null}),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let final_state = json!({
+                "disposition": "create-planned",
+                "present": false,
+                "owner_before": null,
+                "owner_after": null,
+                "mode_before": null,
+                "mode_after": null,
+                "desired_owner": xenia_owner_label(uid, gid),
+                "desired_mode": "0750",
+                "files": planned_files,
+            });
+            return Ok((
+                OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: "xenia-seat-create-planned".into(),
+                    command: None,
+                },
+                BTreeMap::from([
+                    ("uid".into(), json!(u64::from(uid))),
+                    ("gid".into(), json!(u64::from(gid))),
+                    ("could_change".into(), json!(true)),
+                    (
+                        "could_change_detail".into(),
+                        json!({"seat":true,"engine":false,"listen":false,"any":true}),
+                    ),
+                    ("final_state".into(), final_state),
+                ]),
+            ));
+        }
+        Err(reason) if reason == "seat-absent" => (create_xenia_seat_directory(seat_path)?, true),
+        Err(reason) => return Err(reason),
+    };
+    let seat_before = seat_directory
+        .metadata()
+        .map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
 
     let mut files = Vec::<XeniaSeatFile>::new();
     for (label, name) in requested_files {
@@ -1062,15 +1179,15 @@ fn xenia_seat_present(
     let listen_drift = files
         .iter()
         .any(|file| file.labels.iter().any(|label| label == "listen") && file_drift(file));
-    let could_change_any = seat_drift || engine_drift || listen_drift;
+    let could_change_any = created || seat_drift || engine_drift || listen_drift;
     let could_change_detail = json!({
-        "seat": seat_drift,
+        "seat": created || seat_drift,
         "engine": engine_drift,
         "listen": listen_drift,
         "any": could_change_any,
     });
 
-    let mut repaired = false;
+    let mut repaired = created;
     if apply {
         let named_seat = open_xenia_seat_directory(seat_path)?;
         let named_seat_metadata = named_seat
@@ -1164,7 +1281,9 @@ fn xenia_seat_present(
         )
     };
 
-    let disposition = if !apply {
+    let disposition = if created {
+        "created"
+    } else if !apply {
         "planned"
     } else if repaired {
         "corrected"
@@ -1217,85 +1336,19 @@ pub(crate) fn execute_routine_child(
     match permutation {
         "seat-present" => xenia_seat_present(args, apply),
         "observe-stamp" => {
-            if !apply {
-                return Ok((
-                    OperationOutcome {
-                        ok: true,
-                        changed: false,
-                        skipped: true,
-                        message: "xenia-observe-planned".into(),
-                        command: None,
-                    },
-                    BTreeMap::new(),
-                ));
-            }
             let id = args
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or("xenia-id-missing")?;
-            let health = args.get("health").cloned().unwrap_or(Value::Null);
-            let source_sha = args.get("source_sha").cloned().unwrap_or(Value::Null);
-            let version = args.get("version").cloned().unwrap_or(Value::Null);
-            let endpoint = args.get("endpoint").cloned().unwrap_or(Value::Null);
-            let proved_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_secs();
-            let base = base_url(None)?;
-            let post_observation = |payload: &Value| -> Result<Value, String> {
-                let (status, value) = http(
-                    "POST",
-                    &format!("{base}/api/v1/xenia/{id}/observe"),
-                    Some(payload),
-                    Duration::from_secs(5),
-                )
-                .map_err(|_| "xenia-observe-unreachable".to_string())?;
-                if status == 503 || status >= 500 {
-                    return Err("xenia-observe-unreachable".into());
-                }
-                if (400..500).contains(&status)
-                    || value.get("ok").and_then(Value::as_bool) == Some(false)
-                {
-                    let check = value
-                        .get("check")
-                        .or_else(|| value.get("verdict"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    return Err(format!("xenia-observe-refused {check}"));
-                }
-                if status != 200 {
-                    return Err("xenia-observe-unreachable".into());
-                }
-                Ok(value)
-            };
-            let value = post_observation(&json!({
-                "installed": {
-                    "version": version,
-                    "source_sha": source_sha,
-                    "kit_band": null,
-                    "proved_at": proved_at,
-                    "health": health
-                }
-            }))?;
-            post_observation(&json!({
-                "discovered": {
-                    "endpoint": endpoint,
-                    "content_kind": null,
-                    "rung": "probe",
-                    "at": proved_at
-                }
-            }))?;
-            let mut out = BTreeMap::new();
-            out.insert("entry".into(), value);
             Ok((
                 OperationOutcome {
                     ok: true,
                     changed: false,
-                    skipped: false,
-                    message: "xenia-observed".into(),
+                    skipped: true,
+                    message: format!("xenia-observe-skipped-register-read-only id={id}"),
                     command: None,
                 },
-                out,
+                BTreeMap::new(),
             ))
         }
         _ => Err(format!(
@@ -1379,11 +1432,9 @@ pub(crate) fn execute_health_read(
 
 fn health_source_sha(value: &Value) -> Option<String> {
     value
-        .get("running_source_sha")
-        .or_else(|| value.get("source_sha"))
-        .or_else(|| value.pointer("/runtime/running_source_sha"))
-        .or_else(|| value.pointer("/runtime/source_sha"))
+        .get("source_sha")
         .and_then(Value::as_str)
+        .filter(|sha| !sha.is_empty())
         .map(str::to_owned)
 }
 
@@ -1402,8 +1453,17 @@ fn execute_status_door_at_base(
         .get("id")
         .and_then(Value::as_str)
         .ok_or("xenia-id-missing")?;
+    let expected = args
+        .get("resolved_commit")
+        .and_then(Value::as_str)
+        .filter(|sha| !sha.is_empty())
+        .ok_or("xenia-source-press-sha-missing")?;
     let retries = crate::atoms::health::DEFAULT_PROBE_RETRIES as u64;
     let pause = 1;
+    let mut status_seen = false;
+    let mut active_seen = false;
+    let mut endpoint_seen = false;
+    let mut last_health_error = None;
     for attempt in 0..retries {
         if let Ok((200, value)) = http(
             "GET",
@@ -1411,72 +1471,62 @@ fn execute_status_door_at_base(
             None,
             Duration::from_secs(3),
         ) {
+            status_seen = true;
             if value.pointer("/runtime/state").and_then(Value::as_str) == Some("active") {
-                let listeners = value
-                    .pointer("/runtime/listeners")
-                    .and_then(Value::as_array)
-                    .map(Vec::len)
-                    .unwrap_or(0);
-                if listeners > 0 || attempt + 1 == retries {
-                    let health = if listeners > 0 { "healthy" } else { "degraded" };
-                    let route = args
-                        .get("health_route")
-                        .and_then(Value::as_str)
-                        .filter(|route| route.starts_with('/'))
-                        .unwrap_or("/health");
-                    let endpoint = value
-                        .pointer("/runtime/listeners/0/endpoint")
-                        .and_then(Value::as_str)
-                        .filter(|endpoint| !endpoint.trim().is_empty())
-                        .or_else(|| {
-                            args.get("endpoint")
-                                .and_then(Value::as_str)
-                                .filter(|endpoint| !endpoint.trim().is_empty())
-                        })
-                        .or_else(|| {
-                            value
-                                .pointer("/entry/discovered/endpoint")
-                                .and_then(Value::as_str)
-                                .filter(|endpoint| !endpoint.trim().is_empty())
-                        });
-                    let mut running_source_sha = health_source_sha(&value);
-                    if let Some(endpoint) = endpoint {
-                        let url = health_url(endpoint, route);
-                        let (status, health_value) = http(
-                            "GET",
-                            &url,
-                            None,
-                            Duration::from_secs(3),
-                        )
-                        .map_err(|_| "xenia-health-unreachable".to_string())?;
-                        if status != 200 {
-                            return Err("xenia-health-unreachable".into());
-                        }
-                        running_source_sha = health_source_sha(&health_value);
+                active_seen = true;
+                let endpoint = value
+                    .pointer("/runtime/listeners/0/endpoint")
+                    .and_then(Value::as_str)
+                    .filter(|endpoint| !endpoint.trim().is_empty())
+                    .or_else(|| {
+                        args.get("endpoint")
+                            .and_then(Value::as_str)
+                            .filter(|endpoint| !endpoint.trim().is_empty())
+                    })
+                    .or_else(|| {
+                        value
+                            .pointer("/entry/discovered/endpoint")
+                            .and_then(Value::as_str)
+                            .filter(|endpoint| !endpoint.trim().is_empty())
+                    });
+                let Some(endpoint) = endpoint else {
+                    last_health_error = Some("xenia-health-endpoint-missing");
+                    if attempt + 1 < retries {
+                        std::thread::sleep(Duration::from_secs(pause));
                     }
-                    if let Some(expected) = args.get("resolved_commit").and_then(Value::as_str) {
-                        if running_source_sha.as_deref() != Some(expected) {
-                            return Err("xenia-running-sha-mismatch".into());
+                    continue;
+                };
+                endpoint_seen = true;
+                let route = args
+                    .get("health_route")
+                    .and_then(Value::as_str)
+                    .filter(|route| route.starts_with('/'))
+                    .unwrap_or("/health");
+                let url = health_url(endpoint, route);
+                match http("GET", &url, None, Duration::from_secs(3)) {
+                    Ok((200, health_value)) => match health_source_sha(&health_value) {
+                        None => last_health_error = Some("xenia-health-source-sha-missing"),
+                        Some(running_source_sha) if running_source_sha != expected => {
+                            last_health_error = Some("xenia-running-sha-mismatch")
                         }
-                    }
-                    let mut out = BTreeMap::new();
-                    out.insert("health".into(), json!(health));
-                    out.insert("running_source_sha".into(), json!(running_source_sha));
-                    out.insert(
-                        "endpoint".into(),
-                        endpoint.map(Value::from).unwrap_or(Value::Null),
-                    );
-                    out.insert("status".into(), value);
-                    return Ok((
-                        OperationOutcome {
-                            ok: true,
-                            changed: false,
-                            skipped: false,
-                            message: format!("xenia-{health}"),
-                            command: None,
-                        },
-                        out,
-                    ));
+                        Some(running_source_sha) => {
+                            let mut out = BTreeMap::new();
+                            out.insert("health".into(), json!("healthy"));
+                            out.insert("running_source_sha".into(), json!(running_source_sha));
+                            out.insert("endpoint".into(), Value::String(endpoint.to_owned()));
+                            return Ok((
+                                OperationOutcome {
+                                    ok: true,
+                                    changed: false,
+                                    skipped: false,
+                                    message: "xenia-healthy".into(),
+                                    command: None,
+                                },
+                                out,
+                            ));
+                        }
+                    },
+                    _ => last_health_error = Some("xenia-health-unreachable"),
                 }
             }
         }
@@ -1484,74 +1534,17 @@ fn execute_status_door_at_base(
             std::thread::sleep(Duration::from_secs(pause));
         }
     }
-    Err("xenia-unit-not-active".into())
-}
-
-fn remove_marked_unit(
-    receipt_dir: &Path,
-    name: &str,
-    service: &str,
-    path: &Path,
-    apply: bool,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
-    let before = crate::atoms::r#do::remove_unit::observe(service, Some(path), false, None, 30);
-    if !before.unit_file_exists {
-        return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: "xenia-unit-already-absent".into(),
-            command: None,
-        });
-    }
-    if !apply {
-        return Ok(OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: true,
-            message: format!("planned remove-unit disable-stop-remove {service}"),
-            command: None,
-        });
-    }
-    let invocation = invocation.ok_or("invocation-key-missing")?;
-    let run = crate::atoms::comparison::execute_once(
-        "xenia-remove-unit",
-        || Ok::<_, String>(before.clone()),
-        |_| crate::atoms::comparison::DiffDecision::Different,
-        |authorization, _| {
-            crate::atoms::r#do::remove_unit::act(
-                authorization,
-                invocation,
-                service,
-                "disable-stop-remove",
-                Some(path),
-                false,
-                None,
-                30,
-            )
-        },
-    )?;
-    let command = match run {
-        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement,
-        crate::atoms::comparison::ComparisonRun::Current { .. } => unreachable!(),
-    };
-    crate::atoms::r#do::remove_unit::report_home(
-        service,
-        &receipt_dir.join(format!("{name}.json")),
-        &command,
-    )?;
-    Ok(OperationOutcome {
-        ok: command.ok,
-        changed: command.ok,
-        skipped: false,
-        message: if command.ok {
-            "xenia-unit-retired".into()
+    if active_seen {
+        if !endpoint_seen {
+            Err("xenia-health-endpoint-missing".into())
         } else {
-            "xenia-unit-retire-failed".into()
-        },
-        command: Some(command),
-    })
+            Err(last_health_error.unwrap_or("xenia-health-unreachable").into())
+        }
+    } else if status_seen {
+        Err("xenia-unit-not-active".into())
+    } else {
+        Err("xenia-unit-status-unreachable".into())
+    }
 }
 
 pub(crate) fn execute_retire(
@@ -1611,34 +1604,26 @@ pub(crate) fn execute_retire(
             continue;
         };
         let action = match declared.get(id) {
-            None => "disable-stop-remove",
+            None => continue,
             Some(false) => "disable-stop",
             Some(true) => continue,
         };
         let service = format!("{id}.service");
-        let outcome = if action == "disable-stop-remove" {
-            remove_marked_unit(
-                receipt_dir,
-                &format!("xenia-retire-{id}"),
-                &service,
-                &path,
-                apply,
-                invocation,
-            )
-        } else {
-            crate::tools::systemd::run_permutation_with_material_gate(
-                receipt_dir,
-                &format!("xenia-retire-{id}"),
-                action,
-                Some(&service),
-                &[],
-                None,
-                30,
-                apply,
-                false,
-                invocation,
-            )
-        };
+        if item.file_name() != OsStr::new(service.as_str()) {
+            continue;
+        }
+        let outcome = crate::tools::systemd::run_permutation_with_material_gate(
+            receipt_dir,
+            &format!("xenia-retire-{id}"),
+            action,
+            Some(&service),
+            &[],
+            None,
+            30,
+            apply,
+            false,
+            invocation,
+        );
         match outcome {
             Ok(outcome) => {
                 changed |= outcome.changed;
@@ -1653,47 +1638,9 @@ pub(crate) fn execute_retire(
             }
         }
     }
-    if retirements.iter().any(|(_, action, ok)| action == "disable-stop-remove" && *ok) {
-        match crate::atoms::systemd::run_permutation(
-            receipt_dir,
-            "xenia-retire-daemon-reload",
-            "daemon-reload",
-            None,
-            &[],
-            None,
-            30,
-            apply,
-            true,
-            invocation,
-        ) {
-            Ok(outcome) if outcome.ok => changed |= outcome.changed,
-            Ok(_) => {
-                first_failure.get_or_insert_with(|| "xenia-retire-daemon-reload-failed".into());
-                for (_, action, ok) in &mut retirements {
-                    if action == "disable-stop-remove" {
-                        *ok = false;
-                    }
-                }
-            }
-            Err(error) => {
-                first_failure.get_or_insert(error);
-                for (_, action, ok) in &mut retirements {
-                    if action == "disable-stop-remove" {
-                        *ok = false;
-                    }
-                }
-            }
-        }
-    }
     if apply {
         for (id, action, ok) in &retirements {
-            let outcome = if !ok {
-                "failed"
-            } else if action == "disable-stop-remove" {
-                "removed"
-            } else {
-                "disabled"
-            };
+            let outcome = if !ok { "failed" } else { "disabled" };
             crate::hyalos::forward_receipt(
                 "xenia",
                 &format!("xenia retirement outcome={outcome} id={id} action={action}"),

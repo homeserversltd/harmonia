@@ -1799,7 +1799,7 @@
               "required": false
             }
           ],
-          "placement": "RatchetBinaries"
+          "placement": "PullSource"
         },
         {
           "name": "observe-stamp",
