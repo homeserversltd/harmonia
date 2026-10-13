@@ -1,4 +1,16 @@
 {
+    "sources": {
+      "wukong-staff": {
+        "candidates": [
+          {
+            "url": "https://raw.githubusercontent.com/homeserversltd/mgla/main/wukong-staff/latest.mgla"
+          }
+        ],
+        "key_line_candidates": [
+          "https://raw.githubusercontent.com/homeserversltd/mgla/main/1141623189b165d8.txt"
+        ]
+      }
+    },
     "caduceus": {
       "bind": "0.0.0.0:3014",
       "seat_port": 3014

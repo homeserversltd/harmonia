@@ -2,7 +2,7 @@
 
 This module carries the HOMESERVER product crown configuration lifted from the original website configuration. Harmonia converges the native Coronatio service runtime from the repository's own Forgejo Release on an already-born appliance.
 
-Harmonia owns only Coronatio service runtime convergence. Chrysalis birth writes and seals `/etc/appliance/config.factory`, then seeds `/etc/appliance/config.json` from this module's unchanged `files_root` payload. Harmonia only reads both files. Live changes to `/etc/appliance/config.json` belong to Caduceus.
+Harmonia owns only Coronatio service runtime convergence. Chrysalis birth writes and seals `/etc/appliance/config.factory`, then seeds `/etc/appliance/config.json` from this module's unchanged `files_root` payload, including `sources.wukong-staff` with the public attestations candidate. Harmonia only reads both files. Live changes to `/etc/appliance/config.json` belong to Caduceus.
 
 The ladder:
 
