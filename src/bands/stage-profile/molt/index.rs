@@ -1033,7 +1033,7 @@ fn export_source_symlink(
     let mut replacement: Option<(Option<ExportPreimage>, &'static str)> = None;
     let comparison = crate::tools::comparison::execute(
         "molt-export-symlink",
-        || export_link_text_is_current(&output_observed, &link_observed),
+        || export_is_current(&source_observed, &output_observed, mode),
         |same| {
             if *same {
                 crate::tools::comparison::DiffDecision::Empty
@@ -1445,12 +1445,16 @@ fn export_is_current(source: &Path, output: &Path, mode: MoltMode) -> Result<boo
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.to_string()),
     };
+    let source_metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+    if source_metadata.file_type().is_symlink() {
+        let link_text = fs::read_link(source).map_err(|e| e.to_string())?;
+        return export_link_text_is_current(output, &link_text);
+    }
     match mode {
         MoltMode::Copy => {
             if !output_metadata.is_file() || output_metadata.file_type().is_symlink() {
                 return Ok(false);
             }
-            let source_metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
             if file_mode(&source_metadata) != file_mode(&output_metadata)
                 || source_metadata.uid() != output_metadata.uid()
                 || source_metadata.gid() != output_metadata.gid()
