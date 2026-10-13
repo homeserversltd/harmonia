@@ -786,10 +786,20 @@ struct ExportPreimage {
     image: crate::tools::files::RemoveDirImage,
 }
 
+/// `Pending` is journaled before removal; `Absent` is owned only once the
+/// comparison-authorized replacement act has begun.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExportPostimage {
+    Pending,
+    Absent,
+    Symlink { link_text: PathBuf },
+    Directory { dev: u64, ino: u64 },
+}
+
 #[derive(Debug, Clone)]
 struct LinkExportRollback {
     output: PathBuf,
-    link_text: PathBuf,
+    postimage: ExportPostimage,
     preimage: Option<ExportPreimage>,
 }
 
@@ -852,6 +862,25 @@ fn restore_export_preimage(
     }
 }
 
+fn restore_export_preimage_guarded(
+    authorization: &crate::tools::files::ActionAuthorization,
+    key: &crate::tools::files::InvocationKey,
+    output: &Path,
+    postimage: &ExportPostimage,
+    preimage: Option<&ExportPreimage>,
+) -> Result<(), String> {
+    if export_preimage_is_current(output, preimage)? {
+        return Ok(());
+    }
+    if !export_postimage_is_current(output, postimage)? {
+        return Err(format!(
+            "molt-export-postimage-changed {}",
+            output.display()
+        ));
+    }
+    restore_export_preimage(authorization, key, output, preimage)
+}
+
 fn rollback_link_exports(
     key: &crate::tools::files::InvocationKey,
     journal: &[LinkExportRollback],
@@ -859,20 +888,37 @@ fn rollback_link_exports(
     let mut failures = Vec::new();
     for entry in journal.iter().rev() {
         let output = entry.output.clone();
-        let link_text = entry.link_text.clone();
+        let postimage = entry.postimage.clone();
         let preimage = entry.preimage.clone();
+        let operation = match &postimage {
+            ExportPostimage::Directory { .. } => "molt-export-directory-rollback",
+            ExportPostimage::Pending
+            | ExportPostimage::Absent
+            | ExportPostimage::Symlink { .. } => "molt-export-symlink-rollback",
+        };
         let result = crate::tools::comparison::execute(
-            "molt-export-symlink-rollback",
-            || Ok(export_link_text_is_current(&output, &link_text)?),
-            |is_exported_link| {
-                if *is_exported_link {
+            operation,
+            || {
+                Ok((
+                    export_preimage_is_current(&output, preimage.as_ref())?,
+                    export_postimage_is_current(&output, &postimage)?,
+                ))
+            },
+            |(is_preimage, is_postimage)| {
+                if !*is_preimage && *is_postimage {
                     crate::tools::comparison::DiffDecision::Different
                 } else {
                     crate::tools::comparison::DiffDecision::Empty
                 }
             },
             |authorization, _| {
-                restore_export_preimage(&authorization, key, &output, preimage.as_ref())
+                restore_export_preimage_guarded(
+                    &authorization,
+                    key,
+                    &output,
+                    &postimage,
+                    preimage.as_ref(),
+                )
             },
         );
         match result {
@@ -1000,6 +1046,36 @@ fn export_link_text_is_current(output: &Path, link_text: &Path) -> Result<bool, 
     }
 }
 
+fn export_postimage_is_current(
+    output: &Path,
+    postimage: &ExportPostimage,
+) -> Result<bool, String> {
+    match postimage {
+        ExportPostimage::Pending => Ok(false),
+        ExportPostimage::Absent => match fs::symlink_metadata(output) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.to_string()),
+            Ok(_) => Ok(false),
+        },
+        ExportPostimage::Symlink { link_text } => {
+            export_link_text_is_current(output, link_text)
+        }
+        ExportPostimage::Directory { dev, ino } => match fs::symlink_metadata(output) {
+            Ok(metadata)
+                if metadata.is_dir()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.dev() == *dev
+                    && metadata.ino() == *ino =>
+            {
+                Ok(true)
+            }
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.to_string()),
+        },
+    }
+}
+
 fn export_link_image(link_text: &Path) -> crate::tools::files::RemoveDirImage {
     use crate::atoms::r#do::remove_dir::{Image, Kind, Node, Xattrs};
 
@@ -1033,7 +1109,9 @@ fn rollback_one_link_export(
 ) -> String {
     let entry = LinkExportRollback {
         output: output.to_path_buf(),
-        link_text: link_text.to_path_buf(),
+        postimage: ExportPostimage::Symlink {
+            link_text: link_text.to_path_buf(),
+        },
         preimage,
     };
     match rollback_link_exports(key, &[entry]) {
@@ -1156,7 +1234,9 @@ fn export_source_symlink(
         .ok_or_else(|| "molt-export-symlink-preimage-missing".to_string())?;
     link_rollback_journal.push(LinkExportRollback {
         output: output_observed.clone(),
-        link_text: link_observed.clone(),
+        postimage: ExportPostimage::Symlink {
+            link_text: link_observed.clone(),
+        },
         preimage,
     });
     artifacts.push(MoltArtifact {
@@ -1344,7 +1424,9 @@ fn export_one(
             .ok_or_else(|| "molt-export-symlink-preimage-missing".to_string())?;
         link_rollback_journal.push(LinkExportRollback {
             output: output_observed.clone(),
-            link_text: source_observed.clone(),
+            postimage: ExportPostimage::Symlink {
+                link_text: source_observed.clone(),
+            },
             preimage,
         });
     }
@@ -1461,6 +1543,152 @@ fn apply_dir_tail(
             no_follow: true,
         },
     )
+}
+
+fn replace_export_directory_entry(
+    key: &crate::tools::files::InvocationKey,
+    source_root: &Path,
+    output_root: &Path,
+    mode: MoltMode,
+    artifacts: &mut Vec<MoltArtifact>,
+    link_rollback_journal: &mut Vec<LinkExportRollback>,
+) -> Result<(), String> {
+    let desired = metadata_tail(source_root)?;
+    ensure_tail_can_converge(&desired, output_root)?;
+    let output_metadata = fs::symlink_metadata(output_root).map_err(|error| {
+        format!(
+            "molt-export-output-observe-failed {}: {error}",
+            output_root.display()
+        )
+    })?;
+    let replaced_kind = if output_metadata.file_type().is_symlink() {
+        "symlink"
+    } else if output_metadata.is_file() {
+        "file"
+    } else {
+        return Err(format!(
+            "molt-output-kind-collision {}",
+            output_root.display()
+        ));
+    };
+    let preimage = capture_export_preimage(output_root, Some(&output_metadata))?
+        .ok_or_else(|| "molt-export-preimage-missing".to_string())?;
+    use crate::atoms::r#do::remove_dir::Kind;
+    let captured_kind_matches = matches!(
+        (&preimage.image.root.kind, replaced_kind),
+        (Kind::Symlink, "symlink") | (Kind::File, "file")
+    );
+    if !captured_kind_matches {
+        return Err(format!(
+            "molt-export-preimage-changed {}",
+            output_root.display()
+        ));
+    }
+    let output_observed = output_root.to_path_buf();
+    let source_observed = source_root.to_path_buf();
+    let journal_index = link_rollback_journal.len();
+    link_rollback_journal.push(LinkExportRollback {
+        output: output_observed.clone(),
+        postimage: ExportPostimage::Pending,
+        preimage: Some(preimage.clone()),
+    });
+
+    let comparison = crate::tools::comparison::execute(
+        "molt-export-directory-replace",
+        || export_preimage_is_current(&output_observed, Some(&preimage)),
+        |is_preimage| {
+            if *is_preimage {
+                crate::tools::comparison::DiffDecision::Different
+            } else {
+                crate::tools::comparison::DiffDecision::Empty
+            }
+        },
+        |authorization, _| {
+            if !export_preimage_is_current(&output_observed, Some(&preimage))? {
+                return Err(format!(
+                    "molt-export-preimage-changed {}",
+                    output_observed.display()
+                ));
+            }
+            link_rollback_journal[journal_index].postimage = ExportPostimage::Absent;
+            let act = (|| {
+                crate::tools::files::remove_dir_authorized(
+                    &authorization,
+                    key,
+                    &output_observed,
+                )?;
+                verify_absent(&output_observed)?;
+                fs::create_dir(&output_observed).map_err(|error| {
+                    format!(
+                        "molt-export-directory-create-failed {}: {error}",
+                        output_observed.display()
+                    )
+                })?;
+                let metadata = fs::symlink_metadata(&output_observed).map_err(|error| {
+                    format!(
+                        "molt-export-directory-postimage-observe-failed {}: {error}",
+                        output_observed.display()
+                    )
+                })?;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "molt-export-directory-postimage-kind-mismatch {}",
+                        output_observed.display()
+                    ));
+                }
+                let postimage = ExportPostimage::Directory {
+                    dev: metadata.dev(),
+                    ino: metadata.ino(),
+                };
+                link_rollback_journal[journal_index].postimage = postimage;
+                apply_dir_tail(&authorization, key, &output_observed, desired)?;
+                verify_dir_tail(&output_observed, desired)
+            })();
+            if let Err(error) = act {
+                let postimage = link_rollback_journal[journal_index].postimage.clone();
+                return match restore_export_preimage_guarded(
+                    &authorization,
+                    key,
+                    &output_observed,
+                    &postimage,
+                    Some(&preimage),
+                ) {
+                    Ok(()) => Err(error),
+                    Err(restoration) => Err(format!(
+                        "{error}; restoration-failed {restoration}"
+                    )),
+                };
+            }
+            Ok(())
+        },
+    )?;
+    if !matches!(
+        comparison,
+        crate::tools::comparison::ComparisonRun::Moved { .. }
+    ) {
+        return Err(format!(
+            "molt-export-directory-preimage-changed {}",
+            output_observed.display()
+        ));
+    }
+    let postimage = &link_rollback_journal[journal_index].postimage;
+    if !matches!(postimage, ExportPostimage::Directory { .. })
+        || !export_postimage_is_current(&output_observed, postimage)?
+    {
+        return Err(format!(
+            "molt-export-directory-postimage-mismatch {}",
+            output_observed.display()
+        ));
+    }
+    artifacts.push(MoltArtifact {
+        kind: "export-directory",
+        source: source_observed.display().to_string(),
+        output: output_observed.display().to_string(),
+        mode: mode.as_str(),
+        link_text: None,
+        replaced_kind: Some(replaced_kind),
+    });
+    Ok(())
 }
 
 fn export_is_current(source: &Path, output: &Path, mode: MoltMode) -> Result<bool, String> {
@@ -1582,7 +1810,21 @@ fn export_tree(
     if !source_metadata.is_dir() {
         return Err(format!("molt-files-root-missing {}", source_root.display()));
     }
-    if ensure_dir(key, source_root, output_root)? {
+    let output_is_replaceable = match fs::symlink_metadata(output_root) {
+        Ok(metadata) => metadata.file_type().is_symlink() || metadata.is_file(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.to_string()),
+    };
+    if output_is_replaceable {
+        replace_export_directory_entry(
+            key,
+            source_root,
+            output_root,
+            mode,
+            artifacts,
+            link_rollback_journal,
+        )?;
+    } else if ensure_dir(key, source_root, output_root)? {
         artifacts.push(MoltArtifact {
             kind: "export-directory",
             source: source_root.display().to_string(),
