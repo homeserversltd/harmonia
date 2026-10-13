@@ -570,13 +570,11 @@ fn materialize_from_source(
     // the post-act hash proof and fail closed if it still does not converge.
     let mut divergent_modules: Vec<String> = Vec::new();
     for id in &refreshed.modules {
-        let source_hash = crate::atoms::tree_hash::content_tree_sha256(&source_module_path(
-            source_root,
-            &refreshed.id,
-            id,
-        )?)?;
+        let source_hash = crate::bands::stage_profile::molt::staging_tree_sha256(
+            &source_module_path(source_root, &refreshed.id, id)?,
+        )?;
         let installed_hash =
-            crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
+            crate::bands::stage_profile::molt::staging_tree_sha256(&installed_module_root.join(id))?;
         if source_hash != installed_hash {
             divergent_modules.push(id.clone());
         }
@@ -609,13 +607,11 @@ fn materialize_from_source(
     let mut source_module_hashes = BTreeMap::new();
     let mut installed_module_hashes = BTreeMap::new();
     for id in &refreshed.modules {
-        let source_hash = crate::atoms::tree_hash::content_tree_sha256(&source_module_path(
-            source_root,
-            &refreshed.id,
-            id,
-        )?)?;
+        let source_hash = crate::bands::stage_profile::molt::staging_tree_sha256(
+            &source_module_path(source_root, &refreshed.id, id)?,
+        )?;
         let installed_hash =
-            crate::atoms::tree_hash::content_tree_sha256(&installed_module_root.join(id))?;
+            crate::bands::stage_profile::molt::staging_tree_sha256(&installed_module_root.join(id))?;
         if source_hash != installed_hash {
             return Err(format!(
                 "{profile_id}-module-root-inconsistent module={id} source={} installed={}",
@@ -646,7 +642,7 @@ fn materialize_from_source(
                 id: id.clone(),
                 version: installed_module_version(&module_dir)
                     .unwrap_or_else(|| "sidecar".to_string()),
-                tree_sha256: crate::atoms::tree_hash::content_tree_sha256(&module_dir)?,
+                tree_sha256: crate::bands::stage_profile::molt::staging_tree_sha256(&module_dir)?,
                 received_at_run_id: run_id_from_stamp(),
             })
         })
