@@ -395,16 +395,40 @@ fn molt_from_source_kind_inner(
         let source_tree_sha256 = staging_tree_sha256(&module_dir)?;
         let installed_clean = !forced_modules.contains(module)
             && module_output_dir.is_dir()
-            && staging_tree_sha256(&module_output_dir)?
-                == source_tree_sha256;
+            && {
+                let installed_tree_sha256 =
+                    if mode == MoltMode::Symlink && !source_tree_has_symlink(&module_dir)? {
+                        crate::atoms::tree_hash::content_tree_sha256(&module_output_dir)?
+                    } else {
+                        staging_tree_sha256(&module_output_dir)?
+                    };
+                installed_tree_sha256 == source_tree_sha256
+            };
         if installed_clean {
             untouched_modules.push(module.clone());
             continue;
         }
         refreshed_modules.push(module.clone());
         if mode == MoltMode::Copy && forced_modules.contains(module) {
-            // Reconcile in place so pruning sees links atomically and captures any
-            // directory a source-link entry is about to replace.
+            crate::tools::comparison::execute(
+                "molt-forced-module-root-replace",
+                || Ok(fs::symlink_metadata(&module_output_dir).is_ok()),
+                |present| {
+                    if *present {
+                        crate::tools::comparison::DiffDecision::Different
+                    } else {
+                        crate::tools::comparison::DiffDecision::Empty
+                    }
+                },
+                |authorization, _| {
+                    crate::tools::files::remove_dir_authorized(
+                        &authorization,
+                        key,
+                        &module_output_dir,
+                    )
+                    .and_then(|_| verify_absent(&module_output_dir))
+                },
+            )?;
             export_tree(
                 key,
                 &module_dir,
@@ -1568,7 +1592,7 @@ fn export_tree(
             replaced_kind: None,
         });
     }
-    prune_deleted_tree_paths(key, source_root, output_root, pruned_paths)?;
+    prune_deleted_tree_paths(key, source_root, output_root, mode, pruned_paths)?;
     for entry in fs::read_dir(source_root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let source = entry.path();
@@ -1610,10 +1634,21 @@ fn export_tree(
     Ok(())
 }
 
+fn source_tree_has_symlink(root: &Path) -> Result<bool, String> {
+    fn node_has_symlink(node: &crate::atoms::r#do::remove_dir::Node) -> bool {
+        use crate::atoms::r#do::remove_dir::Kind;
+        matches!(&node.kind, &Kind::Symlink) || node.children.iter().any(node_has_symlink)
+    }
+
+    let image = crate::tools::files::remove_dir_capture(root)?;
+    Ok(node_has_symlink(&image.root))
+}
+
 fn prune_deleted_tree_paths(
     key: &crate::tools::files::InvocationKey,
     source_root: &Path,
     output_root: &Path,
+    mode: MoltMode,
     pruned_paths: &mut Vec<String>,
 ) -> Result<(), String> {
     let output_metadata = match fs::symlink_metadata(output_root) {
@@ -1626,20 +1661,35 @@ fn prune_deleted_tree_paths(
     }
 
     let source_files = relative_files(source_root)?;
+    let mut source_symlinks = BTreeSet::new();
+    let mut source_regular_files = BTreeSet::new();
+    for rel in &source_files {
+        let metadata =
+            fs::symlink_metadata(source_root.join(rel)).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            source_symlinks.insert(rel.clone());
+        } else if metadata.is_file() {
+            source_regular_files.insert(rel.clone());
+        }
+    }
     let output_files = relative_files(output_root)?;
-    for rel in output_files.difference(&source_files) {
+    let mut stale_paths: BTreeSet<PathBuf> =
+        output_files.difference(&source_files).cloned().collect();
+    if mode == MoltMode::Copy {
+        for rel in output_files.intersection(&source_regular_files) {
+            let output_metadata =
+                fs::symlink_metadata(output_root.join(rel)).map_err(|e| e.to_string())?;
+            if output_metadata.file_type().is_symlink() {
+                stale_paths.insert(rel.clone());
+            }
+        }
+    }
+    for rel in &stale_paths {
         if rel
             .ancestors()
-            .skip(1)
-            .any(|parent| source_files.contains(parent))
+            .any(|parent| source_symlinks.contains(parent))
         {
             continue;
-        }
-        let source_path = source_root.join(rel);
-        match fs::symlink_metadata(&source_path) {
-            Ok(_) => continue,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.to_string()),
         }
         let path = output_root.join(rel);
         crate::tools::comparison::execute(
@@ -1671,7 +1721,7 @@ fn prune_deleted_tree_paths(
         verify_absent(&path)?;
         pruned_paths.push(path.display().to_string());
     }
-    prune_empty_dirs(key, output_root, &source_files)?;
+    prune_empty_dirs(key, output_root, &source_symlinks)?;
     Ok(())
 }
 
