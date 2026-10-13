@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "retroarch-input",
   "category": "known-good",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "optional": false,
   "description": "HomeConsole RetroArch DualSense and Sunshine virtual-pad input mappings.",
   "constants": {},
@@ -15,12 +15,12 @@
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "home/steam/.config/retroarch/autoconfig/udev/Sony Interactive Entertainment DualSense Wireless Controller.cfg",
-          "home/steam/.config/retroarch/autoconfig/udev/Sunshine PS5 (virtual) pad.cfg"
+          "home/owner/.config/retroarch/autoconfig/udev/Sony Interactive Entertainment DualSense Wireless Controller.cfg",
+          "home/owner/.config/retroarch/autoconfig/udev/Sunshine PS5 (virtual) pad.cfg"
         ],
         "backup_existing": true,
-        "owner": "steam",
-        "group": "steam",
+        "owner": "owner",
+        "group": "owner",
         "receipt_name": "homeconsole-retroarch-input-mappings"
       },
       "on_failure": "stop"

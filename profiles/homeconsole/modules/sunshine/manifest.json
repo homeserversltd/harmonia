@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "sunshine",
   "category": "known-good",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "optional": false,
   "description": "HomeConsole Sunshine streaming configuration and device-access rule.",
   "constants": {},
@@ -15,11 +15,11 @@
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "home/steam/.config/sunshine/sunshine.conf"
+          "home/owner/.config/sunshine/sunshine.conf"
         ],
         "backup_existing": true,
-        "owner": "steam",
-        "group": "steam",
+        "owner": "owner",
+        "group": "owner",
         "receipt_name": "homeconsole-sunshine-user-config"
       },
       "on_failure": "stop"
