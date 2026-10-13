@@ -637,14 +637,59 @@ pub(crate) fn acquire_source(
                 if candidate_was_dirty {
                     let Some(commit) = observation.remote_head.as_deref() else { continue };
                     let request = scoped_request(plan, candidate, plan.destination.clone());
-                    let fetch = capture_git(&request, &["fetch", "--no-tags", &candidate.locator, &format!("refs/heads/{}", plan.reference)], plan.destination.to_str());
-                    if !fetch.ok {
-                        attempts.push(source_attempt(index, candidate, "unavailable", Some(commit.to_string()), false, format!("destination-fetch-before-clobber-failed: {}", fetch.stderr)));
-                        continue;
+                    let commit_expression = format!("{commit}^{{commit}}");
+                    let destination_commit = crate::atoms::ask::pull_repo::git_observe(
+                        &request,
+                        &["cat-file", "-e", &commit_expression],
+                        plan.destination.to_str(),
+                    );
+                    if destination_commit.ok {
+                        precondition.push(
+                            "destination-holds-resolved-commit; destination-fetch-before-clobber skipped"
+                                .into(),
+                        );
+                    } else {
+                        let fetch_command = format!(
+                            "/usr/bin/git fetch --no-tags {:?} {:?}",
+                            candidate.locator, plan.reference
+                        );
+                        let fetch = capture_git(
+                            &request,
+                            &["fetch", "--no-tags", &candidate.locator, &plan.reference],
+                            plan.destination.to_str(),
+                        );
+                        if !fetch.ok {
+                            attempts.push(source_attempt(
+                                index,
+                                candidate,
+                                "unavailable",
+                                Some(commit.to_string()),
+                                false,
+                                format!(
+                                    "destination-fetch-before-clobber-failed command={fetch_command}; exit={} stderr={}",
+                                    fetch.code, fetch.stderr
+                                ),
+                            ));
+                            continue;
+                        }
+                        precondition.push(format!(
+                            "destination-fetch-before-clobber command={fetch_command}; exit={} ok=true",
+                            fetch.code
+                        ));
                     }
                     match clobber_dirty_destination(&request, &plan.destination, commit, &observation.dirty_paths) {
                         Ok(detail) => precondition.push(detail),
-                        Err(detail) => { attempts.push(source_attempt(index, candidate, "hard-red-precondition", Some(commit.to_string()), false, detail)); return source_hard_red(attempts, precondition_changed); }
+                        Err(detail) => {
+                            attempts.push(source_attempt(
+                                index,
+                                candidate,
+                                "hard-red-precondition",
+                                Some(commit.to_string()),
+                                false,
+                                source_acquisition_detail(&precondition, &detail),
+                            ));
+                            return source_hard_red(attempts, precondition_changed);
+                        }
                     }
                 }
                 if observation.remote_head.is_none() {
@@ -1430,7 +1475,13 @@ pub(crate) fn acquire_source(
             if let Some(attempt) = movement.receipt.attempts.iter_mut().find(|a| a.index == index) {
                 attempt.disposition = if plan.candidates[index - 1].kind == SourceCandidateKind::LocalCheckout { "served-external-projected".into() } else { "served".into() };
                 attempt.resolved_commit = Some(commit.clone());
-                attempt.detail = "verified and promoted".into();
+                if attempt.detail.contains("destination-fetch-before-clobber")
+                    || attempt.detail.contains("destination-holds-resolved-commit")
+                {
+                    attempt.detail = format!("{}; verified and promoted", attempt.detail);
+                } else {
+                    attempt.detail = "verified and promoted".into();
+                }
                 attempt.external_freshness = plan.candidates[index - 1].kind == SourceCandidateKind::LocalCheckout;
             }
             movement.receipt.resolved_commit = Some(commit);
