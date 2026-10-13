@@ -8,28 +8,6 @@ pub(crate) struct FetchArtifactExecution {
     pub artifact_path: std::path::PathBuf,
 }
 
-#[derive(serde::Deserialize)]
-struct FetchArtifactApplianceConfig {
-    #[serde(default)]
-    sources: BTreeMap<String, Value>,
-}
-
-fn appliance_source_declared(config_path: &Path, component: &str) -> Result<bool, String> {
-    let text = std::fs::read_to_string(config_path).map_err(|error| {
-        format!(
-            "appliance-config-read-failed {}: {error}",
-            config_path.display()
-        )
-    })?;
-    let config: FetchArtifactApplianceConfig = serde_json::from_str(&text).map_err(|error| {
-        format!(
-            "appliance-config-parse-failed {}: {error}",
-            config_path.display()
-        )
-    })?;
-    Ok(config.sources.contains_key(component))
-}
-
 fn valid_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -107,6 +85,7 @@ fn execute_with_module_provenance(
     if !matches!(source_policy, "artifact" | "developer" | "source") {
         return Err(format!("fetch-artifact-source-policy-invalid policy={source_policy}"));
     }
+    let xenia_artifact = source_policy == "artifact" && module_id == Some("xenia");
     let source_sha = args
         .get("source_build_sha")
         .and_then(Value::as_str)
@@ -128,7 +107,7 @@ fn execute_with_module_provenance(
     if source_policy != "artifact" && !crate::atoms::ask::fetch_artifact::validate_source_sha(source_sha) {
         return Err("fetch-artifact-source-sha-invalid".into());
     }
-    let stamped_release_sha = if source_policy == "artifact" {
+    let stamped_release_sha = if source_policy == "artifact" && !xenia_artifact {
         crate::atoms::ask::collective_stamp::target_sha(component)
     } else {
         None
@@ -203,13 +182,6 @@ fn execute_with_module_provenance(
         .filter(|value| !value.trim().is_empty())
         .map(Path::new);
     let native_release = !release_repo.trim().is_empty();
-    let xenia_artifact = source_policy == "artifact" && module_id == Some("xenia");
-    let xenia_source_undeclared = if xenia_artifact {
-        let config_path = crate::bands::pull_source::appliance_config_path();
-        !appliance_source_declared(&config_path, component)?
-    } else {
-        false
-    };
     let xenia_expected_digest = if xenia_artifact {
         match args.get("expected_digest") {
             None | Some(Value::Null) => None,
@@ -227,7 +199,7 @@ fn execute_with_module_provenance(
                 .filter(|value| crate::atoms::ask::fetch_artifact::validate_source_sha(value))
         })
         .map(str::to_owned);
-    if xenia_source_undeclared
+    if xenia_artifact
         && native_release
         && !beam_refetch
         && xenia_expected_digest.is_some()
@@ -278,7 +250,7 @@ fn execute_with_module_provenance(
     let mut effective_source_sha = source_sha.to_owned();
     let mut stamped_source_plan: Option<crate::tools::git_artifact::SourcePlan> = None;
     let mut module_release_candidates: Option<Vec<Value>> = None;
-    if source_policy == "artifact" && xenia_source_undeclared {
+    if xenia_artifact {
         if !native_release {
             return Err("fetch-artifact-xenia-release-repo-missing".into());
         }

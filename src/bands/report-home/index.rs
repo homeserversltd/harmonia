@@ -232,6 +232,9 @@ fn forward_module_outcome(
     first_missing_signal: Option<&str>,
     run_id: Option<&str>,
 ) {
+    if ok == Some(true) && !changed {
+        return;
+    }
     let profile_id = crate::hyalos::bounded_json_string(profile_id, 96);
     let module_id = crate::hyalos::bounded_json_string(module_id, 96);
     let outcome = match ok {

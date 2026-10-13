@@ -1378,12 +1378,15 @@ pub(crate) fn execute_refusal(
             command: None,
         });
     }
-    crate::hyalos::forward_receipt(
+    let bounded_id = crate::hyalos::bounded_json_string(id, 96);
+    let bounded_reason = crate::hyalos::bounded_json_string(reason, 320);
+    let message = format!("xenia runtime outcome=failed id={bounded_id} reason={bounded_reason}");
+    crate::hyalos::forward_bounded_receipt(
         "xenia",
-        &format!("xenia runtime outcome=failed id={id} reason={reason}"),
-        Some(json!({"id":id,"outcome":"failed","reason":reason})),
+        &message,
+        Some(json!({"id":bounded_id,"outcome":"failed","reason":bounded_reason})),
         Some(false),
-        Some(id),
+        Some(&bounded_id),
     );
     Ok(OperationOutcome {
         ok: false,

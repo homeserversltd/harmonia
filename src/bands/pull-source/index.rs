@@ -1242,8 +1242,7 @@ fn resolve_xenia_source(
                 "xenia-clone-source-incomplete".into(),
             );
         };
-        let requested_ref = crate::atoms::ask::collective_stamp::target_sha(component)
-            .unwrap_or_else(|| requested_ref.to_owned());
+        let requested_ref = requested_ref.to_owned();
         return receipt(
             authority,
             Some(XENIA_SCHEMA.into()),
@@ -1290,9 +1289,7 @@ fn resolve_xenia_source(
             "xenia-release-source-incomplete".into(),
         );
     };
-    let requested_ref = crate::atoms::ask::collective_stamp::target_sha(component)
-        .map(|sha| format!("sha-{sha}"))
-        .unwrap_or_else(|| requested_ref.to_owned());
+    let requested_ref = requested_ref.to_owned();
     let resolution = SourceResolution {
         schema: SOURCE_PLAN_SCHEMA,
         source_policy: "artifact".into(),

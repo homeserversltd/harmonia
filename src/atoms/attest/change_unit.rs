@@ -241,6 +241,9 @@ pub(crate) fn attest_change_unit(
             .get("reason")
             .and_then(Value::as_str)
             .ok_or_else(|| "systemd-attest-reason-missing".to_string())?;
+        if command.ok && decision == "held" {
+            return Ok(());
+        }
         crate::atoms::attest::attest(
             &receipt_dir.join("harmonia-atoms.log"),
             &crate::atoms::Receipt {

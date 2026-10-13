@@ -888,6 +888,9 @@ fn emit_routine_child_outcome(
     if !apply {
         return;
     }
+    if kind.as_str() == "xenia" && status == "blocked" {
+        return;
+    }
     if ok && !changed {
         return;
     }
