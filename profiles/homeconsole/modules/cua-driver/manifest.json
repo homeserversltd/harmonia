@@ -1,0 +1,68 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "cua-driver",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Maintain the pinned upstream CUA release at its birth-provisioned ELF path; verify the archive pin and derive the installed binary digest from its exact member without retaining the archive.",
+  "optional": false,
+  "constants": {
+    "release_repo": "trycua/cua",
+    "release_tag": "cua-driver-rs-v0.28.2",
+    "archive": "cua-driver-rs-0.28.2-linux-x86_64.tar.gz",
+    "archive_sha256": "8f3e5b669e2bcd98d0eecc64f40640aac77f358b6332a06abc6ee79991620f7d",
+    "binary_member": "cua-driver-rs-0.28.2-linux-x86_64/cua-driver",
+    "entrypoint": "/usr/local/bin/cua-driver"
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "cua-driver-maintenance-helper",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "usr/local/libexec/sway-seat/cua-driver-maintain"
+        ],
+        "mode": 493,
+        "backup_existing": false,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "cua-driver-maintenance-helper"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "cua-driver-pinned-release-currentness",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/local/libexec/sway-seat/cua-driver-maintain",
+        "args": [
+          "apply",
+          "$constants.release_repo",
+          "$constants.release_tag",
+          "$constants.archive",
+          "$constants.archive_sha256",
+          "$constants.binary_member"
+        ],
+        "timeout_secs": 180,
+        "observation": {
+          "program": "/usr/local/libexec/sway-seat/cua-driver-maintain",
+          "args": [
+            "observe",
+            "$constants.release_repo",
+            "$constants.release_tag",
+            "$constants.archive",
+            "$constants.archive_sha256",
+            "$constants.binary_member"
+          ],
+          "expected_exit_code": 0,
+          "expected_stdout": "current"
+        }
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

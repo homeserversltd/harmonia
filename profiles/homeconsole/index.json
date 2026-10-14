@@ -30,6 +30,9 @@
     "sudoers",
     "sunshine",
     "retroarch-input",
-    "grub-branding"
+    "grub-branding",
+    "sway-seat",
+    "cua-driver",
+    "hermes-seat"
   ]
 }

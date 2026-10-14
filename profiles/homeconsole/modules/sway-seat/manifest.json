@@ -1,0 +1,97 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sway-seat",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Maintain the owner headless Sway seat, its loopback WayVNC unit, and the minimal session-environment bridge without activating or enabling units.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "sway",
+      "wayvnc",
+      "foot",
+      "wlrctl",
+      "wtype",
+      "python"
+    ],
+    "packages_by_family": {
+      "arch": [
+        "sway",
+        "wayvnc",
+        "foot",
+        "wlrctl",
+        "wtype",
+        "python"
+      ],
+      "ubuntu": [
+        "sway",
+        "wayvnc",
+        "foot",
+        "wlrctl",
+        "wtype",
+        "python3-venv"
+      ]
+    }
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "sway-seat-packages-present",
+      "tool": "package",
+      "permutation": "check",
+      "args": {
+        "packages": "$constants.packages"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-session-helper",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "usr/local/libexec/sway-seat/sway-seat-session"
+        ],
+        "mode": 493,
+        "backup_existing": false,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "sway-seat-session-helper"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-owner-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/home/owner",
+        "target_root": "/home/owner",
+        "files": [
+          ".config/sway/config",
+          ".config/wayvnc/config",
+          ".config/systemd/user/sway-seat.service",
+          ".config/systemd/user/wayvnc-seat.service"
+        ],
+        "mode": 420,
+        "backup_existing": false,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "sway-seat-owner-files"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-user-manager-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "user": "owner",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

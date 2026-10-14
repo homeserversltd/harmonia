@@ -1,0 +1,13 @@
+[Unit]
+Description=Headless owner Sway seat
+
+[Service]
+Type=simple
+Environment=WLR_BACKENDS=headless
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+ExecStart=/usr/bin/sway -c /home/owner/.config/sway/config
+ExecStopPost=/usr/local/libexec/sway-seat/sway-seat-session clear-session
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,59 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hermes-seat",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Bounded existing-runtime upkeep only: require the born Hermes source, owner .hermes directory, and venv launcher to exist, then converge declared Python dependencies without source acquisition or owner-config writes.",
+  "optional": false,
+  "constants": {
+    "source_root": "/opt/hermes/hermes-agent",
+    "hermes_home": "/home/owner/.hermes",
+    "venv": "/opt/hermes/venv",
+    "launcher": "/opt/hermes/venv/bin/hermes",
+    "source_patterns": [
+      "requirements*.txt",
+      "pyproject.toml"
+    ]
+  },
+  "ladder": [
+    {
+      "step_id": "hermes-source-root-born",
+      "tool": "ask",
+      "permutation": "path-exists",
+      "args": {
+        "path": "$constants.source_root"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-owner-config-home-born",
+      "tool": "ask",
+      "permutation": "path-exists",
+      "args": {
+        "path": "$constants.hermes_home"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-venv-launcher-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "$constants.launcher",
+        "receipt_label": "hermes-venv-launcher"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-existing-venv-dependencies",
+      "tool": "venv",
+      "permutation": "converge",
+      "args": {
+        "venv": "$constants.venv",
+        "source_root": "$constants.source_root",
+        "source_patterns": "$constants.source_patterns"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
