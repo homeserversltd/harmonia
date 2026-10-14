@@ -359,9 +359,9 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
     } else {
         signals.push("syzygy-required-partner-missing".into());
     }
-    // Sway is a package, not a repository vertex. Every other declared
-    // GUI member resolves its own repository flag on the known-good axis.
-    if receipt.gui.as_deref() != Some("Sway") {
+    // Sway and Hyprland are packages, not repository vertices. Every other
+    // declared GUI member resolves its own repository flag on the known-good axis.
+    if !matches!(receipt.gui.as_deref(), Some("Hyprland" | "Sway")) {
         let gui_member = receipt.gui_member.as_deref().or(match receipt.gui.as_deref() {
             Some("Arcadia") => Some("arcadia"),
             Some("Coronatio") => Some("coronatio"),

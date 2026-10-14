@@ -158,7 +158,7 @@ pub(crate) fn validate_row(row: &RuyiRow) -> Result<(), String> {
     if row
         .gui_face
         .as_deref()
-        .is_some_and(|face| !matches!(face, "Sway" | "Arcadia" | "Coronatio"))
+        .is_some_and(|face| !matches!(face, "Hyprland" | "Sway" | "Arcadia" | "Coronatio"))
     {
         return Err("ruyi-gui-face-invalid".into());
     }

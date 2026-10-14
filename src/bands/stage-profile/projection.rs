@@ -291,7 +291,7 @@ fn projection_component_face(component: &str) -> Option<&'static str> {
     }
 }
 fn projection_gui_member(face: &str) -> String {
-    if face == "Sway" {
+    if matches!(face, "Hyprland" | "Sway") {
         face.to_owned()
     } else {
         face.to_ascii_lowercase()
@@ -696,7 +696,7 @@ fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, 
 fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool {
     match &projected.loaded {
         LoadedModule::Ladder(m) => {
-            if face != "Sway" {
+            if !matches!(face, "Hyprland" | "Sway") {
                 projected_runtime_args(projected).iter().any(|a| {
                     a.get("component")
                         .and_then(Value::as_str)
@@ -708,7 +708,10 @@ fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool {
                 if let Some(x) = m.constants.get("meaning").and_then(Value::as_str) {
                     h.push_str(&x.to_ascii_lowercase());
                 }
-                h.contains("sway") || h.contains("desktop config") || h.contains("user session")
+                let package_name = face.to_ascii_lowercase();
+                h.contains(package_name.as_str())
+                    || h.contains("desktop config")
+                    || h.contains("user session")
             }
         }
         LoadedModule::Sidecar(_) => false,

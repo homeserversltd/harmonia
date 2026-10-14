@@ -219,7 +219,7 @@ fn parse_syzygy_declaration(
         ));
     }
     if let Some(face) = declaration.gui_face.as_deref() {
-        if !matches!(face, "Sway" | "Arcadia" | "Coronatio") {
+        if !matches!(face, "Hyprland" | "Sway" | "Arcadia" | "Coronatio") {
             return Err(format!("device-profile-syzygy-gui-face-unsupported {face}"));
         }
     }
