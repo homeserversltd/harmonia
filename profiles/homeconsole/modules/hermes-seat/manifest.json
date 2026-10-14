@@ -3,7 +3,7 @@
   "id": "hermes-seat",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Bounded existing-runtime upkeep only: require the born Hermes source, owner .hermes directory, and venv launcher to exist, then converge declared Python dependencies without source acquisition or owner-config writes.",
+  "description": "Bounded existing-runtime upkeep only: require the born Hermes source, owner .hermes directory, and venv launcher to exist, converge declared dependencies, and maintain the exact session-aware wrapper with yolo disabled.",
   "optional": false,
   "constants": {
     "source_root": "/opt/hermes/hermes-agent",
@@ -15,6 +15,7 @@
       "pyproject.toml"
     ]
   },
+  "files_root": "files_root",
   "ladder": [
     {
       "step_id": "hermes-source-root-born",
@@ -52,6 +53,24 @@
         "venv": "$constants.venv",
         "source_root": "$constants.source_root",
         "source_patterns": "$constants.source_patterns"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-session-aware-wrapper",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "usr/local/bin/hermes"
+        ],
+        "mode": 493,
+        "backup_existing": false,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "hermes-session-aware-wrapper"
       },
       "on_failure": "stop"
     }

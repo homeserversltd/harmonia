@@ -3,7 +3,7 @@
   "id": "cua-driver",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Maintain the pinned upstream CUA release at its birth-provisioned ELF path; verify the archive pin and derive the installed binary digest from its exact member without retaining the archive.",
+  "description": "Keep the pinned 0.28.2 CUA release upkeep helper and maintain the shared-birth-rendered headless screen supervisor without making it start WayVNC.",
   "optional": false,
   "constants": {
     "release_repo": "trycua/cua",
@@ -61,6 +61,24 @@
           "expected_exit_code": 0,
           "expected_stdout": "current"
         }
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "cua-driver-screen-supervisor",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "usr/local/libexec/sway-seat/sway-seat-screen-supervisor"
+        ],
+        "mode": 493,
+        "backup_existing": false,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "cua-driver-screen-supervisor"
       },
       "on_failure": "stop"
     }

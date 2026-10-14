@@ -1,0 +1,17 @@
+# HomeConsole desktop upkeep
+
+## Birth-render parity
+
+The keeper's Sway, WayVNC, user-unit, readiness-helper, screen-supervisor, and Hermes wrapper bytes are rendered from the shared HomeConsole birth functions using one explicit neutral console map. It uses `headless-user-unit`, owner/group `owner`, owner home `/home/owner`, Sway config `/home/owner/.config/sway/config`, WayVNC config `/home/owner/.config/wayvnc/config`, helper prefix `/usr/local/libexec/sway-seat`, session helper `sway-seat-session`, screen helper `sway-seat-screen-supervisor`, readiness helper `sway-seat-wait-ready`, session environment `/run/sway-seat/session.env`, runtime directory `/run/sway-seat`, `tmpfiles_path=/etc/tmpfiles.d/sway-seat.conf`, Wayland display `wayland-1`, user unit directory `/home/owner/.config/systemd/user`, and units `sway-seat.service` and `wayvnc-seat.service`. The map sets `require_display=false` and names `/var/lib/systemd/linger/owner` as a birth input only; the keeper does not create or modify that marker. The WayVNC config binds `127.0.0.1:5900`; its renderer input disables supervisor-owned WayVNC so the user unit remains the sole declared service path. The screen supervisor uses `/usr/bin/swaymsg`, `/usr/bin/wayvnc`, and `/usr/bin/wayvncctl`. The wrapper path is `/usr/local/bin/hermes`, using `/opt/hermes/venv`, `/opt/hermes/hermes-agent`, and `yolo=false`.
+
+This is a neutral render map, not a claim about eventual birth values: no Ubuntu spine is wired at this candidate commit, so the future birth values remain an open edge. The optional `profile_file` birth input remains intentionally absent; no `.profile` or other profile import is kept. Shared birth renders `/etc/tmpfiles.d/sway-seat.conf` through `_render_tmpfiles(values)` as `d /run/sway-seat 0755 owner owner -\n`, making the runtime directory available before the owner-session publisher runs its `install -d`. The keeper converges that declaration but does not invoke `systemd-tmpfiles` or create `/run` state; birth applies tmpfiles and boot applies the declared file. No actual born-body proof has been performed.
+
+Owner files are `owner:owner`: Sway config and both user units are mode `0644`; WayVNC config is `0600`. Sway helpers and the screen supervisor are `root:root` mode `0755`; the Hermes wrapper is `root:root` mode `0755`.
+
+## Upkeep boundary
+
+The package arrays, including the Arch and Ubuntu family declarations, are unchanged declarations. The base engine retains its legacy Arch assumption; an admitted OS-follow selection rule owns family selection. The keeper checks its existing package floor but does not install desktop packages or create Hermes source. Configuration drift remains an operator proposal; pinned CUA release and existing-venv dependency maintenance remain software upkeep. The keeper preserves existing `/home/owner/.hermes` by presence only and writes no credentials or owner configuration.
+
+Birth owns linger markers and enable links. This profile writes neither and does not enable, start, or restart the Sway or WayVNC units. The existing native user-manager reload only reloads unit definitions. Shared birth uses the same unit bytes; it additionally owns its separate birth-time activation edges.
+
+The existing pinned-release `cua-driver-maintain` helper is an intentional keeper-only addition, absent from shared birth rendering. It maintains the pinned ELF at `/usr/local/bin/cua-driver`; it is outside the born-byte parity set. The shared-rendered screen supervisor does not start WayVNC.

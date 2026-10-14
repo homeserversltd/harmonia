@@ -1,13 +1,13 @@
 [Unit]
-Description=Headless owner Sway seat
+Description=Sway seat
 
 [Service]
 Type=simple
-Environment=WLR_BACKENDS=headless
-Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_CURRENT_DESKTOP=sway XDG_SESSION_DESKTOP=sway XDG_SESSION_TYPE=wayland
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 ExecStart=/usr/bin/sway -c /home/owner/.config/sway/config
-ExecStopPost=/usr/local/libexec/sway-seat/sway-seat-session clear-session
-Restart=on-failure
 
 [Install]
 WantedBy=default.target

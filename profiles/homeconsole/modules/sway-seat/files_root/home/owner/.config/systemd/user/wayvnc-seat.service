@@ -1,12 +1,13 @@
 [Unit]
-Description=Loopback WayVNC for the headless owner Sway seat
+Description=Loopback WayVNC seat
 Requires=sway-seat.service
 After=sway-seat.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/libexec/sway-seat/sway-seat-session wayvnc
-Restart=on-failure
+EnvironmentFile=-/run/sway-seat/session.env
+ExecStartPre=/usr/local/libexec/sway-seat/sway-seat-wait-ready
+ExecStart=/usr/bin/wayvnc --config /home/owner/.config/wayvnc/config
 
 [Install]
 WantedBy=default.target

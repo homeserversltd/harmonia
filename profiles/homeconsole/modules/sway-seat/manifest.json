@@ -3,7 +3,7 @@
   "id": "sway-seat",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Maintain the owner headless Sway seat, its loopback WayVNC unit, and the minimal session-environment bridge without activating or enabling units.",
+  "description": "Maintain the shared-birth-rendered headless Sway seat, loopback WayVNC user unit, and readiness helpers without writing birth-owned linger markers or enable links, or activating units.",
   "optional": false,
   "constants": {
     "packages": [
@@ -52,13 +52,32 @@
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "usr/local/libexec/sway-seat/sway-seat-session"
+          "usr/local/libexec/sway-seat/sway-seat-session",
+          "usr/local/libexec/sway-seat/sway-seat-wait-ready"
         ],
         "mode": 493,
         "backup_existing": false,
         "owner": "root",
         "group": "root",
         "receipt_name": "sway-seat-session-helper"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-runtime-tmpfiles",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/tmpfiles.d/sway-seat.conf"
+        ],
+        "mode": 420,
+        "backup_existing": false,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "sway-seat-runtime-tmpfiles"
       },
       "on_failure": "stop"
     },
@@ -71,7 +90,6 @@
         "target_root": "/home/owner",
         "files": [
           ".config/sway/config",
-          ".config/wayvnc/config",
           ".config/systemd/user/sway-seat.service",
           ".config/systemd/user/wayvnc-seat.service"
         ],
@@ -80,6 +98,24 @@
         "owner": "owner",
         "group": "owner",
         "receipt_name": "sway-seat-owner-files"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-wayvnc-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/home/owner",
+        "target_root": "/home/owner",
+        "files": [
+          ".config/wayvnc/config"
+        ],
+        "mode": 384,
+        "backup_existing": false,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "sway-seat-wayvnc-config"
       },
       "on_failure": "stop"
     },

@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+environment_file=/run/sway-seat/session.env
+attempt=0
+while [ "$attempt" -lt 60 ]; do
+    if [ -r "$environment_file" ] && (
+        set -a
+        . "$environment_file"
+        set +a
+        : "${XDG_RUNTIME_DIR:?missing owner runtime directory}"
+        : "${WAYLAND_DISPLAY:?missing published Wayland display}"
+        : "${SWAYSOCK:?missing published Sway IPC socket}"
+        case "$WAYLAND_DISPLAY" in
+            /*) wayland_socket=$WAYLAND_DISPLAY ;;
+            *) wayland_socket=$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ;;
+        esac
+        [ -S "$wayland_socket" ] || exit 1
+        [ -S "$SWAYSOCK" ] || exit 1
+        SWAYSOCK="$SWAYSOCK" /usr/bin/swaymsg -t get_version -r >/dev/null 2>&1
+    ); then
+        exit 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+printf '%s
+' 'sway-seat-readiness-timeout' >&2
+exit 1
