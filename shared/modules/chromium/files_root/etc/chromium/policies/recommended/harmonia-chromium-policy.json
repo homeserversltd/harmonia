@@ -2,5 +2,6 @@
   "BrowserSignin": 0,
   "PasswordManagerEnabled": false,
   "RestoreOnStartup": 1,
-  "HighEfficiencyModeEnabled": true
+  "HighEfficiencyModeEnabled": true,
+  "BookmarkBarEnabled": true
 }

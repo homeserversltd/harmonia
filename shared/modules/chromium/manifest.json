@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "chromium",
   "category": "known-good",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; profiles without the chromium module remain non-tenants; it does not install browsers; after a package upgrade replaces Chromium under a running desktop browser, it restarts that browser with its session restored.",
   "optional": false,
   "constants": {
@@ -39,7 +39,8 @@
         "target_root": "/",
         "files": [
           "etc/chromium/policies/recommended/harmonia-chromium-policy.json",
-          "etc/chromium/policies/managed/harmonia-chromium-extensions.json"
+          "etc/chromium/policies/managed/harmonia-chromium-extensions.json",
+          "etc/chromium/policies/managed/harmonia-chromium-bookmarks.json"
         ],
         "backup_existing": true,
         "owner": "root",

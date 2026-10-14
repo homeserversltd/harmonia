@@ -1,0 +1,80 @@
+{
+  "ManagedBookmarks": [
+    {
+      "toplevel_name": "Household"
+    },
+    {
+      "name": "Downdetector",
+      "url": "https://downdetector.com/"
+    },
+    {
+      "name": "Amazon",
+      "url": "https://www.amazon.com/"
+    },
+    {
+      "name": "Walmart",
+      "url": "https://www.walmart.com/"
+    },
+    {
+      "name": "eBay",
+      "url": "https://www.ebay.com/"
+    },
+    {
+      "name": "Weather",
+      "url": "https://www.weather.gov/"
+    },
+    {
+      "name": "AP News",
+      "url": "https://apnews.com/"
+    },
+    {
+      "name": "Wikipedia",
+      "url": "https://en.wikipedia.org/"
+    },
+    {
+      "name": "Google Maps",
+      "url": "https://www.google.com/maps"
+    },
+    {
+      "name": "Gmail",
+      "url": "https://mail.google.com/"
+    },
+    {
+      "name": "Outlook",
+      "url": "https://outlook.live.com/mail/"
+    },
+    {
+      "name": "Watch",
+      "children": [
+        {
+          "name": "YouTube",
+          "url": "https://www.youtube.com/"
+        },
+        {
+          "name": "Netflix",
+          "url": "https://www.netflix.com/"
+        },
+        {
+          "name": "Prime Video",
+          "url": "https://www.primevideo.com/"
+        },
+        {
+          "name": "Disney+",
+          "url": "https://www.disneyplus.com/"
+        },
+        {
+          "name": "Hulu",
+          "url": "https://www.hulu.com/"
+        },
+        {
+          "name": "Max",
+          "url": "https://www.max.com/"
+        },
+        {
+          "name": "Twitch",
+          "url": "https://www.twitch.tv/"
+        }
+      ]
+    }
+  ]
+}
