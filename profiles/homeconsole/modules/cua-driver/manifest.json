@@ -3,13 +3,14 @@
   "id": "cua-driver",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Keep the pinned 0.28.2 CUA release upkeep helper and maintain the shared-birth-rendered headless screen supervisor without making it start WayVNC.",
+  "description": "Keep the pinned 0.28.2 CUA release upkeep helper with local currentness observation, and maintain the shared-birth-rendered headless screen supervisor without making it start WayVNC.",
   "optional": false,
   "constants": {
     "release_repo": "trycua/cua",
     "release_tag": "cua-driver-rs-v0.28.2",
     "archive": "cua-driver-rs-0.28.2-linux-x86_64.tar.gz",
     "archive_sha256": "8f3e5b669e2bcd98d0eecc64f40640aac77f358b6332a06abc6ee79991620f7d",
+    "binary_sha256": "3739101d072bdfdd83b7e70b3a16d9271f6eb124e7c5e69b3406f20f0910a4ca",
     "binary_member": "cua-driver-rs-0.28.2-linux-x86_64/cua-driver",
     "entrypoint": "/usr/local/bin/cua-driver"
   },
@@ -45,7 +46,8 @@
           "$constants.release_tag",
           "$constants.archive",
           "$constants.archive_sha256",
-          "$constants.binary_member"
+          "$constants.binary_member",
+          "$constants.binary_sha256"
         ],
         "timeout_secs": 180,
         "observation": {
@@ -56,7 +58,8 @@
             "$constants.release_tag",
             "$constants.archive",
             "$constants.archive_sha256",
-            "$constants.binary_member"
+            "$constants.binary_member",
+            "$constants.binary_sha256"
           ],
           "expected_exit_code": 0,
           "expected_stdout": "current"

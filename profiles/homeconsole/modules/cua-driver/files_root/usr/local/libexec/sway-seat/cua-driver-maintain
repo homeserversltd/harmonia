@@ -170,6 +170,11 @@ def entrypoint_matches(expected_sha256):
         os.close(parent_fd)
 
 
+def validate_binary_sha256(value):
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ReleaseError("cua-release-binary-digest-invalid")
+
+
 def write_all(descriptor, data):
     offset = 0
     while offset < len(data):
@@ -246,20 +251,23 @@ def repair_entrypoint(binary, expected_sha256, original_identity):
 
 
 def main():
-    if len(sys.argv) != 7:
+    if len(sys.argv) != 8:
         raise ReleaseError("cua-release-arguments-invalid")
-    mode, repository, tag, archive, archive_sha256, member_name = sys.argv[1:]
+    mode, repository, tag, archive, archive_sha256, member_name, binary_sha256 = sys.argv[1:]
     if mode not in ("observe", "apply"):
         raise ReleaseError("cua-release-mode-invalid")
+    validate_binary_sha256(binary_sha256)
 
-    original_identity = validate_entrypoint()
-    started = time.monotonic()
-    binary, binary_sha256 = extract_pinned_binary(repository, tag, archive, archive_sha256, member_name)
     if mode == "observe":
         sys.stdout.write("current" if entrypoint_matches(binary_sha256) else "drift")
         return 0
     if entrypoint_matches(binary_sha256):
         return 0
+    original_identity = validate_entrypoint()
+    started = time.monotonic()
+    binary, extracted_sha256 = extract_pinned_binary(repository, tag, archive, archive_sha256, member_name)
+    if extracted_sha256 != binary_sha256:
+        raise ReleaseError("cua-release-binary-digest-mismatch")
     repair_entrypoint(binary, binary_sha256, original_identity)
     duration_ms = int((time.monotonic() - started) * 1000)
     sys.stdout.write(
