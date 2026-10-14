@@ -291,7 +291,7 @@ fn projection_component_face(component: &str) -> Option<&'static str> {
     }
 }
 fn projection_gui_member(face: &str) -> String {
-    if face == "Hyprland" {
+    if face == "Sway" {
         face.to_owned()
     } else {
         face.to_ascii_lowercase()
@@ -396,9 +396,9 @@ fn projection_derive_plan_inner(
         } else if faces.is_empty() {
             if projected
                 .iter()
-                .any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("hyprland"))
+                .any(|(_, p)| p.loaded.id().to_ascii_lowercase().contains("sway"))
             {
-                Some("Hyprland".into())
+                Some("Sway".into())
             } else {
                 None
             }
@@ -696,7 +696,7 @@ fn projected_runtime_args(projected: &ProjectedModule) -> Vec<&BTreeMap<String, 
 fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool {
     match &projected.loaded {
         LoadedModule::Ladder(m) => {
-            if face != "Hyprland" {
+            if face != "Sway" {
                 projected_runtime_args(projected).iter().any(|a| {
                     a.get("component")
                         .and_then(Value::as_str)
@@ -708,7 +708,7 @@ fn projected_gui_module(projected: &ProjectedModule, face: &str) -> bool {
                 if let Some(x) = m.constants.get("meaning").and_then(Value::as_str) {
                     h.push_str(&x.to_ascii_lowercase());
                 }
-                h.contains("hyprland") || h.contains("desktop config") || h.contains("user session")
+                h.contains("sway") || h.contains("desktop config") || h.contains("user session")
             }
         }
         LoadedModule::Sidecar(_) => false,

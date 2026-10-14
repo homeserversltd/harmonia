@@ -1,22 +1,55 @@
-#!/bin/bash
-# Get the list of active workspaces
-active_workspaces=$(hyprctl workspaces -j | jq -r '.[].id')
-current_workspace=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .activeWorkspace.id')
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Iterate through each active workspace
-for workspace in $active_workspaces; do
-  # Skip the current workspace
-  if [ "$workspace" == "$current_workspace" ]; then
-    continue
-  fi
-windows=$(hyprctl clients -j | jq -r --arg ws "$workspace" '.[] | select(.workspace.id == ($ws|tonumber)) | .address')
+python3 - <<'PY'
+import json
+import subprocess
+import sys
 
-  #attempt to focus and move every window to the current workspace
-  for window in $windows; do
-    hyprctl dispatch workspace "$workspace"
-    hyprctl dispatch movefocus "$window"
-    hyprctl dispatch movetoworkspace "$current_workspace"
-  done
-done
-# Switch back to the current workspace
-hyprctl dispatch workspace "$current_workspace"
+
+def ipc(*args):
+    result = subprocess.run(
+        ["swaymsg", "-r", *args], check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    return json.loads(result.stdout)
+
+workspaces = ipc("-t", "get_workspaces")
+current = next((row for row in workspaces if row.get("focused") is True), None)
+if current is None:
+    raise SystemExit("No focused Sway workspace")
+current_name = current["name"]
+workspace_names = {row["name"] for row in workspaces}
+tree = ipc("-t", "get_tree")
+windows = []
+
+
+def walk(node, workspace=None):
+    if node.get("type") == "workspace":
+        workspace = node.get("name")
+    children = list(node.get("nodes") or []) + list(node.get("floating_nodes") or [])
+    if node.get("type") == "con" and not children:
+        props = node.get("window_properties") or {}
+        app_id = node.get("app_id") or ""
+        window_class = props.get("class") or ""
+        scratch = node.get("scratchpad_state") not in (None, "", "none")
+        is_client = bool(app_id or window_class or node.get("window") is not None)
+        if (workspace in workspace_names and workspace != current_name
+                and is_client and not scratch and isinstance(node.get("id"), int)):
+            windows.append(node["id"])
+    for child in children:
+        walk(child, workspace)
+
+
+walk(tree)
+try:
+    for con_id in windows:
+        selector = f'[con_id="{con_id}"] move container to workspace {json.dumps(current_name)}'
+        subprocess.run(["swaymsg", selector], check=True, stdout=subprocess.DEVNULL)
+finally:
+    # Moving containers never relies on a guessed directional focus operation.
+    subprocess.run(
+        ["swaymsg", f"workspace {json.dumps(current_name)}"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+PY

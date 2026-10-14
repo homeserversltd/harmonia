@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Global Hyprland Alt-Tab.
-#
-# Cycles through every normal mapped window, regardless of workspace.
-# Ordering is deterministic "ladder" order:
-#   workspace -> monitor -> top-to-bottom -> left-to-right -> address
-# forward  = next item in that list, wrapping at the end
-# backward = previous item in that list, wrapping at the beginning
-#
-# Usage: alt-tab.sh forward|backward
-
 if [ "$#" -ne 1 ]; then
   echo "Usage: $0 forward|backward" >&2
   exit 1
 fi
-
 command="$1"
 case "$command" in
   forward|backward) ;;
@@ -26,59 +15,84 @@ case "$command" in
     ;;
 esac
 
-# address;monitor;workspace
-# Exclude unmapped/hidden/internal/special-workspace windows.
-mapfile -t windows < <(
-  hyprctl clients -j | jq -r '
-    [ .[]
-      | select(.mapped != false)
-      | select(.hidden != true)
-      | select(.workspace.id != null and .workspace.id >= 0)
-      | select((.class // "") != "")
-    ]
-    | sort_by(.workspace.id, .monitor, .at[1], .at[0], .address)
-    | .[]
-    | "\(.address);\(.monitor);\(.workspace.id)"
-  '
-)
+python3 - "$command" <<'PY'
+import json
+import subprocess
+import sys
 
-count=${#windows[@]}
-if [ "$count" -eq 0 ]; then
-  exit 0
-fi
+command = sys.argv[1]
 
-active_address=$(hyprctl activewindow -j | jq -r '.address // empty')
-active_index=-1
-for i in "${!windows[@]}"; do
-  IFS=';' read -r address _monitor _workspace <<< "${windows[$i]}"
-  if [ "$address" = "$active_address" ]; then
-    active_index=$i
-    break
-  fi
-done
+def ipc(*args):
+    result = subprocess.run(
+        ["swaymsg", "-r", *args], check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    return json.loads(result.stdout)
 
-# If the active window is not in the list, start just before/after the list so
-# the first command lands on the first/last eligible window.
-if [ "$active_index" -ge 0 ]; then
-  index=$active_index
-elif [ "$command" = "forward" ]; then
-  index=-1
-else
-  index=0
-fi
+tree = ipc("-t", "get_tree")
+workspaces = ipc("-t", "get_workspaces")
+outputs = ipc("-t", "get_outputs")
+workspace_by_name = {row["name"]: row for row in workspaces}
+active_outputs = {row["name"] for row in outputs if row.get("active") is True}
+windows = []
 
-case "$command" in
-  forward)
-    index=$(( (index + 1) % count ))
-    ;;
-  backward)
-    index=$(( (index - 1 + count) % count ))
-    ;;
-esac
+def walk(node, workspace=None, output=None):
+    kind = node.get("type")
+    if kind == "output":
+        output = node.get("name")
+    elif kind == "workspace":
+        workspace = node.get("name")
 
-IFS=';' read -r address monitor workspace <<< "${windows[$index]}"
+    children = list(node.get("nodes") or []) + list(node.get("floating_nodes") or [])
+    if kind == "con" and not children:
+        props = node.get("window_properties") or {}
+        app_id = node.get("app_id") or ""
+        window_class = props.get("class") or ""
+        row = workspace_by_name.get(workspace)
+        scratch = node.get("scratchpad_state") not in (None, "", "none")
+        is_client = bool(app_id or window_class or node.get("window") is not None)
+        hidden_here = bool(row and row.get("visible") is True and node.get("visible") is False)
+        if row and output in active_outputs and is_client and not scratch and not hidden_here:
+            num = row.get("num", -1)
+            if not isinstance(num, int) or num < 0:
+                num = 2**31 - 1
+            rect = node.get("rect") or {}
+            windows.append({
+                "id": node.get("id"),
+                "workspace": workspace,
+                "workspace_num": num,
+                "output": output,
+                "y": rect.get("y", 0),
+                "x": rect.get("x", 0),
+                "focused": node.get("focused") is True,
+            })
+    for child in children:
+        walk(child, workspace, output)
 
-# Bring the target workspace/monitor into view, then focus the window by address.
-hyprctl dispatch focusmonitor "$monitor" >/dev/null 2>&1 || true
-hyprctl dispatch workspace "$workspace" >/dev/null 2>&1 || true
-hyprctl dispatch focuswindow "address:$address" >/dev/null
+walk(tree)
+windows = [row for row in windows if isinstance(row.get("id"), int)]
+windows.sort(key=lambda row: (
+    row["workspace_num"], row["workspace"], row["output"],
+    row["y"], row["x"], row["id"],
+))
+if not windows:
+    raise SystemExit(0)
+
+active_id = next((row["id"] for row in windows if row["focused"]), None)
+active_index = next((i for i, row in enumerate(windows) if row["id"] == active_id), -1)
+if active_index >= 0:
+    index = active_index
+elif command == "forward":
+    index = -1
+else:
+    index = 0
+index = (index + 1) % len(windows) if command == "forward" else (index - 1) % len(windows)
+target = windows[index]
+
+def run_sway(command_text):
+    subprocess.run(["swaymsg", command_text], check=True, stdout=subprocess.DEVNULL)
+
+run_sway(f"focus output {json.dumps(target['output'])}")
+run_sway(f"workspace {json.dumps(target['workspace'])}")
+run_sway(f'[con_id="{target["id"]}"] focus')
+PY

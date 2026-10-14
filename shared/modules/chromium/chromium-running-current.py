@@ -3,13 +3,15 @@
 
 check   prints "current" when no desktop browser runs a replaced binary, else "stale"
 restart closes each stale desktop browser cleanly and relaunches it in its owner's
-        Hyprland session with --restore-last-session, then waits for the new process
+        Sway session when available (Hyprland is the fallback), then waits for a fresh
+        browser process with --restore-last-session
 
 Automation browsers (Playwright, DevTools, headless, any --user-data-dir) are never touched.
 """
 import os
 import pwd
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -47,13 +49,77 @@ def hyprland_signature(uid):
     return max(live, key=lambda d: d.stat().st_mtime).name
 
 
+def sway_socket(uid, user):
+    runtime_dir = Path(f"/run/user/{uid}")
+    candidates = []
+    try:
+        for socket_path in runtime_dir.glob("sway-ipc.*.sock"):
+            try:
+                info = socket_path.lstat()
+            except OSError:
+                continue
+            if info.st_uid != uid or not stat.S_ISSOCK(info.st_mode):
+                continue
+            candidates.append((info.st_mtime_ns, str(socket_path), socket_path))
+    except OSError:
+        return None
+
+    # Probe newest candidates first; the path tiebreak makes equal mtimes stable.
+    for _, _, socket_path in sorted(candidates, key=lambda item: (-item[0], item[1])):
+        try:
+            result = subprocess.run(
+                ["/usr/sbin/runuser", "-u", user, "--", "/usr/bin/env",
+                 f"XDG_RUNTIME_DIR=/run/user/{uid}", f"SWAYSOCK={socket_path}",
+                 "/usr/bin/swaymsg", "-s", str(socket_path), "-t", "get_version"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return socket_path
+    return None
+
+
+def usable_hyprland_signature(uid, user):
+    signature = hyprland_signature(uid)
+    if signature is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/runuser", "-u", user, "--", "/usr/bin/env",
+             f"XDG_RUNTIME_DIR=/run/user/{uid}",
+             f"HYPRLAND_INSTANCE_SIGNATURE={signature}",
+             "/usr/bin/hyprctl", "-j", "version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return signature if result.returncode == 0 else None
+
+
+def compositor_for(uid, user):
+    socket_path = sway_socket(uid, user)
+    if socket_path is not None:
+        return ("sway", socket_path)
+    signature = usable_hyprland_signature(uid, user)
+    if signature is not None:
+        return ("hyprland", signature)
+    return None
+
+
 def restart():
     stale = [(pid, uid) for pid, uid, deleted in desktop_browsers() if deleted]
     for pid, uid in stale:
         user = pwd.getpwuid(uid).pw_name
-        signature = hyprland_signature(uid)
-        if signature is None:
-            sys.exit(f"chromium-restart-refused: no live Hyprland session for {user}")
+        compositor = compositor_for(uid, user)
+        if compositor is None:
+            sys.exit(f"chromium-restart-refused: no usable Sway or Hyprland session for {user}")
         os.kill(pid, signal.SIGTERM)
         for _ in range(60):
             if not Path(f"/proc/{pid}").exists():
@@ -61,12 +127,24 @@ def restart():
             time.sleep(0.5)
         else:
             sys.exit(f"chromium-restart-failed: pid {pid} did not exit after SIGTERM")
-        subprocess.run(
-            ["/usr/sbin/runuser", "-u", user, "--", "/usr/bin/env",
-             f"XDG_RUNTIME_DIR=/run/user/{uid}", f"HYPRLAND_INSTANCE_SIGNATURE={signature}",
-             "/usr/bin/hyprctl", "dispatch", "exec", "chromium --restore-last-session"],
-            check=True,
-        )
+        if compositor[0] == "sway":
+            socket_path = compositor[1]
+            launch = [
+                "/usr/sbin/runuser", "-u", user, "--", "/usr/bin/env",
+                f"XDG_RUNTIME_DIR=/run/user/{uid}", f"SWAYSOCK={socket_path}",
+                "/usr/bin/swaymsg", "-s", str(socket_path), "exec",
+                "chromium --restore-last-session",
+            ]
+        else:
+            signature = compositor[1]
+            launch = [
+                "/usr/sbin/runuser", "-u", user, "--", "/usr/bin/env",
+                f"XDG_RUNTIME_DIR=/run/user/{uid}",
+                f"HYPRLAND_INSTANCE_SIGNATURE={signature}",
+                "/usr/bin/hyprctl", "dispatch", "exec",
+                "chromium --restore-last-session",
+            ]
+        subprocess.run(launch, check=True)
         for _ in range(60):
             if any(u == uid and not deleted for _, u, deleted in desktop_browsers()):
                 break

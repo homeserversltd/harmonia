@@ -1,0 +1,7 @@
+# TV Sway root config: all managed fragments are rendered under HOME.
+include ~/.config/sway/conf.d/output.conf
+include ~/.config/sway/conf.d/input.conf
+include ~/.config/sway/conf.d/bindings.conf
+include ~/.config/sway/conf.d/look.conf
+include ~/.config/sway/conf.d/windows.conf
+include ~/.config/sway/conf.d/autostart.conf

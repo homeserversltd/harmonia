@@ -1,0 +1,49 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sway",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "TV Sway configuration is converged from this module into the owner home.",
+  "optional": false,
+  "constants": {
+    "target_dir": "/home/owner",
+    "expected_files": [
+      ".config/sway/config",
+      ".config/sway/conf.d/output.conf",
+      ".config/sway/conf.d/input.conf",
+      ".config/sway/conf.d/bindings.conf",
+      ".config/sway/conf.d/look.conf",
+      ".config/sway/conf.d/windows.conf",
+      ".config/sway/conf.d/autostart.conf"
+    ],
+    "phase": 5,
+    "receipt_schema": "harmonia.tv.sway.v1",
+    "meaning": "TV Sway configuration is converged from this module into the owner home.",
+    "unmanaged_operator_seed": ".config/sway/input-overrides.conf"
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "$constants.target_dir",
+        "files": [
+          ".config/sway/config",
+          ".config/sway/conf.d/output.conf",
+          ".config/sway/conf.d/input.conf",
+          ".config/sway/conf.d/bindings.conf",
+          ".config/sway/conf.d/look.conf",
+          ".config/sway/conf.d/windows.conf",
+          ".config/sway/conf.d/autostart.conf"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tv-sway-files"
+      }
+    }
+  ]
+}

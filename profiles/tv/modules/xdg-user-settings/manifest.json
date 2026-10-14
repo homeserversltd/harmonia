@@ -12,6 +12,7 @@
       ".config/kdeglobals",
       ".config/mimeapps.list",
       ".config/xdg-desktop-portal/hyprland-portals.conf",
+      ".config/xdg-desktop-portal/sway-portals.conf",
       ".local/share/applications/mimeapps.list",
       ".local/share/applications/org.kde.kate.desktop"
     ],
@@ -49,7 +50,8 @@
         "source_root": "files_root/portal",
         "target_root": "$constants.target_dir",
         "files": [
-          ".config/xdg-desktop-portal/hyprland-portals.conf"
+          ".config/xdg-desktop-portal/hyprland-portals.conf",
+          ".config/xdg-desktop-portal/sway-portals.conf"
         ],
         "backup_existing": true,
         "owner": "owner",
