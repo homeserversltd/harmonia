@@ -12,6 +12,8 @@ Harmonia is a Rust appliance update engine. Each invocation follows one bounded 
 
 Profiles provide ordered module declarations and constants. Receipts are written for the run and its module and tool work.
 
+HomeConsole selects package authority from the body's `/etc/os-release`: `package_authorities` is keyed by exact `ID`, with each key mapping to an `{ "os_family": ..., "package_manager": ... }` pair (for example, `ubuntu` maps to `ubuntu`/`apt`). An undeclared known ID such as `ubuntu` is refused rather than downgraded; only an unknown derivative may select the first declared `ID_LIKE` entry. Legacy profiles with one `package_authority` pair keep their existing behavior and do not read body OS identity. HomeConsole's `constants.packages_by_family` lowers to `constants.packages` for the resolved `arch` or `ubuntu` authority; Ubuntu platform fragments use Debian fragments only as per-filename fallback, with Ubuntu taking same-name precedence, while `all/` and the `homeconsole` behavioral pool stay unchanged. This changes package/backend and fragment selection only; it moves no operator configuration or settings.
+
 The eleven bands execute in this order: `renew-self` → `migrations` → `stage-profile` → `pull-source` → `compare` → `install-packages` → `ratchet-binaries` → `backfill-files` → `restart-services` → `propose-edits` → `report-home`. Rolling-update source acquisition is a prelude outside this band walk; within the walk, profile staging precedes source routines and managed-file backfill precedes service activation.
 
 `profile.json` and `config.json` are declarations; `/etc/appliance/ruyi.json` is engine-maintained observed state, not declaration or source authority.

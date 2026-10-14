@@ -137,7 +137,11 @@ pub(crate) fn load_profile_projection(
         if disabled.contains(id) {
             continue;
         }
-        let loaded = match crate::bands::stage_profile::groups::load_profile_module(module_root, id)
+        let loaded = match crate::bands::stage_profile::groups::load_profile_module_for_authority(
+            module_root,
+            id,
+            profile.package_authority.as_ref(),
+        )
         {
             Ok(v) => v,
             Err(e) => {

@@ -8,7 +8,16 @@
   "constants": {
     "packages": [
       "rust"
-    ]
+    ],
+    "packages_by_family": {
+      "arch": [
+        "rust"
+      ],
+      "ubuntu": [
+        "rustc",
+        "cargo"
+      ]
+    }
   },
   "ladder": [
     {

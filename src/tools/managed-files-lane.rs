@@ -288,6 +288,58 @@ fn profile_fragment_selectors<'a>(
     Ok((profile_id, platform, behavioral_pool))
 }
 
+fn profile_fragment_selectors_for_body(
+    profile: &Value,
+    profile_index: &Path,
+) -> Result<(String, String, String), String> {
+    let mut resolved = profile.clone();
+    if profile
+        .get("package_authorities")
+        .is_some_and(|value| !value.is_null())
+    {
+        let loaded = crate::bands::stage_profile::load_profile(profile_index).map_err(|error| {
+            format!(
+                "compile-fragments-profile-authority-read-failed {}: {error}",
+                profile_index.display()
+            )
+        })?;
+        let authority = loaded.package_authority.as_ref().ok_or_else(|| {
+            format!(
+                "compile-fragments-profile-authority-missing {}",
+                profile_index.display()
+            )
+        })?;
+        resolved["package_authority"] = serde_json::to_value(authority)
+            .map_err(|error| format!("compile-fragments-profile-authority-serialize-failed: {error}"))?;
+    }
+    let (appliance, platform, behavioral_pool) =
+        profile_fragment_selectors(&resolved, profile_index)?;
+    Ok((
+        appliance.to_owned(),
+        platform.to_owned(),
+        behavioral_pool.to_owned(),
+    ))
+}
+
+fn fragment_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "compile-fragments-read-dir-{}: {error}",
+                directory.display()
+            ));
+        }
+    };
+    let mut paths = entries
+        .map(|entry| entry.map(|entry| entry.path()).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.retain(|path| path.is_file());
+    paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    Ok(paths)
+}
+
 /// Concatenate static fragments in deterministic order without injecting bytes.
 pub(crate) fn compile_fragments(
     source_root: &Path,
@@ -297,32 +349,44 @@ pub(crate) fn compile_fragments(
     validate_fragment_path_component(platform, "platform")?;
     validate_fragment_path_component(behavioral_pool, "behavioral-pool")?;
     let mut bytes = Vec::new();
-    for directory in [
-        source_root.join("all"),
-        source_root.join("platform").join(platform),
-        source_root.join(behavioral_pool),
-    ] {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(format!(
-                    "compile-fragments-read-dir-{}: {error}",
-                    directory.display()
-                ));
+    let directory = source_root.join("all");
+    for path in fragment_files(&directory)? {
+        bytes.extend(
+            fs::read(&path)
+                .map_err(|error| format!("compile-fragments-read-{}: {error}", path.display()))?,
+        );
+    }
+    if platform == "ubuntu" {
+        let mut selected = BTreeMap::<std::ffi::OsString, PathBuf>::new();
+        for family in ["debian", "ubuntu"] {
+            let directory = source_root.join("platform").join(family);
+            for path in fragment_files(&directory)? {
+                if let Some(name) = path.file_name() {
+                    selected.insert(name.to_os_string(), path);
+                }
             }
-        };
-        let mut paths = entries
-            .map(|entry| entry.map(|e| e.path()).map_err(|e| e.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-        paths.retain(|path| path.is_file());
-        paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
-        for path in paths {
+        }
+        for path in selected.into_values() {
             bytes.extend(
                 fs::read(&path)
-                    .map_err(|e| format!("compile-fragments-read-{}: {e}", path.display()))?,
+                    .map_err(|error| format!("compile-fragments-read-{}: {error}", path.display()))?,
             );
         }
+    } else {
+        let directory = source_root.join("platform").join(platform);
+        for path in fragment_files(&directory)? {
+            bytes.extend(
+                fs::read(&path)
+                    .map_err(|error| format!("compile-fragments-read-{}: {error}", path.display()))?,
+            );
+        }
+    }
+    let directory = source_root.join(behavioral_pool);
+    for path in fragment_files(&directory)? {
+        bytes.extend(
+            fs::read(&path)
+                .map_err(|error| format!("compile-fragments-read-{}: {error}", path.display()))?,
+        );
     }
     Ok(bytes)
 }
@@ -340,12 +404,15 @@ pub(crate) fn compile_fragments_step(
         .and_then(Value::as_str)
         .map(|path| resolve_ladder_path(manifest, path))
         .ok_or("compile-fragments-source-root-missing")?;
-    let profile_index = manifest
-        .base_dir
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("compile-fragments-profile-root-missing")?
-        .join("index.json");
+    let profile_index = match manifest.selected_profile_index.as_ref() {
+        Some(profile_index) => profile_index.clone(),
+        None => manifest
+            .base_dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("compile-fragments-profile-root-missing")?
+            .join("index.json"),
+    };
     let profile: serde_json::Value =
         serde_json::from_slice(&fs::read(&profile_index).map_err(|error| {
             format!(
@@ -360,7 +427,7 @@ pub(crate) fn compile_fragments_step(
             )
         })?;
     let (appliance, platform, behavioral_pool) =
-        profile_fragment_selectors(&profile, &profile_index)?;
+        profile_fragment_selectors_for_body(&profile, &profile_index)?;
     let target = step
         .args
         .get("target_path")
@@ -371,7 +438,7 @@ pub(crate) fn compile_fragments_step(
     if step.args.get("backup_existing").and_then(Value::as_bool) != Some(true) {
         return Err("compile-fragments-backup-existing-required".into());
     }
-    let bytes = compile_fragments(&source_root, platform, behavioral_pool)?;
+    let bytes = compile_fragments(&source_root, &platform, &behavioral_pool)?;
     if bytes.is_empty() {
         crate::place_file::write_compile_fragments_no_claim_projection(
             module_dir,

@@ -53,6 +53,8 @@ pub(crate) struct LadderManifest {
     pub ladder: Vec<LadderStep>,
     #[serde(skip)]
     pub(crate) base_dir: PathBuf,
+    #[serde(skip)]
+    pub(crate) selected_profile_index: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

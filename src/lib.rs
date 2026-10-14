@@ -84,12 +84,15 @@ pub(crate) struct SyzygyDeclaration {
 struct PackageAuthority {
     os_family: String,
     package_manager: String,
+    #[serde(skip)]
+    selected_profile_index: Option<PathBuf>,
 }
 
 impl PackageAuthority {
     fn backend(&self) -> Result<PackageBackend, String> {
         match (self.os_family.as_str(), self.package_manager.as_str()) {
             ("arch", "pacman") => Ok(PackageBackend::Pacman),
+            ("ubuntu", "apt") => Ok(PackageBackend::Apt),
             ("debian", "apt") => Ok(PackageBackend::Apt),
             (os_family, package_manager) => Err(format!(
                 "profile-package-authority-unsupported-os_family={os_family}-package_manager={package_manager}"
@@ -1652,7 +1655,11 @@ fn update_module_command(
         return Err(format!("module-disabled-{}", parsed.module_id));
     }
 
-    let loaded = load_profile_module(&module_root, &parsed.module_id)?;
+    let loaded = crate::bands::stage_profile::groups::load_profile_module_for_authority(
+        &module_root,
+        &parsed.module_id,
+        profile.package_authority.as_ref(),
+    )?;
     let module_dir =
         crate::bands::stage_profile::resolve_module_dir(&module_root, &parsed.module_id)?;
     let module = match loaded {

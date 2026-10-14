@@ -290,7 +290,15 @@ pub(crate) fn default_pinned_lock_path(profile: &Profile) -> PathBuf {
 
 pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     let text = fs::read_to_string(path)?;
-    let mut profile: Profile = serde_json::from_str(&text).map_err(|err| {
+    let raw: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("profile-parse-failed {}: {err}", path.display()),
+        )
+    })?;
+    let mut resolved = raw.clone();
+    resolve_profile_package_authority(&mut resolved, path)?;
+    let mut profile: Profile = serde_json::from_value(resolved).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("profile-parse-failed {}: {err}", path.display()),
@@ -299,14 +307,12 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     // Profiles evolve independently from the installed engine. Keep parsing
     // backward-compatible; consumers that execute package work require
     // package_authority at that operation boundary.
-    if let Some(package_authority) = profile.package_authority.as_ref() {
+    if let Some(package_authority) = profile.package_authority.as_mut() {
+        package_authority.selected_profile_index = Some(path.to_path_buf());
         package_authority
             .backend()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     }
-    let raw: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("profile-parse-failed {}: {err}", path.display()))
-    })?;
     let base_id = match raw.get("extends") {
         None | Some(serde_json::Value::Null) => {
             if raw.get("excludes").is_some() {
@@ -401,6 +407,164 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
         .retain(|module_id| !excluded_module_ids.contains(module_id));
     profile.modules.splice(0..0, base.modules);
     Ok(profile)
+}
+
+/// Resolve the additive multi-family declaration into the legacy runtime
+/// pair. Existing singleton declarations never read body OS identity.
+fn resolve_profile_package_authority(
+    profile: &mut serde_json::Value,
+    profile_path: &Path,
+) -> io::Result<()> {
+    let Some(raw_authorities) = profile
+        .get("package_authorities")
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(());
+    };
+    if profile
+        .get("package_authority")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "profile-package-authority-declaration-ambiguous {}",
+                profile_path.display()
+            ),
+        ));
+    }
+    let authorities: BTreeMap<String, PackageAuthority> = serde_json::from_value(
+        raw_authorities.clone(),
+    )
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "profile-package-authorities-parse-failed {}: {error}",
+                profile_path.display()
+            ),
+        )
+    })?;
+    if authorities.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "profile-package-authorities-empty {}",
+                profile_path.display()
+            ),
+        ));
+    }
+    for (id, authority) in &authorities {
+        if id.is_empty()
+            || !id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("profile-package-authority-id-invalid id={id}"),
+            ));
+        }
+        if id != &authority.os_family {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "profile-package-authority-family-mismatch id={id} os_family={}",
+                    authority.os_family
+                ),
+            ));
+        }
+        authority
+            .backend()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    }
+
+    let os_release_path = Path::new("/etc/os-release");
+    let os_release = fs::read_to_string(os_release_path).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "profile-os-release-read-failed {}: {error}",
+                os_release_path.display()
+            ),
+        )
+    })?;
+    let (id, id_like) = parse_os_release_identity(&os_release).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "profile-os-release-invalid {}: {error}",
+                os_release_path.display()
+            ),
+        )
+    })?;
+
+    let selected = if let Some(authority) = authorities.get(&id) {
+        Some(authority)
+    } else if matches!(id.as_str(), "arch" | "archlinux" | "ubuntu" | "debian") {
+        // A recognized distribution is not an unknown derivative: do not
+        // substitute an ID_LIKE authority when its own seat is absent.
+        None
+    } else {
+        id_like
+            .iter()
+            .find_map(|candidate| authorities.get(candidate))
+    };
+    let Some(selected) = selected else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "profile-package-authority-undeclared id={id} id_like={}",
+                id_like.join(" ")
+            ),
+        ));
+    };
+    let selected_value = serde_json::to_value(selected).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("profile-package-authority-serialize-failed: {error}"),
+        )
+    })?;
+    profile["package_authority"] = selected_value;
+    Ok(())
+}
+
+fn parse_os_release_identity(contents: &str) -> Result<(String, Vec<String>), String> {
+    fn value_for(contents: &str, key: &str) -> Result<Option<String>, String> {
+        let mut found = None;
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            if name != key {
+                continue;
+            }
+            let value = value.trim();
+            let unquoted = if let Some(value) = value.strip_prefix('"') {
+                value.strip_suffix('"').ok_or_else(|| format!("{key}-quote-unclosed"))?
+            } else if let Some(value) = value.strip_prefix('\'') {
+                value.strip_suffix('\'').ok_or_else(|| format!("{key}-quote-unclosed"))?
+            } else {
+                value
+            };
+            found = Some(unquoted.to_string());
+        }
+        Ok(found)
+    }
+
+    let id = value_for(contents, "ID")?
+        .filter(|value| !value.trim().is_empty() && !value.chars().any(char::is_whitespace))
+        .ok_or_else(|| "ID-missing-or-invalid".to_string())?;
+    let id_like = value_for(contents, "ID_LIKE")?
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    Ok((id, id_like))
 }
 
 fn parse_excluded_module_ids(
@@ -516,10 +680,21 @@ pub(crate) fn load_profile_module(
     module_root: &Path,
     module_id: &str,
 ) -> Result<LoadedModule, String> {
+    load_profile_module_for_authority(module_root, module_id, None)
+}
+
+pub(crate) fn load_profile_module_for_authority(
+    module_root: &Path,
+    module_id: &str,
+    package_authority: Option<&PackageAuthority>,
+) -> Result<LoadedModule, String> {
     let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, module_id)?;
     let manifest_path = module_dir.join("manifest.json");
     if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
-        return load_ladder_manifest(&manifest_path).and_then(|manifest| {
+        return load_ladder_manifest(&manifest_path).and_then(|mut manifest| {
+            manifest.selected_profile_index = package_authority
+                .and_then(|authority| authority.selected_profile_index.clone());
+            lower_family_package_constants(&mut manifest, package_authority)?;
             crate::tools::ladder::validate_package_pin_module(
                 module_id,
                 &manifest.id,
@@ -538,6 +713,44 @@ pub(crate) fn load_profile_module(
         return load_module(&sidecar_path).map(LoadedModule::Sidecar);
     }
     load_module(&sidecar_path).map(LoadedModule::Sidecar)
+}
+
+fn lower_family_package_constants(
+    manifest: &mut crate::tools::ladder::LadderManifest,
+    package_authority: Option<&PackageAuthority>,
+) -> Result<(), String> {
+    let Some(family_packages) = manifest
+        .constants
+        .get("packages_by_family")
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(());
+    };
+    let family_packages = family_packages
+        .as_object()
+        .ok_or_else(|| format!("module-package-families-invalid module={}", manifest.id))?;
+    let authority = package_authority
+        .ok_or_else(|| format!("module-package-authority-missing module={}", manifest.id))?;
+    let packages = family_packages
+        .get(&authority.os_family)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "module-package-family-undeclared module={} os_family={}",
+                manifest.id, authority.os_family
+            )
+        })?;
+    if !packages
+        .as_array()
+        .is_some_and(|items| items.iter().all(serde_json::Value::is_string))
+    {
+        return Err(format!(
+            "module-package-family-packages-invalid module={} os_family={}",
+            manifest.id, authority.os_family
+        ));
+    }
+    manifest.constants.insert("packages".into(), packages);
+    Ok(())
 }
 
 pub(crate) fn resolve_group_selections(

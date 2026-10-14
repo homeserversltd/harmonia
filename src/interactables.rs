@@ -564,6 +564,16 @@ fn canonical_dns_name(value: &str) -> Option<String> {
     .then(|| format!("{name}."))
 }
 
+fn rust_package_manager_lane(profile: &crate::Profile) -> Option<&'static str> {
+    match profile.package_authority.as_ref().map(|authority| {
+        (authority.os_family.as_str(), authority.package_manager.as_str())
+    }) {
+        Some(("arch", "pacman")) => Some("pacman"),
+        Some(("ubuntu", "apt")) => Some("apt"),
+        _ => None,
+    }
+}
+
 fn parse_toolchain_version(value: &str) -> Option<[u64; 3]> {
     let components = value.split('.').collect::<Vec<_>>();
     if components.len() != 3
@@ -833,12 +843,8 @@ pub(crate) fn reconcile_ruyi_with_household_trust(
         .iter()
         .any(|module| module == "rust-build-toolchain")
         && Path::new("/opt/rustup").is_dir();
-    let lane = if profile
-        .package_authority
-        .as_ref()
-        .is_some_and(|authority| authority.package_manager == "pacman")
-    {
-        "pacman"
+    let lane = if let Some(lane) = rust_package_manager_lane(profile) {
+        lane
     } else if rustup_lane {
         "rustup"
     } else {
@@ -869,10 +875,11 @@ pub(crate) fn reconcile_ruyi_with_household_trust(
         if let Some(installed_parsed) = parse_toolchain_version(&installed_version) {
             if installed_parsed < watermark && lane != "none" {
                 let id = "toolchain-ratchet".to_string();
-                let plan = if lane == "rustup" {
-                    "rustup-climb"
-                } else {
-                    "pacman-evidence"
+                let plan = match lane {
+                    "rustup" => "rustup-climb",
+                    "pacman" => "pacman-evidence",
+                    "apt" => "apt-evidence",
+                    _ => "package-authority-evidence",
                 };
                 let witness = serde_json::json!({
                     "component": component,
@@ -1414,9 +1421,11 @@ fn run_toolchain_ratchet(
         Ok(profile) => profile,
         Err(reason) => return persist_toolchain_preflight_refusal(path, item, reason, observed),
     };
-    let actual_lane = if profile.package_authority.as_ref().is_some_and(|authority| authority.package_manager == "pacman") {
-        "pacman"
-    } else if profile.modules.iter().any(|module| module == "rust-build-toolchain") && Path::new("/opt/rustup").is_dir() {
+    let actual_lane = if let Some(lane) = rust_package_manager_lane(&profile) {
+        lane
+    } else if profile.modules.iter().any(|module| module == "rust-build-toolchain")
+        && Path::new("/opt/rustup").is_dir()
+    {
         "rustup"
     } else {
         "none"
@@ -1424,7 +1433,18 @@ fn run_toolchain_ratchet(
     if actual_lane != lane {
         return persist_toolchain_preflight_refusal(path, item, format!("toolchain-ratchet-lane-stale expected={actual_lane} actual={lane}"), observed);
     }
-    if lane == "pacman" {
+    if matches!(lane, "pacman" | "apt") {
+        let package_manager = lane;
+        let could_change = if package_manager == "pacman" {
+            "pacman package authority is outside this interactable's mutation lane"
+        } else {
+            "apt package authority is outside this interactable's mutation lane"
+        };
+        let first_missing_signal = if package_manager == "pacman" {
+            "pacman-toolchain-not-applied"
+        } else {
+            "apt-toolchain-not-applied"
+        };
         let receipt = serde_json::json!({
             "schema": "harmonia.config_state.receipt.v1",
             "config_state": "interactable",
@@ -1437,7 +1457,7 @@ fn run_toolchain_ratchet(
                 "changed": false,
                 "kind": "toolchain-ratchet",
                 "observed": {"installed": installed_now, "watermark": watermark},
-                "could-change": "pacman package authority is outside this interactable's mutation lane",
+                "could-change": could_change,
                 "attempt": [],
                 "final-state": {"release": installed_now, "converged": false}
             },
@@ -1452,14 +1472,14 @@ fn run_toolchain_ratchet(
             "readback": current_readback,
             "apply": Value::Null,
             "ok": false,
-            "first_missing_signal": "pacman-toolchain-not-applied"
+            "first_missing_signal": first_missing_signal
         });
         crate::bands::propose_edits::persist_feed_with_intent(
             path,
             crate::bands::propose_edits::FeedPersistenceIntent::AppendReceipts(vec![receipt.clone()]),
         )?;
         println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
-        return Err("pacman-toolchain-evidence-recorded-item-retained".into());
+        return Err(format!("{package_manager}-toolchain-evidence-recorded-item-retained"));
     }
     let module_id = match lane {
         "rustup" => "rust-build-toolchain",

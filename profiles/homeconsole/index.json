@@ -1,9 +1,15 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homeconsole",
-  "package_authority": {
-    "os_family": "arch",
-    "package_manager": "pacman"
+  "package_authorities": {
+    "arch": {
+      "os_family": "arch",
+      "package_manager": "pacman"
+    },
+    "ubuntu": {
+      "os_family": "ubuntu",
+      "package_manager": "apt"
+    }
   },
   "dotfile_pool": "homeconsole",
   "identity": "homeconsole",
