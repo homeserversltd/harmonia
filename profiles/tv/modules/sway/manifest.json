@@ -14,7 +14,8 @@
       ".config/sway/conf.d/bindings.conf",
       ".config/sway/conf.d/look.conf",
       ".config/sway/conf.d/windows.conf",
-      ".config/sway/conf.d/autostart.conf"
+      ".config/sway/conf.d/autostart.conf",
+      ".config/systemd/user/hometv-sway-session.target"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.sway.v1",
@@ -37,7 +38,8 @@
           ".config/sway/conf.d/bindings.conf",
           ".config/sway/conf.d/look.conf",
           ".config/sway/conf.d/windows.conf",
-          ".config/sway/conf.d/autostart.conf"
+          ".config/sway/conf.d/autostart.conf",
+          ".config/systemd/user/hometv-sway-session.target"
         ],
         "backup_existing": true,
         "owner": "owner",

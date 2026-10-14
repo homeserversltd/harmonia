@@ -48,7 +48,7 @@ window#waybar {
 }
 
 #taskbar button.active,
-#workspaces button.active {
+#workspaces button.focused {
     background-color: rgba(94, 129, 172, 0.9);
 }
 
