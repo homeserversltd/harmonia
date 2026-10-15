@@ -32,18 +32,6 @@
       "url": "https://en.wikipedia.org/"
     },
     {
-      "name": "Google Maps",
-      "url": "https://www.google.com/maps"
-    },
-    {
-      "name": "Gmail",
-      "url": "https://mail.google.com/"
-    },
-    {
-      "name": "Outlook",
-      "url": "https://outlook.live.com/mail/"
-    },
-    {
       "name": "Watch",
       "children": [
         {
@@ -73,6 +61,125 @@
         {
           "name": "Twitch",
           "url": "https://www.twitch.tv/"
+        }
+      ]
+    },
+    {
+      "name": "HomeServer",
+      "children": [
+        {
+          "name": "HomeServer",
+          "url": "https://home.arpa/"
+        },
+        {
+          "name": "Movies & TV",
+          "url": "https://jellyfin.home.arpa/"
+        },
+        {
+          "name": "Music",
+          "url": "https://music.home.arpa/"
+        },
+        {
+          "name": "Photos",
+          "url": "https://photos.home.arpa/"
+        },
+        {
+          "name": "Books",
+          "url": "https://books.home.arpa/"
+        },
+        {
+          "name": "Files",
+          "url": "https://files.home.arpa/"
+        },
+        {
+          "name": "Passwords",
+          "url": "https://vault.home.arpa/"
+        },
+        {
+          "name": "Chat",
+          "url": "https://chat.home.arpa/"
+        },
+        {
+          "name": "News Feeds",
+          "url": "https://rss.home.arpa/"
+        },
+        {
+          "name": "Docs",
+          "url": "https://docs.home.arpa/"
+        },
+        {
+          "name": "Downloads",
+          "url": "https://transmission.home.arpa/"
+        }
+      ]
+    },
+    {
+      "name": "Google",
+      "children": [
+        {
+          "name": "Gmail",
+          "url": "https://mail.google.com/"
+        },
+        {
+          "name": "Drive",
+          "url": "https://drive.google.com/"
+        },
+        {
+          "name": "Docs",
+          "url": "https://docs.google.com/document/"
+        },
+        {
+          "name": "Sheets",
+          "url": "https://docs.google.com/spreadsheets/"
+        },
+        {
+          "name": "Slides",
+          "url": "https://docs.google.com/presentation/"
+        },
+        {
+          "name": "Calendar",
+          "url": "https://calendar.google.com/"
+        },
+        {
+          "name": "Photos",
+          "url": "https://photos.google.com/"
+        },
+        {
+          "name": "Maps",
+          "url": "https://www.google.com/maps"
+        }
+      ]
+    },
+    {
+      "name": "Microsoft",
+      "children": [
+        {
+          "name": "Outlook",
+          "url": "https://outlook.live.com/mail/"
+        },
+        {
+          "name": "OneDrive",
+          "url": "https://onedrive.live.com/"
+        },
+        {
+          "name": "Word",
+          "url": "https://www.microsoft365.com/launch/word"
+        },
+        {
+          "name": "Excel",
+          "url": "https://www.microsoft365.com/launch/excel"
+        },
+        {
+          "name": "PowerPoint",
+          "url": "https://www.microsoft365.com/launch/powerpoint"
+        },
+        {
+          "name": "Teams",
+          "url": "https://teams.live.com/"
+        },
+        {
+          "name": "Microsoft 365",
+          "url": "https://www.microsoft365.com/"
         }
       ]
     }
