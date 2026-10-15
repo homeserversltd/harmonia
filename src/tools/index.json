@@ -1853,6 +1853,19 @@
       ]
     },
     {
+      "name": "hermes-appearance",
+      "description": "Offer the bounded HOMESERVER LLC Hermes skin adoption in ProposeEdits; the owner run is available only through its evidence-bearing interactable.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "offer",
+          "description": "Snapshot the currently declared existing Hermes homes and offer one owner-tap adoption without changing config or skins.",
+          "args": [],
+          "placement": "ProposeEdits"
+        }
+      ]
+    },
+    {
       "name": "hermes-maintenance",
       "description": "Converge the owner's Hermes installation through its native updater, preserving local work and proving or rolling back the result; optional daily_window gates execution by /etc/localtime and records a proven moved day; absent or null preserves legacy behavior.",
       "routine_summonable": true,

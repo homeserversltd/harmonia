@@ -22,7 +22,7 @@ pub(crate) fn is_ruyi_born_kind(kind: &str) -> bool {
 
 pub(crate) struct OperatorHand(());
 
-fn operator_hand() -> OperatorHand {
+pub(crate) fn operator_hand() -> OperatorHand {
     OperatorHand(())
 }
 
@@ -159,7 +159,7 @@ pub(crate) struct DriftSummary {
     pub(crate) ownership: bool,
 }
 
-fn feed_path() -> PathBuf {
+pub(crate) fn feed_path() -> PathBuf {
     env::var_os("HARMONIA_INTERACTABLES_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FEED_PATH))
@@ -391,12 +391,18 @@ fn interactable_run(
     let position = feed
         .interactables
         .iter()
-        .position(|item| item.id == args[0])
-        .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
+        .position(|item| item.id == args[0]);
+    let Some(position) = position else {
+        if crate::tools::hermes_appearance::has_current_successful_completion(&feed, &args[0]) {
+            return Ok(());
+        }
+        return Err(format!("interactable-unknown-id {}", args[0]));
+    };
     let item = feed.interactables[position].clone();
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
         "household-trust-renew" => return run_household_trust_renew(&path, &item),
+        "hermes-appearance" => return crate::tools::hermes_appearance::run_interactable(&path, &item),
         "toolchain-ratchet" => {
             return run_toolchain_ratchet(&path, &mut feed, position, &item, invocation)
         }

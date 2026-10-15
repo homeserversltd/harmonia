@@ -743,6 +743,9 @@ pub(crate) fn execute_validated_step_with_source(
             software_authorization.filter(|_| software_apply),
             invocation.filter(|_| software_apply),
         ),
+        ("hermes-appearance", "offer") => {
+            tools::hermes_appearance::execute_validated_step(step, manifest, module_dir, source_module_dir)
+        }
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation

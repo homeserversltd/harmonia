@@ -1,0 +1,19 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hermes-appearance",
+  "title": "Hermes appearance",
+  "summary": "Offer the HOMESERVER LLC Hermes skin for owner adoption in existing local homes.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Offer one explicit owner-tap seed-and-activate action for the exact HOMESERVER LLC Hermes skin in already-existing Hermes homes; preserve later manual skin choices.",
+  "optional": false,
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "hermes-appearance-offer",
+      "tool": "hermes-appearance",
+      "permutation": "offer",
+      "args": {}
+    }
+  ]
+}
