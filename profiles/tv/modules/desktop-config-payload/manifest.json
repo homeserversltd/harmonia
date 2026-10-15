@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "desktop-config-payload",
+  "title": "Desktop preferences",
+  "summary": "Keeps the TV's game launch policy and prompt preferences in place.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "TV residual manifest/prompt/game-launcher payload is converged from this module.",

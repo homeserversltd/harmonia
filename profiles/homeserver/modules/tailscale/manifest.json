@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "tailscale",
+  "title": "Private remote access",
+  "summary": "Keeps the server's private remote-access connection configured.",
   "category": "interactable",
   "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER Tailscale daemon configuration: assert the birth-provided binary, converge the product-owned daemon defaults with backup.",

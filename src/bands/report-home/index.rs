@@ -322,58 +322,173 @@ fn forward_module_outcomes_from_steps(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn forward_run_outcome(
-    profile_id: &str,
-    run_id: Option<&str>,
+#[derive(Clone, Debug)]
+pub(crate) struct RunProfileDeed {
+    run_id: String,
+    profile: String,
     ok: bool,
-    changed: bool,
-    overall_ok: bool,
-    degraded: bool,
     module_count: usize,
-    operation_count: usize,
+    updated_count: usize,
     duration_ms: u128,
-    first_missing_signal: &str,
-    engine_debt_signal: Option<&str>,
-    module_debt_signal: Option<&str>,
-) {
-    let profile_id = crate::hyalos::bounded_json_string(profile_id, 96);
-    let mut metadata = json!({
-        "schema": "harmonia.run_profile.v1",
-        "ok": ok,
-        "changed": changed,
-        "profile_id": profile_id,
-        "module_count": module_count,
-        "operation_count": operation_count,
-        "duration_ms": duration_ms,
-        "degraded": degraded,
-        "overall_ok": overall_ok,
-    });
-    if first_missing_signal != "none" {
-        metadata["first_missing_signal"] =
-            json!(crate::hyalos::bounded_json_string(first_missing_signal, 320));
+    failures: Vec<crate::hyalos::RunProfileFailure>,
+}
+
+fn module_failure(module: &str, signal: Option<&str>) -> crate::hyalos::RunProfileFailure {
+    crate::hyalos::RunProfileFailure {
+        module: module.to_string(),
+        signal: signal
+            .filter(|signal| *signal != "none")
+            .map(str::to_string)
+            .or_else(|| Some("module-failed".to_string())),
     }
-    if let Some(signal) = engine_debt_signal {
-        metadata["engine_debt_first_missing_signal"] =
-            json!(crate::hyalos::bounded_json_string(signal, 320));
+}
+
+fn deed_from_states(
+    profile: &Profile,
+    run_id: &str,
+    ok: bool,
+    module_count: usize,
+    duration_ms: u128,
+    module_states: &BTreeMap<String, ModuleExecution>,
+) -> RunProfileDeed {
+    let mut updated_count = 0;
+    let mut failures = Vec::new();
+    for module_id in &profile.modules {
+        if let Some(state) = module_states.get(module_id) {
+            if state.ok && state.changed {
+                updated_count += 1;
+            }
+            if !state.ok {
+                failures.push(module_failure(
+                    module_id,
+                    state.first_missing_signal.as_deref(),
+                ));
+            }
+        }
     }
-    if let Some(signal) = module_debt_signal {
-        metadata["module_artifact_debt_first_missing_signal"] =
-            json!(crate::hyalos::bounded_json_string(signal, 320));
+    RunProfileDeed {
+        run_id: run_id.to_string(),
+        profile: profile.id.clone(),
+        ok,
+        module_count,
+        updated_count,
+        duration_ms,
+        failures,
     }
-    let message = if degraded {
-        format!("schema=harmonia.run_profile.v1 ok={ok} degraded=true overall_ok=false")
-    } else {
-        format!("schema=harmonia.run_profile.v1 ok={ok}")
-    };
-    let correlation_id = run_id.map(|id| crate::hyalos::bounded_json_string(id, 96));
-    crate::hyalos::forward_bounded_receipt(
-        "schema=harmonia.run_profile.v1",
-        &message,
-        Some(metadata),
-        Some(overall_ok),
-        correlation_id.as_deref(),
+}
+
+fn deed_from_steps(
+    profile: &Profile,
+    run_id: &str,
+    ok: bool,
+    module_count: usize,
+    duration_ms: u128,
+    module_steps: &[serde_json::Value],
+) -> RunProfileDeed {
+    let mut updated_count = 0;
+    let mut failures = Vec::new();
+    for module_id in &profile.modules {
+        let step = module_steps.iter().find(|step| {
+            step.get("module").and_then(serde_json::Value::as_str)
+                == Some(module_id.as_str())
+        });
+        let observed = step.and_then(|step| step.get("observed"));
+        if observed
+            .and_then(|value| value.get("ok"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            && observed
+                .and_then(|value| value.get("changed"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            updated_count += 1;
+        }
+        if observed
+            .and_then(|value| value.get("ok"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        {
+            failures.push(module_failure(
+                module_id,
+                observed
+                    .and_then(|value| value.get("first_missing_signal"))
+                    .and_then(serde_json::Value::as_str),
+            ));
+        }
+    }
+    RunProfileDeed {
+        run_id: run_id.to_string(),
+        profile: profile.id.clone(),
+        ok,
+        module_count,
+        updated_count,
+        duration_ms,
+        failures,
+    }
+}
+
+pub(crate) fn emit_run_profile_deed(deed: RunProfileDeed) {
+    let outcome = if deed.ok { "ok" } else { "failed" };
+    crate::hyalos::forward_run_profile_deed(
+        &deed.run_id,
+        &deed.profile,
+        outcome,
+        &crate::bands::propose_edits::iso8601_now(),
+        deed.duration_ms,
+        deed.module_count,
+        deed.updated_count,
+        &deed.failures,
     );
+}
+
+pub(crate) fn transaction_failures_from_steps(
+    profile: &Profile,
+    module_steps: &[serde_json::Value],
+) -> Vec<crate::hyalos::RunProfileFailure> {
+    profile
+        .modules
+        .iter()
+        .filter_map(|module_id| {
+            let step = module_steps.iter().find(|step| {
+                step.get("module").and_then(serde_json::Value::as_str)
+                    == Some(module_id.as_str())
+            });
+            let observed = step.and_then(|step| step.get("observed"));
+            if observed
+                .and_then(|value| value.get("ok"))
+                .and_then(serde_json::Value::as_bool)
+                != Some(false)
+            {
+                return None;
+            }
+            Some(crate::hyalos::RunProfileFailure {
+                module: module_id.clone(),
+                signal: observed
+                    .and_then(|value| value.get("first_missing_signal"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|signal| *signal != "none")
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn emit_transaction_failure(
+    profile: &Profile,
+    started: Instant,
+    failures: &[crate::hyalos::RunProfileFailure],
+) {
+    emit_run_profile_deed(RunProfileDeed {
+        run_id: crate::receipts::run_id_from_stamp(),
+        profile: profile.id.clone(),
+        ok: false,
+        module_count: profile.modules.len(),
+        // A failed appliance transaction commits no module updates.
+        updated_count: 0,
+        duration_ms: started.elapsed().as_millis(),
+        failures: failures.to_vec(),
+    });
 }
 
 pub(crate) fn settle(
@@ -496,27 +611,17 @@ pub(crate) fn settle(
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
     let overall_ok = run_ok && !degraded;
     forward_module_outcomes_from_states(profile, &state.module_states, Some(&state.run_id));
-    if state.changed || !overall_ok {
-        forward_run_outcome(
-            &profile.id,
-            Some(&state.run_id),
-            run_ok,
-            state.changed,
-            overall_ok,
-            degraded,
-            state.module_count,
-            state.operation_count,
-            state.run_started.elapsed().as_millis(),
-            &first_missing_signal,
-            state
-                .engine_debt
-                .as_ref()
-                .map(|debt| debt.first_missing_signal.as_str()),
-            module_artifact_debt
-                .first()
-                .and_then(|debt| debt.get("first_missing_signal"))
-                .and_then(serde_json::Value::as_str),
-        );
+    let deed = deed_from_states(
+        profile,
+        &state.run_id,
+        overall_ok,
+        state.module_count,
+        state.run_started.elapsed().as_millis(),
+        &state.module_states,
+    );
+    emit_run_profile_deed(deed);
+    if let Some(carrier) = carrier {
+        carrier.borrow_mut().terminal_deed_emitted = true;
     }
     println!("ok={}", state.ok);
     if degraded {
@@ -554,7 +659,8 @@ pub(crate) fn finalize_deferred_terminal(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
-) -> Result<(), String> {
+    run_started: Instant,
+) -> Result<RunProfileDeed, String> {
     let engine_debt = summary
         .engine_debt
         .as_ref()
@@ -591,29 +697,14 @@ pub(crate) fn finalize_deferred_terminal(
     let degraded = engine_debt.is_some() || !summary.module_artifact_debt.is_empty();
     let overall_ok = summary.ok && !degraded;
     forward_module_outcomes_from_steps(profile, &summary.module_steps, Some(&summary.run_id));
-    if summary.changed || !overall_ok {
-        forward_run_outcome(
-            &summary.profile_id,
-            Some(&summary.run_id),
-            summary.ok,
-            summary.changed,
-            overall_ok,
-            degraded,
-            summary.module_count,
-            summary.operation_count,
-            summary.duration_ms,
-            &summary.first_missing_signal,
-            summary
-                .engine_debt
-                .as_ref()
-                .map(|debt| debt.first_missing_signal.as_str()),
-            summary
-                .module_artifact_debt
-                .first()
-                .and_then(|debt| debt.get("first_missing_signal"))
-                .and_then(serde_json::Value::as_str),
-        );
-    }
+    let deed = deed_from_steps(
+        profile,
+        &summary.run_id,
+        overall_ok,
+        summary.module_count,
+        run_started.elapsed().as_millis(),
+        &summary.module_steps,
+    );
     println!("ok={}", summary.ok);
     if degraded {
         println!("degraded=true");
@@ -639,5 +730,5 @@ pub(crate) fn finalize_deferred_terminal(
     println!("operation_count={}", summary.operation_count);
     println!("first_missing_signal={}", summary.first_missing_signal);
     println!("receipt_dir={}", receipt_dir.display());
-    Ok(())
+    Ok(deed)
 }

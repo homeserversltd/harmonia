@@ -127,6 +127,8 @@ pub(crate) struct RunCarrier {
     pub sealed_services: Option<Vec<crate::atoms::ask::change_unit::ServiceStateSnapshot>>,
     pub sealed_projection: Option<ProjectionTransaction>,
     pub deferred_terminal_summary: Option<crate::bands::report_home::DeferredRunSummary>,
+    pub terminal_deed_emitted: bool,
+    pub terminal_failures: Vec<crate::hyalos::RunProfileFailure>,
 }
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
@@ -476,6 +478,7 @@ pub(crate) fn rolling_update_run(
     materialize_receipt: fn(&Path, &str) -> Result<PathBuf, String>,
     try_acquire_lock: fn(&Path) -> Result<ConvergenceLockGuard, ConvergenceLockBusy>,
 ) -> Result<(), String> {
+    let run_started = std::time::Instant::now();
     let _mint_seats = crate::atoms::ask::mint_seats::at_start();
     let apply = mode.is_software_apply();
     let _convergence_lock = if apply {
@@ -601,16 +604,18 @@ pub(crate) fn rolling_update_run(
         Err(error) => start_prune_report.warnings.push(format!("projectio-temp-cleanup-projection-failed: {error}")),
     }
     drop(_receipt_start_lock);
+    let carrier = context
+        .map(|value| value.carrier.clone())
+        .unwrap_or_else(|| {
+            std::rc::Rc::new(std::cell::RefCell::new(
+                crate::atoms::r#do::transaction::RunCarrier::default(),
+            ))
+        });
     let run = || {
-        let carrier = context
-            .map(|value| value.carrier.clone())
-            .unwrap_or_else(|| {
-                std::rc::Rc::new(std::cell::RefCell::new(
-                    crate::atoms::r#do::transaction::RunCarrier::default(),
-                ))
-            });
         carrier.borrow_mut().rung_promoted.clear();
         carrier.borrow_mut().known_good_pointer_moves.clear();
+        carrier.borrow_mut().terminal_deed_emitted = false;
+        carrier.borrow_mut().terminal_failures.clear();
         let preflight = crate::bands::renew_self::run(
             module_root,
             &effective_receipt_dir,
@@ -651,6 +656,9 @@ pub(crate) fn rolling_update_run(
                 None,
                 preflight.changed,
                 preflight.operation_count,
+                &[],
+                &carrier,
+                run_started,
             )?;
             return Err(signal.to_string());
         }
@@ -677,12 +685,22 @@ pub(crate) fn rolling_update_run(
             Some(receipt_dir),
             true,
         );
-        let (changed, operation_count) = carrier
+        let (changed, operation_count, transaction_failures) = carrier
             .borrow()
             .deferred_terminal_summary
             .as_ref()
-            .map(|summary| (summary.changed, summary.operation_count))
-            .unwrap_or((false, 0));
+            .map(|summary| {
+                (
+                    summary.changed,
+                    summary.operation_count,
+                    crate::bands::report_home::transaction_failures_from_steps(
+                        profile,
+                        &summary.module_steps,
+                    ),
+                )
+            })
+            .unwrap_or((false, 0, Vec::new()));
+        carrier.borrow_mut().terminal_failures = transaction_failures.clone();
         let transaction_guard = carrier.borrow_mut().sealed_projection.take();
         if let Err(error) = transaction {
             let Some(mut txn) = transaction_guard else {
@@ -694,6 +712,9 @@ pub(crate) fn rolling_update_run(
                     Some(&error),
                     changed,
                     operation_count,
+                    &transaction_failures,
+                    &carrier,
+                    run_started,
                 );
                 let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
                 let restore_errors = pointer_restore_errors(&restores);
@@ -720,6 +741,9 @@ pub(crate) fn rolling_update_run(
                 Some(&error),
                 changed,
                 operation_count,
+                &transaction_failures,
+                &carrier,
+                run_started,
             );
             let mut return_error = error.clone();
             let (receipt, rollback_error) = if let Some(key) = mode.invocation() {
@@ -773,6 +797,9 @@ pub(crate) fn rolling_update_run(
                 None,
                 changed,
                 operation_count,
+                &transaction_failures,
+                &carrier,
+                run_started,
             );
             let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
             let restore_errors = pointer_restore_errors(&restores);
@@ -804,6 +831,9 @@ pub(crate) fn rolling_update_run(
                         Some(&error),
                         changed,
                         operation_count,
+                        &transaction_failures,
+                        &carrier,
+                        run_started,
                     );
                     let rollback =
                         crate::atoms::r#do::transaction::rollback_projection(&mut txn, key);
@@ -853,6 +883,9 @@ pub(crate) fn rolling_update_run(
                 None,
                 changed,
                 operation_count,
+                &transaction_failures,
+                &carrier,
+                run_started,
             );
             let restores = restore_known_good_pointer_movements(&carrier, &effective_receipt_dir);
             let restore_errors = pointer_restore_errors(&restores);
@@ -885,6 +918,9 @@ pub(crate) fn rolling_update_run(
                     Some(&error),
                     changed,
                     operation_count,
+                    &transaction_failures,
+                    &carrier,
+                    run_started,
                 );
                 let (receipt, rollback_error) = if let Some(key) = mode.invocation() {
                     match crate::atoms::r#do::transaction::rollback_projection(&mut txn, key) {
@@ -947,6 +983,9 @@ pub(crate) fn rolling_update_run(
                 Some(&error),
                 changed,
                 operation_count,
+                &transaction_failures,
+                &carrier,
+                run_started,
             )?;
             return Err(error);
         }
@@ -982,26 +1021,36 @@ pub(crate) fn rolling_update_run(
                 None,
                 changed,
                 operation_count,
+                &transaction_failures,
+                &carrier,
+                run_started,
             )?;
             return Err("stage-profile-terminal-summary-missing".to_string());
         };
-        if let Err(error) = crate::bands::report_home::finalize_deferred_terminal(
+        let deed = match crate::bands::report_home::finalize_deferred_terminal(
             summary,
             profile,
             module_root,
             &effective_receipt_dir,
+            run_started,
         ) {
-            write_transaction_failure_run_receipt(
-                &effective_receipt_dir,
-                profile,
-                module_root,
-                "transaction-terminal-receipt-failed",
-                Some(&error),
-                changed,
-                operation_count,
-            )?;
-            return Err(error);
-        }
+            Ok(deed) => deed,
+            Err(error) => {
+                write_transaction_failure_run_receipt(
+                    &effective_receipt_dir,
+                    profile,
+                    module_root,
+                    "transaction-terminal-receipt-failed",
+                    Some(&error),
+                    changed,
+                    operation_count,
+                    &transaction_failures,
+                    &carrier,
+                    run_started,
+                )?;
+                return Err(error);
+            }
+        };
         if let Err(error) =
             crate::atoms::attest::augment_run_json_with_stamp(&effective_receipt_dir, &mint)
         {
@@ -1013,6 +1062,9 @@ pub(crate) fn rolling_update_run(
                 Some(&error),
                 changed,
                 operation_count,
+                &transaction_failures,
+                &carrier,
+                run_started,
             ) {
                 return Err(format!(
                     "{error}; transaction-stamp-run-failure-receipt-failed: {write_error}"
@@ -1020,6 +1072,8 @@ pub(crate) fn rolling_update_run(
             }
             return Err(error);
         }
+        crate::bands::report_home::emit_run_profile_deed(deed);
+        carrier.borrow_mut().terminal_deed_emitted = true;
         Ok(())
     };
     let mut run_result = run();
@@ -1061,6 +1115,16 @@ pub(crate) fn rolling_update_run(
         } else {
             Ok(())
         };
+        let terminal_deed_emitted = carrier.borrow().terminal_deed_emitted;
+        if !terminal_deed_emitted {
+            let terminal_failures = carrier.borrow().terminal_failures.clone();
+            crate::bands::report_home::emit_transaction_failure(
+                profile,
+                run_started,
+                &terminal_failures,
+            );
+            carrier.borrow_mut().terminal_deed_emitted = true;
+        }
         let mut receipt_errors = Vec::new();
         if let Err(error) = failure_receipt_result {
             receipt_errors.push(format!("failed-run-receipt-write-failed: {error}"));
@@ -1236,6 +1300,9 @@ fn write_transaction_failure_run_receipt(
     error: Option<&str>,
     changed: bool,
     operation_count: usize,
+    failures: &[crate::hyalos::RunProfileFailure],
+    carrier: &RunCarrierRef,
+    run_started: std::time::Instant,
 ) -> Result<(), String> {
     let signal = transaction_failure_signal(error, fallback_signal);
     let engine_debt = crate::bands::engine_artifact_exhaustion_debt(receipt_dir, true, None)
@@ -1281,31 +1348,9 @@ fn write_transaction_failure_run_receipt(
         }),
     )?;
     println!("schema=harmonia.run_profile.v1");
-    let mut forwarded = serde_json::json!({
-        "schema":"harmonia.run_profile.v1",
-        "ok":false,
-        "module_artifact_debt":module_artifact_debt.clone(),
-        "overall_ok":false,
-    });
-    if let Some(debt) = engine_debt.as_ref() {
-        forwarded["engine_debt"] = debt.clone();
-    }
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
-    if degraded {
-        forwarded["degraded"] = serde_json::json!(true);
-        forwarded["overall_ok"] = serde_json::json!(false);
-    }
-    crate::hyalos::forward_receipt(
-        "schema=harmonia.run_profile.v1",
-        &if degraded {
-            "schema=harmonia.run_profile.v1 ok=false degraded=true overall_ok=false"
-        } else {
-            "schema=harmonia.run_profile.v1 ok=false"
-        },
-        Some(forwarded),
-        Some(false),
-        None,
-    );
+    crate::bands::report_home::emit_transaction_failure(profile, run_started, failures);
+    carrier.borrow_mut().terminal_deed_emitted = true;
     println!("ok=false");
     if degraded {
         println!("degraded=true");

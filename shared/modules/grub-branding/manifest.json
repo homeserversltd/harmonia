@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "grub-branding",
+  "title": "Startup appearance",
+  "summary": "Sets the startup screen on devices that use it.",
   "category": "known-good",
   "version": "1.0.0",
   "description": "Converge the shared HOMESERVER GRUB theme on GRUB-equipped appliances; non-GRUB systems observe and skip without installing software.",

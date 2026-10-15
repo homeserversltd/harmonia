@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "coronatio",
+  "title": "Server dashboard",
+  "summary": "Maintains the server's web dashboard and local settings.",
   "category": "known-good",
   "version": "2.2.0",
   "description": "HOMESERVER Coronatio configuration custody and native Forgejo Release runtime convergence.",

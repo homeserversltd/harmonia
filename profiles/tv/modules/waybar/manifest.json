@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "waybar",
+  "title": "Status at a glance",
+  "summary": "Shows desktop status and quick controls in the top bar.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "Converges the Waybar config and user unit, declares hs-waybar.service for census, and reloads the owner user manager.",

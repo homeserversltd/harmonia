@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "install-caduceus",
+  "title": "Device controls",
+  "summary": "Maintains local appliance controls and checks that they are working.",
   "category": "known-good",
   "config_deploy": "interactable",
   "version": "1.1.4",

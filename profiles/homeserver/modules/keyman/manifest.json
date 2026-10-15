@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "keyman",
+  "title": "Secure access",
+  "summary": "Keeps approved household access and recovery features available.",
   "category": "known-good",
   "version": "1.0.3",
   "description": "HOMESERVER Keyman canonical source synchronization; secret-free access-artifact verification remains outside Harmonia.",

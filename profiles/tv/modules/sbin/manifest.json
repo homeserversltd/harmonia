@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "sbin",
+  "title": "Appliance controls",
+  "summary": "Keeps appliance maintenance controls available and current.",
   "category": "known-good",
   "version": "1.1.0",
   "description": "Synchronize the sbin repository, converge its whole owned recursive shelf, and refresh the staff venv only when dependency bytes change.",

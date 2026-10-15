@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "piwigo",
+  "title": "Photo gallery",
+  "summary": "Keeps the household photo gallery available while preserving its database.",
   "category": "interactable",
   "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER Piwigo configuration: assert birth-provided PHP-FPM and application material, preserve the birth-filled database configuration, converge product-owned PHP-FPM configuration and unit bytes with backups, validate them.",

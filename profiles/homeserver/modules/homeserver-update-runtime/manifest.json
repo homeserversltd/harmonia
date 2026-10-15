@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "homeserver-update-runtime",
+  "title": "Update schedule",
+  "summary": "Confirms the server's built-in schedule for software updates.",
   "category": "known-good",
   "version": "1.0.1",
   "description": "HOMESERVER rolling-release convergence scheduler ladder: assert the installer-owned timer is present.",

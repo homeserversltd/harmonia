@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "dot-files",
+  "title": "Everyday shortcuts",
+  "summary": "Keeps the owner's command shortcuts and sign-in preferences consistent.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "Shared Harmonia dot-files compiled from ordered appliance fragments.",

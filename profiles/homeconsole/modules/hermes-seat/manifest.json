@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "hermes-seat",
+  "title": "Assistant settings",
+  "summary": "Keeps the existing assistant launcher and tools available with automatic actions disabled.",
   "category": "known-good",
   "version": "1.0.0",
   "description": "Bounded existing-runtime upkeep only: require the born Hermes source, owner .hermes directory, and venv launcher to exist, converge declared dependencies, and maintain the exact session-aware wrapper with yolo disabled.",

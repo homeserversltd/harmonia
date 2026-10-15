@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "xenia",
+  "title": "Optional systems",
+  "summary": "Keeps the server's isolated systems aligned with the household's chosen list.",
   "category": "known-good",
   "version": "1.0.0",
   "description": "Converge and retire Xenia guests declared by the appliance guest register.",

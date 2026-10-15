@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "hyprland",
+  "title": "Desktop layout",
+  "summary": "Sets the TV desktop's windows, screen, keyboard, and startup preferences.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "TV Hyprland configuration is converged from this module into the owner home.",

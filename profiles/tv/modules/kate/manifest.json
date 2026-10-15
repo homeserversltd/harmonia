@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "kate",
+  "title": "Editing tools",
+  "summary": "Adds editor preferences plus formatting, search, and run actions.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "TV Kate configuration and external tools are converged from this module into the owner home.",

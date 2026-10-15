@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "local-ai-runtime",
+  "title": "On-device assistant",
+  "summary": "Keeps the on-device assistant available and checks that it is responding.",
   "category": "known-good",
   "version": "3.6.1",
   "description": "Local AI runtime ladder: compatibility links, binary readback, and service status readback.",

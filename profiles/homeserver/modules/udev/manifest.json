@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "udev",
+  "title": "Hardware access",
+  "summary": "Keeps required hardware monitoring access available to local system tools.",
   "category": "known-good",
   "version": "1.0.1",
   "description": "Quarry-lifted HOMESERVER udev configuration: assert the birth-provided udev administrator, converge the product-owned static rule with backups, validate it.",

@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "postgres",
+  "title": "App data storage",
+  "summary": "Keeps the server's database available for applications that store household data.",
   "category": "interactable",
   "version": "1.0.2",
   "description": "Quarry-lifted HOMESERVER PostgreSQL configuration: assert the birth-provided binary, converge product-owned configuration and unit bytes with backups, preserve the one-unit design, validate the installed configuration.",

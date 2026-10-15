@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "filebrowser",
+  "title": "File access",
+  "summary": "Keeps the browser-based household file service configured while preserving its data.",
   "category": "interactable",
   "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER File Browser service configuration: assert the birth-provided binary, converge the product-owned unit with backup, preserve the instance database.",

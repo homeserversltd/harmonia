@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "element",
+  "title": "Messaging website",
+  "summary": "Provides the household's web-based messaging screen.",
   "category": "interactable",
   "version": "1.0.1",
   "description": "HOMESERVER Element Web client and portal surface. Element follows Synapse because its configuration targets and validates the Synapse endpoint.",

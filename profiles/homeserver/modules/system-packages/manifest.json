@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "system-packages",
+  "title": "Software updates",
+  "summary": "Keeps this device's installed software current.",
   "category": "known-good",
   "version": "1.0.0",
   "description": "homeserver system package upgrade ladder using the package tool.",

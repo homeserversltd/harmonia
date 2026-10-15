@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "gtk-theme",
+  "title": "App appearance",
+  "summary": "Keeps desktop apps visually consistent.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "TV GTK theme settings are converged from this module into the owner home.",

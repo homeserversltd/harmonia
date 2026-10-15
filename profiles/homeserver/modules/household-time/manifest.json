@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "household-time",
+  "title": "Accurate clock",
+  "summary": "Keeps the household's time setting and device clock synchronized.",
   "category": "known-good",
   "version": "2.1.2",
   "optional": false,

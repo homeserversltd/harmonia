@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "keyman-runtime",
+  "title": "Secure access",
+  "summary": "Keeps approved household access and recovery features available.",
   "category": "known-good",
   "version": "3.7.0",
   "description": "TV Keyman source ladder: synchronize Keyman into /opt/keyman/source.",

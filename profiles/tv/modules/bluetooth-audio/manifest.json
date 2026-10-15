@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "bluetooth-audio",
+  "title": "Wireless sound",
+  "summary": "Lets the TV play audio through wireless speakers and headphones.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "Converges the TV Bluetooth service to enabled and active state through the systemd kernel primitive.",

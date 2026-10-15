@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "yarr",
+  "title": "Reading list",
+  "summary": "Keeps the household's saved news feeds available in one place.",
   "category": "interactable",
   "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER Yarr service configuration: assert the birth-provided executable, converge the product-owned unit with backup, validate it.",

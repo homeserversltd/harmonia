@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "dunst",
+  "title": "Notifications",
+  "summary": "Shows desktop alerts using the owner's preferred settings.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "Converges the Dunst config and user unit, declares hs-dunst.service for census, and reloads the owner user manager.",

@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "samba",
+  "title": "File sharing",
+  "summary": "Keeps shared folders visible and available on the household network.",
   "category": "interactable",
   "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER Samba and discovery configuration: assert birth-provided executables, preserve user-editable Samba and hosts seeds, converge product-owned Avahi files with backups, validate Samba.",

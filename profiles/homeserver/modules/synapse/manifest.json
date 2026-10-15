@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "synapse",
+  "title": "Family messaging",
+  "summary": "Keeps the household messaging service and web access configured.",
   "category": "interactable",
   "version": "1.0.2",
   "description": "HOMESERVER Synapse host service, ordered before Element because Element's configuration targets and validates the Synapse endpoint: non-secret configuration, birth-preserved secrets, PostgreSQL declaration, loopback API, LAN/Tailscale web entry point, log rotation, service census, and health proof.",

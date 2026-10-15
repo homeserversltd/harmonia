@@ -169,6 +169,12 @@ fn bounded_compacted_attributes(attributes: Option<&Value>, ok: Option<bool>) ->
     Value::Object(compact)
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RunProfileFailure {
+    pub module: String,
+    pub signal: Option<String>,
+}
+
 fn try_forward_bounded_payload(payload: Value) -> bool {
     let Ok(body) = serde_json::to_vec(&payload) else {
         return false;
@@ -178,6 +184,85 @@ fn try_forward_bounded_payload(payload: Value) -> bool {
     }
     forward_serialized_payload(body);
     true
+}
+
+/// Forward one run-profile deed while preserving its required typed summary.
+/// Failure entries are kept in input order; overflow trims only the tail and
+/// reports the exact number omitted. Every candidate is measured after JSON
+/// escaping against the complete reflector envelope, including its fixed fields.
+pub(crate) fn forward_run_profile_deed(
+    run_id: &str,
+    profile: &str,
+    outcome: &str,
+    finished_at: &str,
+    duration_ms: u128,
+    module_count: usize,
+    updated_count: usize,
+    failures: &[RunProfileFailure],
+) {
+    let run_id = bounded_json_string(run_id, 80);
+    let profile = bounded_json_string(profile, 80);
+    let outcome = if outcome == "ok" { "ok" } else { "failed" };
+    let finished_at = bounded_json_string(finished_at, 48);
+    let duration_ms = u64::try_from(duration_ms).unwrap_or(u64::MAX);
+    let module_count = u64::try_from(module_count).unwrap_or(u64::MAX);
+    let updated_count = u64::try_from(updated_count).unwrap_or(u64::MAX);
+    let message = bounded_json_string(&format!("profile={profile} outcome={outcome}"), 256);
+    let mut included = Vec::new();
+    for failure in failures {
+        let mut candidate = included.clone();
+        candidate.push(json!({
+            "module": failure.module,
+            "signal": failure.signal,
+        }));
+        let attributes = json!({
+            "run_id": run_id,
+            "profile": profile,
+            "outcome": outcome,
+            "finished_at": finished_at,
+            "duration_ms": duration_ms,
+            "module_count": module_count,
+            "updated_count": updated_count,
+            "failures": candidate,
+            "failures_more": failures.len() - candidate.len(),
+        });
+        let payload = receipt_payload(
+            "harmonia.run_profile",
+            &message,
+            Some(attributes),
+            Some(outcome == "ok"),
+            Some(&run_id),
+        );
+        let fits = serde_json::to_vec(&payload)
+            .is_ok_and(|body| body.len() <= MAX_FORWARD_PAYLOAD_BYTES);
+        if !fits {
+            break;
+        }
+        included = candidate;
+    }
+    let attributes = json!({
+        "run_id": run_id,
+        "profile": profile,
+        "outcome": outcome,
+        "finished_at": finished_at,
+        "duration_ms": duration_ms,
+        "module_count": module_count,
+        "updated_count": updated_count,
+        "failures": included,
+        "failures_more": failures.len() - included.len(),
+    });
+    let payload = receipt_payload(
+        "harmonia.run_profile",
+        &message,
+        Some(attributes),
+        Some(outcome == "ok"),
+        Some(&run_id),
+    );
+    if !try_forward_bounded_payload(payload) {
+        // Mandatory scalar fields use fixed, serialized-size bounds; this is
+        // only reachable if the fixed envelope itself stops fitting.
+        eprintln!("harmonia hyalos first_missing_signal=run-profile-deed-envelope-overflow");
+    }
 }
 
 /// Forward selected receipt metadata only when its complete Hyalos JSON

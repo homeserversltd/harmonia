@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "mkdocs",
+  "title": "Documentation site",
+  "summary": "Keeps the household's documentation site configured and available.",
   "category": "interactable",
   "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER MkDocs configuration: assert the birth-provided runtime and documentation source, converge product-owned configuration and unit bytes with backups, validate the unit.",

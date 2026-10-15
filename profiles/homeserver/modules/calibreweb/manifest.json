@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "calibreweb",
+  "title": "E-book library",
+  "summary": "Keeps the household e-book library available for browsing.",
   "category": "interactable",
   "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER Calibre-Web service configuration: assert birth-provided application and watcher executables, converge product-owned units with backups, validate both units.",

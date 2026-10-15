@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "sway-seat",
+  "title": "Remote support screen",
+  "summary": "Keeps a remote support screen ready without starting it automatically.",
   "category": "known-good",
   "version": "1.0.0",
   "description": "Maintain the shared-birth-rendered headless Sway seat, loopback WayVNC user unit, and readiness helpers without writing birth-owned linger markers or enable links, or activating units.",

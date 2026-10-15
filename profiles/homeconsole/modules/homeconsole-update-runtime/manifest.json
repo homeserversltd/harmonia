@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "homeconsole-update-runtime",
+  "title": "Update schedule",
+  "summary": "Keeps the built-in software update schedule and removes outdated schedules.",
   "category": "known-good",
   "version": "3.6.0",
   "description": "HomeConsole convergence scheduler ladder: retire profile-named units and assert the installer-owned timer is present.",

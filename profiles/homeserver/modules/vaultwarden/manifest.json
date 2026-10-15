@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "vaultwarden",
+  "title": "Password vault",
+  "summary": "Keeps the household password vault available while preserving its private settings.",
   "category": "interactable",
   "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER Vaultwarden configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing environment file, converge the product-owned unit with backup, validate it.",

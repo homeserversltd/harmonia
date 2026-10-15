@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "sunshine",
+  "title": "Game streaming",
+  "summary": "Lets games stream to other screens using approved device access.",
   "category": "known-good",
   "version": "1.0.1",
   "optional": false,

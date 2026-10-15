@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "rust-build-toolchain",
+  "title": "Developer tools",
+  "summary": "Provides the tools needed to build software on this device.",
   "category": "known-good",
   "version": "1.1.0",
   "description": "HomeConsole Rust build toolchain ladder using package install and maintained wrappers.",

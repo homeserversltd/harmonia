@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "cua-driver",
+  "title": "Screen control",
+  "summary": "Keeps the screen-control helper current and its support screen ready.",
   "category": "known-good",
   "version": "1.0.0",
   "description": "Keep the pinned 0.28.2 CUA release upkeep helper with local currentness observation, and maintain the shared-birth-rendered headless screen supervisor without making it start WayVNC.",

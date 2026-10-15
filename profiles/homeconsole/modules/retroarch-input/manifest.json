@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "retroarch-input",
+  "title": "Controller settings",
+  "summary": "Maps controller buttons for consistent play across games.",
   "category": "known-good",
   "version": "1.0.1",
   "optional": false,

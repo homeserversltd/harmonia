@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "nas-units",
+  "title": "Shared storage access",
+  "summary": "Connects the server to household shared storage.",
   "category": "known-good",
   "version": "1.0.0",
   "description": "Fixed HOMESERVER NAS opener and mount unit bytes keyed by public PARTLABEL roles.",

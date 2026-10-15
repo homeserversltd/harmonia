@@ -1,6 +1,8 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "kitty",
+  "title": "Terminal appearance",
+  "summary": "Sets the look and behavior of the command window.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "TV Kitty configuration is converged from this module into the owner home.",
