@@ -1,0 +1,77 @@
+name: homeserver-llc
+description: HOMESERVER LLC — black field, white wordmark, precise graphite chrome
+
+colors:
+  background: "#000000"
+  banner_border: "#525252"
+  banner_title: "#FFFFFF"
+  banner_accent: "#D4D4D4"
+  banner_dim: "#8A8A8A"
+  banner_text: "#F5F5F5"
+  ui_accent: "#FFFFFF"
+  ui_tool: "#D4D4D4"
+  ui_thinking: "#8A8A8A"
+  ui_primary: "#FFFFFF"
+  ui_text: "#F5F5F5"
+  ui_label: "#D4D4D4"
+  ui_border: "#525252"
+  ui_ok: "#5FD38D"
+  ui_warn: "#F0B45A"
+  ui_error: "#F06A6A"
+  prompt: "#FFFFFF"
+  input_rule: "#525252"
+  response_border: "#D4D4D4"
+  session_label: "#FFFFFF"
+  session_border: "#525252"
+  status_bar_bg: "#111111"
+  status_bar_text: "#F5F5F5"
+  status_bar_good: "#5FD38D"
+  status_bar_warn: "#F0B45A"
+  status_bar_bad: "#F06A6A"
+  status_bar_critical: "#FF4D4D"
+  voice_status_bg: "#111111"
+  selection_bg: "#333333"
+  completion_menu_bg: "#111111"
+  completion_menu_current_bg: "#2A2A2A"
+  completion_menu_meta_bg: "#171717"
+  completion_menu_meta_current_bg: "#333333"
+  diff_added: "#5FD38D"
+  diff_removed: "#F06A6A"
+  diff_added_word: "#9BE7B7"
+  diff_removed_word: "#FF9B9B"
+  syntax_string: "#D4D4D4"
+  syntax_number: "#FFFFFF"
+  syntax_keyword: "#BDBDBD"
+  syntax_comment: "#737373"
+
+branding:
+  agent_name: "HOMESERVER LLC · Hermes"
+  welcome: "HOMESERVER LLC · Hermes is ready. Type your message or /help for commands."
+  goodbye: "HOMESERVER LLC · Hermes offline."
+  response_label: " HOMESERVER LLC · HERMES "
+  prompt_symbol: "›"
+  help_header: "HOMESERVER LLC · Commands"
+
+spinner:
+  waiting_faces:
+    - "[·]"
+    - "[•]"
+    - "[●]"
+    - "[•]"
+  thinking_faces:
+    - "[H]"
+    - "[HS]"
+    - "[H]"
+  thinking_verbs:
+    - "working"
+    - "reading"
+    - "resolving"
+    - "verifying"
+  wings:
+    - ["[", "]"]
+
+tool_prefix: "│"
+
+banner_logo: |
+  [bold #FFFFFF]H O M E S E R V E R[/]
+  [#8A8A8A]L L C[/]

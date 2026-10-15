@@ -248,6 +248,15 @@ pub(crate) enum FeedPersistenceIntent {
         receipts: Vec<Value>,
     },
     AppendReceipts(Vec<Value>),
+    HermesAppearanceOffer {
+        module_id: String,
+        entry: Option<Interactable>,
+    },
+    CompleteHermesAppearance {
+        module_id: String,
+        item_id: String,
+        receipt: Value,
+    },
 }
 
 fn compose_feed(
@@ -295,7 +304,161 @@ fn compose_feed(
             feed.receipts.extend(receipts.iter().cloned());
             feed
         }
+        FeedPersistenceIntent::HermesAppearanceOffer { module_id, entry } => {
+            let adopted = feed
+                .receipts
+                .iter()
+                .filter(|receipt| {
+                    receipt.get("schema").and_then(Value::as_str)
+                        == Some("harmonia.interactables.hermes_appearance.receipt.v1")
+                        && receipt.get("module_id").and_then(Value::as_str)
+                            == Some(module_id.as_str())
+                })
+                .flat_map(|receipt| {
+                    receipt
+                        .get("homes")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter(|home| home.get("ok").and_then(Value::as_bool) == Some(true))
+                .filter_map(|home| {
+                    home.get("home")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect::<BTreeSet<_>>();
+            let entry = entry.clone().and_then(|entry| {
+                crate::tools::hermes_appearance::constrain_offer_to_unadopted(entry, &adopted)
+            });
+            let keep_index = entry.as_ref().and_then(|candidate| {
+                feed.interactables.iter().position(|current| {
+                    current.kind == "hermes-appearance"
+                        && current.module_id == *module_id
+                        && current.evidence == candidate.evidence
+                        && current.reference_source_path == candidate.reference_source_path
+                })
+            });
+            let extra_capacity = if entry.is_some() { 1 } else { 0 };
+            let mut retained = Vec::with_capacity(feed.interactables.len() + extra_capacity);
+            for (index, current) in feed.interactables.drain(..).enumerate() {
+                if current.kind == "hermes-appearance" && current.module_id == *module_id {
+                    if Some(index) == keep_index {
+                        retained.push(current);
+                    }
+                } else {
+                    retained.push(current);
+                }
+            }
+            if keep_index.is_none() {
+                if let Some(entry) = entry {
+                    retained.push(entry);
+                }
+            }
+            feed.interactables = retained;
+            feed
+        }
+        FeedPersistenceIntent::CompleteHermesAppearance {
+            module_id,
+            item_id,
+            receipt,
+        } => {
+            let previous = feed
+                .receipts
+                .iter()
+                .filter(|current| is_hermes_appearance_receipt(current, module_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            let merged = merge_hermes_appearance_receipts(receipt.clone(), &previous);
+            let first_match = feed
+                .receipts
+                .iter()
+                .position(|current| is_hermes_appearance_receipt(current, module_id));
+            let extra_capacity = if first_match.is_none() { 1 } else { 0 };
+            let mut receipts = Vec::with_capacity(feed.receipts.len() + extra_capacity);
+            let mut inserted = false;
+            for current in feed.receipts.drain(..) {
+                if is_hermes_appearance_receipt(&current, module_id) {
+                    if !inserted {
+                        receipts.push(merged.clone());
+                        inserted = true;
+                    }
+                } else {
+                    receipts.push(current);
+                }
+            }
+            if !inserted {
+                receipts.push(merged);
+            }
+            feed.receipts = receipts;
+            feed.interactables.retain(|current| {
+                !(current.kind == "hermes-appearance"
+                    && current.module_id == *module_id
+                    && current.id == *item_id)
+            });
+            feed
+        }
     }
+}
+
+fn is_hermes_appearance_receipt(receipt: &Value, module_id: &str) -> bool {
+    receipt.get("schema").and_then(Value::as_str)
+        == Some("harmonia.interactables.hermes_appearance.receipt.v1")
+        && receipt.get("module_id").and_then(Value::as_str) == Some(module_id)
+}
+
+fn merge_hermes_appearance_receipts(mut current: Value, previous: &[Value]) -> Value {
+    const RECEIPT_FIELDS: &[&str] = &[
+        "schema", "ok", "id", "kind", "changed", "skin_name", "skin_sha256",
+        "module_id", "homes", "first_missing_signal", "rollback_signal",
+    ];
+    const HOME_FIELDS: &[&str] = &[
+        "home", "ok", "changed", "before_skin", "after_skin",
+        "skin_sha256_before", "skin_sha256_after", "selected_skin_snapshot",
+        "skin_sha256_snapshot", "config_backup_path", "asset_backup_path",
+    ];
+    let Some(current_object) = current.as_object_mut() else {
+        return current;
+    };
+    let mut adopted = BTreeMap::<String, Value>::new();
+    for prior in previous.iter().rev() {
+        let Some(prior_object) = prior.as_object() else { continue };
+        for (key, value) in prior_object {
+            if !RECEIPT_FIELDS.contains(&key.as_str()) {
+                current_object.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+        for row in prior.get("homes").and_then(Value::as_array).into_iter().flatten() {
+            if row.get("ok").and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            if let Some(home) = row.get("home").and_then(Value::as_str) {
+                adopted.entry(home.to_owned()).or_insert_with(|| row.clone());
+            }
+        }
+    }
+    let rows = current_object
+        .entry("homes")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(rows) = rows.as_array_mut() else { return current };
+    for row in rows.iter_mut() {
+        let Some(home) = row.get("home").and_then(Value::as_str).map(str::to_owned) else {
+            continue;
+        };
+        if row.get("ok").and_then(Value::as_bool) == Some(true) {
+            if let Some(prior) = adopted.remove(&home) {
+                if let (Some(current_row), Some(prior_row)) = (row.as_object_mut(), prior.as_object()) {
+                    for (key, value) in prior_row {
+                        if !HOME_FIELDS.contains(&key.as_str()) {
+                            current_row.entry(key.clone()).or_insert_with(|| value.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    rows.extend(adopted.into_values());
+    current
 }
 
 pub(crate) fn persist_feed_with_intent(
@@ -305,7 +468,19 @@ pub(crate) fn persist_feed_with_intent(
     crate::atoms::attest::with_proposal_projection_lock(path, || {
         let feed = match &intent {
             FeedPersistenceIntent::Replace(feed) => feed.clone(),
-            _ => compose_feed(interactables::load_feed(path)?, &intent),
+            _ => {
+                let current = interactables::load_feed(path)?;
+                let composed = compose_feed(current.clone(), &intent);
+                if matches!(&intent, FeedPersistenceIntent::HermesAppearanceOffer { .. })
+                    && serde_json::to_value(&current)
+                        .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?
+                        == serde_json::to_value(&composed)
+                            .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?
+                {
+                    return Ok(0);
+                }
+                composed
+            }
         };
         persist_feed_locked(path, &feed)
     })
