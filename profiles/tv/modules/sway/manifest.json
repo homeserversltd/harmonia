@@ -14,6 +14,7 @@
       ".config/sway/conf.d/bindings.conf",
       ".config/sway/conf.d/look.conf",
       ".config/sway/conf.d/windows.conf",
+      ".config/sway/conf.d/60-waybar-floats.conf",
       ".config/sway/conf.d/autostart.conf",
       ".config/systemd/user/hometv-sway-session.target"
     ],
@@ -38,6 +39,7 @@
           ".config/sway/conf.d/bindings.conf",
           ".config/sway/conf.d/look.conf",
           ".config/sway/conf.d/windows.conf",
+          ".config/sway/conf.d/60-waybar-floats.conf",
           ".config/sway/conf.d/autostart.conf",
           ".config/systemd/user/hometv-sway-session.target"
         ],

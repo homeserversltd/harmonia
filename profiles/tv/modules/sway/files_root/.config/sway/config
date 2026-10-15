@@ -4,4 +4,5 @@ include ~/.config/sway/conf.d/input.conf
 include ~/.config/sway/conf.d/bindings.conf
 include ~/.config/sway/conf.d/look.conf
 include ~/.config/sway/conf.d/windows.conf
+include ~/.config/sway/conf.d/60-waybar-floats.conf
 include ~/.config/sway/conf.d/autostart.conf
