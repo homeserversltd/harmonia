@@ -1,6 +1,0 @@
-[Desktop Entry]
-Name=Steam Gamescope (Gamescope)
-Comment=Optional HomeTV Steam/Gamescope lane; not the main session
-Exec=/usr/local/bin/hometv-steam-gamescope
-Type=Application
-Categories=Game;

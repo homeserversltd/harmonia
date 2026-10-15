@@ -1,0 +1,24 @@
+[Unit]
+Description=HomeTV Sway session environment
+Before=hometv-sway-session.target graphical-session.target hs-waybar.service hs-dunst.service
+
+[Service]
+Type=oneshot
+Environment="QT_QPA_PLATFORM=wayland;xcb"
+Environment=QT_AUTO_SCREEN_SCALE_FACTOR=1
+Environment=XCURSOR_SIZE=40
+Environment=HYPRCURSOR_SIZE=40
+Environment=XDG_SESSION_TYPE=wayland
+Environment=QT_QPA_PLATFORMTHEME=kde
+Environment=XDG_SESSION_DESKTOP=sway
+Environment=XDG_CURRENT_DESKTOP=sway
+Environment=QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+Environment="GDK_BACKEND=wayland,x11"
+Environment=GTK_USE_PORTAL=1
+Environment=SDL_VIDEODRIVER=wayland
+Environment=CLUTTER_BACKEND=wayland
+ExecStartPre=/usr/bin/test -n "${WAYLAND_DISPLAY}"
+ExecStartPre=/usr/bin/test -n "${SWAYSOCK}"
+ExecStartPre=/usr/bin/swaymsg --quiet --socket=${SWAYSOCK} --type=get_version
+ExecStart=/usr/bin/dbus-update-activation-environment --systemd QT_QPA_PLATFORM QT_AUTO_SCREEN_SCALE_FACTOR XCURSOR_SIZE HYPRCURSOR_SIZE XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP QT_WAYLAND_DISABLE_WINDOWDECORATION GDK_BACKEND GTK_USE_PORTAL SDL_VIDEODRIVER CLUTTER_BACKEND WAYLAND_DISPLAY SWAYSOCK
+ExecStart=/usr/bin/systemctl --user import-environment QT_QPA_PLATFORM QT_AUTO_SCREEN_SCALE_FACTOR XCURSOR_SIZE HYPRCURSOR_SIZE XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME XDG_SESSION_DESKTOP XDG_CURRENT_DESKTOP QT_WAYLAND_DISABLE_WINDOWDECORATION GDK_BACKEND GTK_USE_PORTAL SDL_VIDEODRIVER CLUTTER_BACKEND WAYLAND_DISPLAY SWAYSOCK

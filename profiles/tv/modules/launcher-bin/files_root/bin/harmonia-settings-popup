@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -u -o pipefail
-
-exec /usr/local/sbin/agathodaimon/cli.py gui shell || {
-    if command -v notify-send >/dev/null 2>&1; then
-        notify-send "Harmonia updates" "Could not open the update window."
-    fi
-    exit 1
-}

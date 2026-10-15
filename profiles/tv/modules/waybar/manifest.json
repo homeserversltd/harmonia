@@ -11,6 +11,7 @@
     "expected_files": [
       ".config/systemd/user/hs-waybar.service",
       ".config/waybar/style.css",
+      ".config/waybar/badge-state.css",
       ".config/waybar/waybar.conf"
     ],
     "user_services": [
@@ -31,6 +32,7 @@
         "files": [
           ".config/systemd/user/hs-waybar.service",
           ".config/waybar/style.css",
+          ".config/waybar/badge-state.css",
           ".config/waybar/waybar.conf"
         ],
         "backup_existing": true,

@@ -16,7 +16,11 @@
       ".config/sway/conf.d/windows.conf",
       ".config/sway/conf.d/60-waybar-floats.conf",
       ".config/sway/conf.d/autostart.conf",
-      ".config/systemd/user/hometv-sway-session.target"
+      ".config/systemd/user/hometv-sway-session.target",
+      ".config/wofi/config",
+      ".config/wofi/style.css",
+      ".config/systemd/user/hometv-sway-environment.service",
+      ".config/systemd/user/graphical-session.target.d/10-hometv-sway-environment.conf"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.sway.v1",
@@ -41,7 +45,11 @@
           ".config/sway/conf.d/windows.conf",
           ".config/sway/conf.d/60-waybar-floats.conf",
           ".config/sway/conf.d/autostart.conf",
-          ".config/systemd/user/hometv-sway-session.target"
+          ".config/systemd/user/hometv-sway-session.target",
+          ".config/wofi/config",
+          ".config/wofi/style.css",
+          ".config/systemd/user/hometv-sway-environment.service",
+          ".config/systemd/user/graphical-session.target.d/10-hometv-sway-environment.conf"
         ],
         "backup_existing": true,
         "owner": "owner",

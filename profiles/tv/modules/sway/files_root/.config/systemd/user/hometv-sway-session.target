@@ -1,6 +1,8 @@
 [Unit]
 Description=HomeTV Sway session
 Documentation=man:systemd.special(7)
+Requires=hometv-sway-environment.service
+After=hometv-sway-environment.service
 BindsTo=graphical-session.target
 Wants=graphical-session-pre.target
 After=graphical-session-pre.target

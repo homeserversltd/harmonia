@@ -15,8 +15,7 @@
       ".config/hypr/input.conf",
       ".config/hypr/looknfeel.conf",
       ".config/hypr/monitors.conf",
-      ".config/hypr/windows.conf",
-      ".config/hypr/scripts/bitwarden-popup-float.sh"
+      ".config/hypr/windows.conf"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.hyprland.v1",
@@ -40,8 +39,7 @@
           ".config/hypr/input.conf",
           ".config/hypr/looknfeel.conf",
           ".config/hypr/monitors.conf",
-          ".config/hypr/windows.conf",
-          ".config/hypr/scripts/bitwarden-popup-float.sh"
+          ".config/hypr/windows.conf"
         ],
         "backup_existing": true,
         "owner": "owner",

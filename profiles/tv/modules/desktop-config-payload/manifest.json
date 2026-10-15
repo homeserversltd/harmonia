@@ -11,9 +11,7 @@
       "MANIFEST.captured.txt",
       "SANITIZATION.md",
       "omp.json",
-      "/etc/hometv/steam-gamescope-policy.md",
-      "/usr/local/bin/hometv-steam-gamescope",
-      "/usr/share/applications/hometv-steam-gamescope.desktop"
+      "/etc/hometv/steam-gamescope-policy.md"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
@@ -62,9 +60,7 @@
         "source_root": "files_root/game-launcher",
         "target_root": "/",
         "files": [
-          "etc/hometv/steam-gamescope-policy.md",
-          "usr/local/bin/hometv-steam-gamescope",
-          "usr/share/applications/hometv-steam-gamescope.desktop"
+          "etc/hometv/steam-gamescope-policy.md"
         ],
         "backup_existing": true,
         "owner": "root",
