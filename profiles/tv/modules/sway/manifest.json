@@ -2,7 +2,7 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "sway",
   "title": "Desktop layout",
-  "summary": "Sets an alternate TV desktop layout, menus, and session preferences.",
+  "summary": "Sets the TV desktop's windows, menus, shortcuts, and startup preferences.",
   "category": "interactable",
   "version": "1.0.0",
   "description": "TV Sway configuration is converged from this module into the owner home.",

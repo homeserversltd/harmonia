@@ -331,6 +331,7 @@ pub(crate) struct RunProfileDeed {
     updated_count: usize,
     duration_ms: u128,
     failures: Vec<crate::hyalos::RunProfileFailure>,
+    run_signal: Option<String>,
 }
 
 fn module_failure(module: &str, signal: Option<&str>) -> crate::hyalos::RunProfileFailure {
@@ -350,6 +351,7 @@ fn deed_from_states(
     module_count: usize,
     duration_ms: u128,
     module_states: &BTreeMap<String, ModuleExecution>,
+    run_signal: &str,
 ) -> RunProfileDeed {
     let mut updated_count = 0;
     let mut failures = Vec::new();
@@ -374,6 +376,7 @@ fn deed_from_states(
         updated_count,
         duration_ms,
         failures,
+        run_signal: Some(run_signal.to_string()),
     }
 }
 
@@ -384,6 +387,7 @@ fn deed_from_steps(
     module_count: usize,
     duration_ms: u128,
     module_steps: &[serde_json::Value],
+    run_signal: &str,
 ) -> RunProfileDeed {
     let mut updated_count = 0;
     let mut failures = Vec::new();
@@ -425,11 +429,16 @@ fn deed_from_steps(
         updated_count,
         duration_ms,
         failures,
+        run_signal: Some(run_signal.to_string()),
     }
 }
 
-pub(crate) fn emit_run_profile_deed(deed: RunProfileDeed) {
+pub(crate) fn emit_run_profile_deed(mut deed: RunProfileDeed) {
     let outcome = if deed.ok { "ok" } else { "failed" };
+    if !deed.ok && deed.failures.is_empty() {
+        // A run that failed outside any module still names its signal.
+        deed.failures.push(module_failure("update-engine", deed.run_signal.as_deref()));
+    }
     crate::hyalos::forward_run_profile_deed(
         &deed.run_id,
         &deed.profile,
@@ -478,6 +487,7 @@ pub(crate) fn emit_transaction_failure(
     profile: &Profile,
     started: Instant,
     failures: &[crate::hyalos::RunProfileFailure],
+    run_signal: Option<&str>,
 ) {
     emit_run_profile_deed(RunProfileDeed {
         run_id: crate::receipts::run_id_from_stamp(),
@@ -488,6 +498,7 @@ pub(crate) fn emit_transaction_failure(
         updated_count: 0,
         duration_ms: started.elapsed().as_millis(),
         failures: failures.to_vec(),
+        run_signal: run_signal.map(str::to_string),
     });
 }
 
@@ -618,6 +629,12 @@ pub(crate) fn settle(
         state.module_count,
         state.run_started.elapsed().as_millis(),
         &state.module_states,
+        state
+            .engine_debt
+            .as_ref()
+            .map(|debt| debt.first_missing_signal.as_str())
+            .filter(|_| first_missing_signal == "none")
+            .unwrap_or(&first_missing_signal),
     );
     emit_run_profile_deed(deed);
     if let Some(carrier) = carrier {
@@ -704,6 +721,12 @@ pub(crate) fn finalize_deferred_terminal(
         summary.module_count,
         run_started.elapsed().as_millis(),
         &summary.module_steps,
+        summary
+            .engine_debt
+            .as_ref()
+            .map(|debt| debt.first_missing_signal.as_str())
+            .filter(|_| summary.first_missing_signal == "none")
+            .unwrap_or(&summary.first_missing_signal),
     );
     println!("ok={}", summary.ok);
     if degraded {

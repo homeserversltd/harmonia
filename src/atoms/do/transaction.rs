@@ -1122,6 +1122,7 @@ pub(crate) fn rolling_update_run(
                 profile,
                 run_started,
                 &terminal_failures,
+                run_result.as_ref().err().map(String::as_str),
             );
             carrier.borrow_mut().terminal_deed_emitted = true;
         }
@@ -1349,7 +1350,7 @@ fn write_transaction_failure_run_receipt(
     )?;
     println!("schema=harmonia.run_profile.v1");
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
-    crate::bands::report_home::emit_transaction_failure(profile, run_started, failures);
+    crate::bands::report_home::emit_transaction_failure(profile, run_started, failures, Some(&signal));
     carrier.borrow_mut().terminal_deed_emitted = true;
     println!("ok=false");
     if degraded {
