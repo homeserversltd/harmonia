@@ -1,0 +1,39 @@
+# SearXNG Search Engine Configuration
+# Local access: https://search.home.arpa
+# Tailscale access: https://[tailscale-ip]:18888 (8888 + 1 prefix = 18888)
+
+# Local access server block
+server {
+    listen 443 ssl;
+    server_name search.home.arpa;
+
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+    include /etc/nginx/ssl_params.conf;
+
+    location / {
+        proxy_pass http://127.0.0.1:8888;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Tailscale direct access server block
+server {
+    listen *:18888 ssl;
+    ssl_certificate /etc/ssl/home.arpa/cert.pem;
+    ssl_certificate_key /etc/ssl/home.arpa/key.pem;
+
+    # Disable SSL verification for self-signed cert
+    ssl_verify_client off;
+
+    location / {
+        proxy_pass http://127.0.0.1:8888;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

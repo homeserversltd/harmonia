@@ -1,0 +1,17 @@
+[Unit]
+Description=SearXNG metasearch engine
+After=network.target
+
+[Service]
+Type=exec
+User=search
+Group=search
+WorkingDirectory=/opt/searxng
+Environment=SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
+Environment=PYTHONPATH=/opt/searxng
+ExecStart=/opt/searxng/searxng/bin/python -m searx.webapp
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

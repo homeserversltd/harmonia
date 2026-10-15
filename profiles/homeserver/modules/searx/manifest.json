@@ -1,0 +1,92 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "searx",
+  "title": "Household search",
+  "summary": "Offers local metasearch through the household search page.",
+  "category": "interactable",
+  "version": "1.0.1",
+  "description": "Maintains the SearXNG service configuration and asserts its birth-provided runtime floor without installing or starting services.",
+  "constants": {
+    "service": "searxng.service",
+    "domain": "search.home.arpa",
+    "loopback": "127.0.0.1:8888"
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "searx-managed-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {
+        "file_modes": {
+          "/etc/searxng/settings.yml": 416,
+          "/etc/systemd/system/searxng.service": 420,
+          "/etc/nginx/sites-available/homeserver-searxng": 420
+        }
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "searx-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "searx-unit-loaded",
+      "tool": "systemd",
+      "permutation": "unit-present",
+      "args": {
+        "service": "searxng.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "searx-runtime-root-present",
+      "tool": "ask",
+      "permutation": "path-exists",
+      "args": {
+        "path": "/opt/searxng",
+        "resolve_running_kernel": false
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "searx-runtime-source-present",
+      "tool": "ask",
+      "permutation": "path-exists",
+      "args": {
+        "path": "/opt/searxng/searx",
+        "resolve_running_kernel": false
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "searx-venv-interpreter-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "/opt/searxng/searxng/bin/python",
+        "search_scope": "system",
+        "receipt_label": "searxng-venv-python"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "searx-settings-parse-floor",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/opt/searxng/searxng/bin/python",
+        "args": [
+          "${module_dir}/settings-floor.py",
+          "/etc/searxng/settings.yml"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "harmonia.searx.birth_payload.v1",
+  "files_root": "files_root",
+  "files": [
+    {
+      "source": "etc/searxng/settings.yml",
+      "target": "/etc/searxng/settings.yml",
+      "mode": "0640"
+    },
+    {
+      "source": "etc/systemd/system/searxng.service",
+      "target": "/etc/systemd/system/searxng.service",
+      "mode": "0644"
+    },
+    {
+      "source": "etc/nginx/sites-available/homeserver-searxng",
+      "target": "/etc/nginx/sites-available/homeserver-searxng",
+      "mode": "0644"
+    }
+  ]
+}

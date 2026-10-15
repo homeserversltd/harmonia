@@ -12,7 +12,8 @@
     "keyman",
     "caduceus",
     "synapse",
-    "element"
+    "element",
+    "searx"
   ],
   "description": "Public HOMESERVER appliance profile. Harmonia keeps this profile current by running ordered modules and writing receipts.",
   "folder_groups": {
@@ -80,6 +81,7 @@
     "system-packages",
     "synapse",
     "element",
+    "searx",
     "homeserver-update-runtime",
     "linker",
     "xenia",
