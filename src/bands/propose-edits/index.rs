@@ -369,6 +369,12 @@ pub(crate) fn prune_stale_interactables_at_path(
             Some("retired-kind")
         } else if !active_modules.contains(&entry.module_id) {
             Some("module-absent-from-profile")
+        } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry)
+            && (profile.id != "homeserver" || profile.identity != "homeserver")
+        {
+            Some("profile-absent-from-current-certificate")
+        } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry) {
+            None
         } else if !interactables::is_ruyi_born_kind(&entry.kind)
             && !entry
                 .reference_source_path

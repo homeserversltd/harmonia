@@ -542,25 +542,6 @@ pub(crate) fn update_from_certificate(
         }
     };
     let certificate_path = device_profile_certificate_path();
-    if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
-        write_early_refusal(
-            json!({
-                "schema": "harmonia.run_profile.v1",
-                "ok": false,
-                "mutation": mode.is_software_apply(),
-                "mode": if mode.is_software_apply() { "apply" } else { "report-only" },
-                "profile_id": serde_json::Value::Null,
-                "identity": serde_json::Value::Null,
-                "identity_source": "certificate",
-                "source_validation": "blocked-before-module-mutation",
-                "first_missing_signal": reason,
-            }),
-            &reason,
-            "source-validation-refusal-receipt-failed",
-            true,
-        )?;
-        return Err(reason);
-    }
     let (profile, profile_path) = match resolve_certificate_profile() {
         Ok(resolved) => resolved,
         Err(reason) => {
@@ -582,6 +563,28 @@ pub(crate) fn update_from_certificate(
             return Err(reason);
         }
     };
+    if profile.id == "homeserver" && profile.identity == "homeserver" {
+        crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile)?;
+    }
+    if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
+        write_early_refusal(
+            json!({
+                "schema": "harmonia.run_profile.v1",
+                "ok": false,
+                "mutation": mode.is_software_apply(),
+                "mode": if mode.is_software_apply() { "apply" } else { "report-only" },
+                "profile_id": profile.id,
+                "identity": profile.identity,
+                "identity_source": "certificate",
+                "source_validation": "blocked-before-module-mutation",
+                "first_missing_signal": reason,
+            }),
+            &reason,
+            "source-validation-refusal-receipt-failed",
+            true,
+        )?;
+        return Err(reason);
+    }
     let receipt_dir = receipt_dir_arg(args).unwrap_or_else(|| {
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
