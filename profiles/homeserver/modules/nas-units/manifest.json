@@ -4,11 +4,35 @@
   "title": "Shared storage access",
   "summary": "Connects the server to household shared storage.",
   "category": "known-good",
-  "version": "1.0.0",
-  "description": "Fixed HOMESERVER NAS opener and mount unit bytes keyed by public PARTLABEL roles.",
+  "version": "1.2.0",
+  "description": "Declares service-backed NAS mountpoints, role-specific USB readiness, fixed unit bytes, and enable-only boot election for both mounts.",
   "constants": {},
   "files_root": "files_root",
   "ladder": [
+    {
+      "step_id": "nas-units-mountpoints-ready",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/systemd-tmpfiles",
+        "args": [
+          "--create",
+          "${module_dir}/nas-mountpoints.conf"
+        ],
+        "observation": {
+          "program": "/usr/bin/stat",
+          "args": [
+            "--format=%f:%u:%g",
+            "--",
+            "/mnt/nas",
+            "/mnt/nas_backup"
+          ],
+          "expected_exit_code": 0,
+          "expected_stdout": "41ed:0:0\n41ed:0:0"
+        }
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "nas-units-config",
       "tool": "files",
@@ -18,6 +42,7 @@
         "target_root": "/",
         "files": [
           "etc/systemd/system/homeserver-nas-open@.service",
+          "etc/systemd/system/homeserver-nas-open@backup.service",
           "etc/systemd/system/mnt-nas.mount",
           "etc/systemd/system/mnt-nas_backup.mount"
         ],
@@ -25,6 +50,24 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "nas-units-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nas-units-enable-primary",
+      "tool": "systemd",
+      "permutation": "enable",
+      "args": {
+        "service": "mnt-nas.mount"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "nas-units-enable-backup",
+      "tool": "systemd",
+      "permutation": "enable",
+      "args": {
+        "service": "mnt-nas_backup.mount"
       },
       "on_failure": "stop"
     }

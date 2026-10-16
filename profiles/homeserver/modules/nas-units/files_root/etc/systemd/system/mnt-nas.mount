@@ -6,7 +6,7 @@ Conflicts=umount.target
 ConditionPathIsMountPoint=/vault
 ConditionPathExists=/dev/disk/by-partlabel/homeserver-primary-nas
 Requires=homeserver-nas-open@primary.service
-After=homeserver-nas-open@primary.service
+After=vault.mount homeserver-nas-open@primary.service
 
 [Mount]
 What=/dev/mapper/homeserver-primary-nas
@@ -14,3 +14,5 @@ Where=/mnt/nas
 Type=xfs
 Options=defaults
 
+[Install]
+WantedBy=multi-user.target

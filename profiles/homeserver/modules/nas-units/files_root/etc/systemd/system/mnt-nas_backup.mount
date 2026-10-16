@@ -6,7 +6,7 @@ Conflicts=umount.target
 ConditionPathIsMountPoint=/vault
 ConditionPathExists=/dev/disk/by-partlabel/homeserver-backup-nas
 Requires=homeserver-nas-open@backup.service
-After=homeserver-nas-open@backup.service
+After=vault.mount homeserver-nas-open@backup.service
 
 [Mount]
 What=/dev/mapper/homeserver-backup-nas
@@ -14,3 +14,5 @@ Where=/mnt/nas_backup
 Type=xfs
 Options=defaults
 
+[Install]
+WantedBy=multi-user.target
