@@ -3,8 +3,9 @@ use crate::Profile;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(crate) const INTERACTABLE_ID: &str = "homeserver-clock-utc";
 const MARKER_FIELD: &str = "homeserver_clock_utc";
@@ -64,21 +65,17 @@ impl ClockReadFailure {
     }
 }
 
-fn is_homeserver_profile(profile: &Profile) -> bool {
-    profile.id == "homeserver" && profile.identity == "homeserver"
-}
-
-fn require_homeserver_authority(profile: &Profile) -> Result<(), String> {
-    if !is_homeserver_profile(profile) {
+fn require_homeserver_authority(profile: &Profile) -> Result<String, String> {
+    let certificate_profile = crate::device_profile::certificate_profile()?;
+    if certificate_profile != "homeserver" {
         return Err(format!(
-            "homeserver-clock-utc-profile-required got={}/{}",
-            profile.id, profile.identity
+            "homeserver-clock-utc-certificate-profile-required actual={certificate_profile}"
         ));
     }
     if !profile.modules.iter().any(|module| module == MODULE_ID) {
         return Err("homeserver-clock-utc-module-authority-absent household-time".to_string());
     }
-    Ok(())
+    Ok(certificate_profile)
 }
 
 fn timedatectl_program() -> Result<String, String> {
@@ -205,11 +202,22 @@ fn validate_marker(item: &Interactable) -> Result<HomeserverClockUtcMarker, Stri
     Ok(marker)
 }
 
-pub(crate) fn reconcile_for_update(profile: &Profile) -> Result<(), String> {
-    if profile.id != "homeserver" && profile.identity != "homeserver" {
-        return Ok(());
+pub(crate) fn reconcile_for_update(profile: &Profile) {
+    let started = Instant::now();
+    let result = (|| {
+        if crate::device_profile::certificate_profile()? != "homeserver" {
+            return Ok(());
+        }
+        reconcile_profile(profile).map(|_| ())
+    })();
+    if let Err(reason) = result {
+        let signal = reconcile_failure_signal(&reason);
+        let duration_ms = started.elapsed().as_millis();
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "actor=harmonia verb=reconcile target={INTERACTABLE_ID} outcome=failed duration_ms={duration_ms} id={INTERACTABLE_ID} signal={signal}"
+        );
     }
-    reconcile_profile(profile).map(|_| ())
 }
 
 pub(crate) fn reconcile_from_certificate(args: &[String]) -> Result<(), String> {
@@ -295,6 +303,17 @@ fn reconcile_failure_signal(reason: &str) -> String {
         "homeserver-clock-utc-proposal-id-collision".to_string()
     } else if reason.starts_with("interactables-feed-") {
         "homeserver-clock-utc-feed-observation-failed".to_string()
+    } else if reason.starts_with("timedatectl-read-") {
+        "homeserver-clock-utc-timedatectl-read-failed".to_string()
+    } else if reason.starts_with("homeserver-clock-utc-timedatectl-override-") {
+        "homeserver-clock-utc-timedatectl-override-failed".to_string()
+    } else if reason.starts_with("device-profile-certificate-")
+        || reason.starts_with("device-profile-profile-")
+        || reason.starts_with("homeserver-clock-utc-certificate-profile-")
+    {
+        "homeserver-clock-utc-certificate-failed".to_string()
+    } else if reason.starts_with("homeserver-clock-utc-module-authority-") {
+        "homeserver-clock-utc-module-authority-failed".to_string()
     } else {
         "homeserver-clock-utc-reconcile-failed".to_string()
     }
@@ -611,13 +630,14 @@ pub(crate) fn run(
         Ok(resolved) => resolved,
         Err(reason) => return emit_run_receipt(&run_refusal_receipt(&reason)),
     };
-    if let Err(reason) = require_homeserver_authority(&profile) {
-        return emit_run_receipt(&run_refusal_receipt(&reason));
-    }
-    if marker.profile != profile.id {
+    let certificate_profile = match require_homeserver_authority(&profile) {
+        Ok(certificate_profile) => certificate_profile,
+        Err(reason) => return emit_run_receipt(&run_refusal_receipt(&reason)),
+    };
+    if marker.profile != certificate_profile {
         let reason = format!(
             "homeserver-clock-utc-profile-stale expected={} actual={}",
-            profile.id, marker.profile
+            certificate_profile, marker.profile
         );
         return emit_run_receipt(&run_refusal_receipt(&reason));
     }

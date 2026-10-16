@@ -243,7 +243,7 @@ pub(crate) fn certificate_source_policy() -> Result<String, String> {
         .to_string())
 }
 
-fn certificate_profile() -> Result<String, String> {
+pub(crate) fn certificate_profile() -> Result<String, String> {
     let certificate = load_certificate()?;
     let profile = certificate.kernel.profile.trim();
     if profile.is_empty() {
@@ -563,9 +563,7 @@ pub(crate) fn update_from_certificate(
             return Err(reason);
         }
     };
-    if profile.id == "homeserver" && profile.identity == "homeserver" {
-        crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile)?;
-    }
+    crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
     if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
         write_early_refusal(
             json!({

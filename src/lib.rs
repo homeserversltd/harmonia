@@ -1006,6 +1006,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 )?;
                 return Err(reason);
             }
+            crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
             if profile.id == "homeserver" && profile.identity == "homeserver" {
                 homeserver_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
@@ -1105,6 +1106,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 Some(&profile.id),
                 device_profile::run_identity_source(),
             )?;
+            crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
             homeserver_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
         }
         Some("homeconsole-update") => {
