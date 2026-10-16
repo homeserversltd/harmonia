@@ -2,13 +2,18 @@
 Description=Transmission VPN singleton native service
 Wants=network-online.target
 Requires=hold-port-forward@pia.service
-After=network-online.target hold-port-forward@pia.service transmissionPIA.service transmission-daemon.service mnt-nas.mount
+After=network-online.target hold-port-forward@pia.service transmissionPIA.service transmission-daemon.service vault.mount mnt-nas.mount
 Conflicts=transmissionPIA.service transmission-daemon.service
 ConditionPathIsMountPoint=/vault
 ConditionPathIsMountPoint=/mnt/nas
+RequiresMountsFor=/vault /mnt/nas
+PropagatesStopTo=hold-port-forward@pia.service
+StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
+TimeoutStartSec=180
 Environment=PYTHONDONTWRITEBYTECODE=1
 StandardInput=data
 StandardInputText={}
@@ -18,4 +23,4 @@ Restart=on-failure
 RestartSec=10
 
 [Install]
-WantedBy=mnt-nas.mount
+WantedBy=mnt-nas.mount vault.mount

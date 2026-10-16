@@ -4,7 +4,7 @@
   "title": "Download connection",
   "summary": "Provides background controls for the server's private download connection.",
   "category": "known-good",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Fixed HOMESERVER Transmission staff VPN control and daemon unit bytes.",
   "constants": {},
   "files_root": "files_root",

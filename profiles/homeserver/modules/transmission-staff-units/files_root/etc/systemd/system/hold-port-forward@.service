@@ -1,8 +1,13 @@
 [Unit]
 Description=Hold the %i VPN provider open for Transmission
-After=transmissionPIA.service transmission-daemon.service
+Wants=network-online.target
+After=network-online.target vault.mount mnt-nas.mount transmissionPIA.service transmission-daemon.service
 Conflicts=transmissionPIA.service transmission-daemon.service
-PartOf=transmissionVPN.service
+ConditionPathIsMountPoint=/vault
+ConditionPathIsMountPoint=/mnt/nas
+RequiresMountsFor=/vault /mnt/nas
+Upholds=transmissionVPN.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify
