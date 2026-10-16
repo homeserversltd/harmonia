@@ -1655,32 +1655,88 @@ fn update_module_command(
         return Err(format!("module-disabled-{}", parsed.module_id));
     }
 
-    let loaded = crate::bands::stage_profile::groups::load_profile_module_for_authority(
-        &module_root,
-        &parsed.module_id,
-        profile.package_authority.as_ref(),
-    )?;
+    let projected = projection
+        .modules
+        .get(&parsed.module_id)
+        .ok_or_else(|| {
+            projection
+                .errors
+                .get(&parsed.module_id)
+                .cloned()
+                .unwrap_or_else(|| format!("module-not-in-projection-{}", parsed.module_id))
+        })?;
     let module_dir =
         crate::bands::stage_profile::resolve_module_dir(&module_root, &parsed.module_id)?;
-    let module = match loaded {
-        LoadedModule::Sidecar(module) => module,
-        LoadedModule::Ladder(_) => load_module(&module_dir.join("manifest.json"))?,
-    };
     let execution_module_root = module_dir.parent().unwrap_or(module_root.as_path());
     let receipt_dir = parsed
         .receipt_dir
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/receipts/update-module-latest"));
     let mode = UpdateMode::from_apply_flag_with_invocation(parsed.apply, invocation);
     let harmonia_root = harmonia_root_from_module_root(&module_root);
-    let execution = execute_profile_module(
-        &module,
-        execution_module_root,
-        &receipt_dir,
-        mode.software_authorization(),
-        &harmonia_root,
-        mode.invocation(),
-        None,
-    )?;
+    let execution = match &projected.loaded {
+        LoadedModule::Sidecar(module) => execute_profile_module(
+            module,
+            execution_module_root,
+            &receipt_dir,
+            mode.software_authorization(),
+            &harmonia_root,
+            mode.invocation(),
+            None,
+        ),
+        LoadedModule::Ladder(manifest) => {
+            let module_receipt_dir = receipt_dir.join("modules").join(&parsed.module_id);
+            let mut routine_states = std::collections::BTreeMap::new();
+            let mut halted_steps = crate::bands::HaltedSteps::new();
+            let files = crate::bands::backfill_files::execute_files(
+                manifest,
+                &module_receipt_dir,
+                mode.software_authorization(),
+                profile.package_authority.as_ref(),
+                mode.invocation(),
+                mode.is_software_apply(),
+                false,
+                &mut routine_states,
+                &projected.steps,
+                &projected.routines,
+                &mut halted_steps,
+            )?;
+            let continue_to_proposals =
+                files.ok || manifest.isolation.as_deref() == Some("per-step");
+            let files_changed = files.changed;
+            let mut execution = ModuleExecution {
+                ok: files.ok,
+                changed: files.changed,
+                operation_count: files.operation_count,
+                first_missing_signal: files.first_missing_signal,
+                placements: files.placements,
+            };
+            if continue_to_proposals {
+                let proposals = crate::bands::propose_edits::execute_manifest_band(
+                    manifest,
+                    &module_receipt_dir,
+                    &module_dir,
+                    mode.software_authorization(),
+                    profile.package_authority.as_ref(),
+                    mode.invocation(),
+                    mode.is_software_apply(),
+                    &mut routine_states,
+                    &projected.steps,
+                    &projected.routines,
+                    &mut halted_steps,
+                    None,
+                    files_changed,
+                )?;
+                execution.ok &= proposals.ok;
+                execution.changed |= proposals.changed;
+                execution.operation_count += proposals.operation_count;
+                if execution.first_missing_signal.is_none() {
+                    execution.first_missing_signal = proposals.first_missing_signal;
+                }
+                execution.placements.extend(proposals.placements);
+            }
+            Ok(execution)
+        }
+    }?;
     let first_missing_signal = execution.first_missing_signal.as_deref().unwrap_or("none");
     write_json(
         &receipt_dir.join("run.json"),
