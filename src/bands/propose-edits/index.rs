@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::cell::RefCell;
 use std::fs;
 use std::fs::File;
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -143,9 +145,35 @@ fn stable_id(surface: &Path, live_sha: &str, reference_sha: &str) -> String {
     format!("config-proposal-{}", &format!("{digest:x}")[..16])
 }
 
+pub(crate) fn compiled_absent_proposal_id(surface: &Path, reference_sha: &str) -> String {
+    let digest =
+        Sha256::digest(format!("{}:absent:{reference_sha}", surface.display()).as_bytes());
+    format!("config-proposal-{}", &format!("{digest:x}")[..16])
+}
+
 fn is_config_proposal_id(id: &str) -> bool {
     id.strip_prefix("config-proposal-")
         .is_some_and(|key| key.len() == 16 && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+}
+
+fn read_regular_file_no_follow(path: &Path, context: &str) -> Result<Vec<u8>, String> {
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("{context}-read-failed {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("{context}-observe-failed {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("{context}-not-regular {}", path.display()));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("{context}-read-failed {}: {error}", path.display()))?;
+    Ok(bytes)
 }
 
 fn proposal_sources_root(parent: &Path, create: bool) -> Result<Option<PathBuf>, String> {
@@ -427,25 +455,89 @@ fn refresh_interactables_at_path_with_policy(
     let now = stamp();
     let available_at = iso8601_now();
     for entry in &outcome.entries {
-        if !entry.source_exists || !entry.target_exists_before {
+        if !entry.source_exists {
+            continue;
+        }
+        let target_absent = !entry.target_exists_before;
+        if target_absent
+            && (!compiled_artifact_authoritative
+                || outcome.config_state
+                    != Some(crate::atoms::files::ConfigConvergenceState::ProposalEligible))
+        {
             continue;
         }
         let drift = DriftSummary {
-            content: !entry.content_equal_before,
-            mode: !entry.mode_equal_before,
+            content: target_absent || !entry.content_equal_before,
+            mode: !target_absent && !entry.mode_equal_before,
             ownership: entry.ownership_changed,
         };
-        if !drift.content && !drift.mode && !drift.ownership {
+        if !target_absent && !drift.content && !drift.mode && !drift.ownership {
+            if compiled_artifact_authoritative {
+                remove_ids.extend(
+                    feed.interactables
+                        .iter()
+                        .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
+                        .filter(|item| {
+                            item.extra
+                                .get("compiled_target_absent")
+                                .and_then(Value::as_bool)
+                                == Some(true)
+                        })
+                        .map(|item| item.id.clone()),
+                );
+                feed.interactables.retain(|item| {
+                    item.target_path.as_deref() != Some(entry.target.as_path())
+                        || item
+                            .extra
+                            .get("compiled_target_absent")
+                            .and_then(Value::as_bool)
+                            != Some(true)
+                });
+            }
             continue;
         }
         crate::tools::files::validate_interactable_target(&entry.target)?;
-        let live_bytes = fs::read(&entry.target).unwrap_or_default();
-        let reference_bytes = fs::read(&entry.source).unwrap_or_default();
-        let live_sha = format!("{:x}", Sha256::digest(&live_bytes));
+        if target_absent {
+            match fs::symlink_metadata(&entry.target) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(_) => return Err(format!("compiled-target-appeared-before-proposal {}", entry.target.display())),
+                Err(error) => return Err(format!("compiled-target-observe-failed {}: {error}", entry.target.display())),
+            }
+        } else {
+            let metadata = fs::symlink_metadata(&entry.target).map_err(|error| {
+                format!("config-interactable-target-observe-failed {}: {error}", entry.target.display())
+            })?;
+            if !metadata.file_type().is_file() {
+                return Err(format!("config-interactable-target-not-regular {}", entry.target.display()));
+            }
+        }
+        let reference_metadata = fs::symlink_metadata(&entry.source).map_err(|error| {
+            format!("config-interactable-reference-observe-failed {}: {error}", entry.source.display())
+        })?;
+        if !reference_metadata.file_type().is_file() {
+            return Err(format!("config-interactable-reference-not-regular {}", entry.source.display()));
+        }
+        let live_bytes = if target_absent {
+            Vec::new()
+        } else {
+            read_regular_file_no_follow(&entry.target, "config-interactable-target")?
+        };
+        let reference_bytes =
+            read_regular_file_no_follow(&entry.source, "config-interactable-reference")?;
+        let live_sha = (!target_absent).then(|| format!("{:x}", Sha256::digest(&live_bytes)));
         let reference_sha = format!("{:x}", Sha256::digest(&reference_bytes));
-        let id = stable_id(&entry.target, &live_sha, &reference_sha);
+        let id = if target_absent {
+            compiled_absent_proposal_id(&entry.target, &reference_sha)
+        } else {
+            stable_id(&entry.target, live_sha.as_deref().unwrap_or_default(), &reference_sha)
+        };
         let reference_source = materialize_proposal_reference(path, &id, &reference_bytes)?;
         let reference_source_id = reference_source.to_string_lossy().into_owned();
+        let target_proposal_count = feed
+            .interactables
+            .iter()
+            .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
+            .count();
         let prior_for_target = feed
             .interactables
             .iter()
@@ -460,14 +552,21 @@ fn refresh_interactables_at_path_with_policy(
             .as_ref()
             .map(|item| item.created_at.clone())
             .unwrap_or_else(|| now.clone());
-        let recognized = interactables::recognize_against_known_goods(
-            &live_bytes,
-            &[interactables::RecognitionCandidate {
-                reference_id: &reference_source_id,
-                bytes: &reference_bytes,
-            }],
-        )
-        .ok_or_else(|| "config-recognition-no-known-good".to_string())?;
+        let recognized = if target_absent {
+            interactables::RecognitionResult {
+                score: 0.0,
+                reference_id: reference_source_id.clone(),
+            }
+        } else {
+            interactables::recognize_against_known_goods(
+                &live_bytes,
+                &[interactables::RecognitionCandidate {
+                    reference_id: &reference_source_id,
+                    bytes: &reference_bytes,
+                }],
+            )
+            .ok_or_else(|| "config-recognition-no-known-good".to_string())?
+        };
         let score = recognized.score;
         let threshold = if compiled_artifact_authoritative {
             0.0
@@ -492,8 +591,9 @@ fn refresh_interactables_at_path_with_policy(
             &serde_json::json!({
                 "schema": "harmonia.config_state.v1", "config_state": state, "id": id.clone(),
                 "target": entry.target.clone(), "reference": reference_source.clone(), "score": score,
-                "live_sha": live_sha.clone(), "reference_sha": reference_sha.clone(),
-                "threshold": threshold, "reference_id": reference_source.clone()
+                "live_sha": live_sha.clone(), "compiled_target_absent": target_absent,
+                "reference_sha": reference_sha.clone(), "threshold": threshold,
+                "reference_id": reference_source.clone()
             }),
         )?;
         if score < threshold {
@@ -512,6 +612,7 @@ fn refresh_interactables_at_path_with_policy(
                 nearest_reference: Some(reference_source.clone()),
                 target: entry.target.clone(),
                 live_sha: live_sha.clone(),
+                target_absent,
                 reference_sha: reference_sha.clone(),
                 interactable_id: None,
             });
@@ -539,7 +640,7 @@ fn refresh_interactables_at_path_with_policy(
             source_sha: None,
             target_sha: None,
             commits_behind: None,
-            live_sha: Some(live_sha.clone()),
+            live_sha: live_sha.clone(),
             reference_sha: Some(reference_sha.clone()),
             recognition_score: Some(score),
             diff: entry.diff.clone(),
@@ -559,8 +660,18 @@ fn refresh_interactables_at_path_with_policy(
             refreshed.evidence = prior.evidence.clone();
             refreshed.extra = prior.extra.clone();
         }
-        let unchanged = prior_same_id.as_ref()
-            .is_some_and(|prior| serde_json::to_value(prior).ok() == serde_json::to_value(&refreshed).ok());
+        if target_absent {
+            refreshed.extra.insert(
+                "compiled_target_absent".into(),
+                serde_json::Value::Bool(true),
+            );
+        } else {
+            refreshed.extra.remove("compiled_target_absent");
+        }
+        let unchanged = prior_same_id.as_ref().is_some_and(|prior| {
+            (!target_absent || target_proposal_count == 1)
+                && serde_json::to_value(prior).ok() == serde_json::to_value(&refreshed).ok()
+        });
         if !unchanged {
             // A changed offer supersedes the prior set for this surface.
             remove_ids.extend(
@@ -585,6 +696,7 @@ fn refresh_interactables_at_path_with_policy(
             nearest_reference: Some(reference_source),
             target: entry.target.clone(),
             live_sha,
+            target_absent,
             reference_sha,
             interactable_id: Some(interactable_id),
         });
@@ -613,7 +725,8 @@ pub(crate) struct ConfigRecognition {
     pub(crate) reference_id: Option<String>,
     pub(crate) nearest_reference: Option<PathBuf>,
     pub(crate) target: PathBuf,
-    pub(crate) live_sha: String,
+    pub(crate) live_sha: Option<String>,
+    pub(crate) target_absent: bool,
     pub(crate) reference_sha: String,
     pub(crate) interactable_id: Option<String>,
 }

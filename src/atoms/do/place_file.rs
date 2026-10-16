@@ -824,22 +824,39 @@ pub(crate) fn write_compile_fragments_config_projection(
     outcome: &FileConvergenceOutcome,
     config_state: &str,
     skipped: bool,
+    absent_offer_persisted: bool,
 ) -> Result<(), String> {
     let message = format!("compile-fragments-config-{config_state}");
+    let target_entry = outcome.entries.first();
+    let target_exists_before = target_entry.is_some_and(|entry| entry.target_exists_before);
+    let target_exists_after = target_entry.is_some_and(|entry| entry.target_exists_after);
+    let converged = outcome.ok
+        && target_entry.is_some_and(|entry| {
+            entry.target_exists_after
+                && entry.content_equal_after
+                && entry.mode_equal_after
+                && !entry.ownership_changed
+        });
     let receipt = Receipt {
         atom: "place-file".into(),
-        ok: outcome.ok,
+        ok: outcome.ok || absent_offer_persisted,
         drift: Drift::Current,
         message,
     };
     let projection = json!({
         "schema":"harmonia.compile-fragments.receipt.v1",
-        "ok":outcome.ok,
-        "changed":outcome.changed,
+        "ok":outcome.ok || absent_offer_persisted,
+        "changed":if absent_offer_persisted { false } else { outcome.changed },
         "ownership_changed":outcome.ownership_changed,
         "skipped":skipped,
         "config_state":config_state,
-        "recognition_ok":outcome.ok,
+        "recognition_ok":outcome.ok || absent_offer_persisted,
+        "compiled_target_absent":absent_offer_persisted,
+        "target_exists_before":target_exists_before,
+        "target_exists_after":target_exists_after,
+        "converged":converged,
+        "missing":outcome.missing,
+        "convergence_message":outcome.message,
         "target":target,
         "selected_appliance":selected_appliance,
         "bytes":bytes,

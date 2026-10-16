@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
+use std::io::Read;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -591,99 +592,236 @@ fn interactable_run(
         .as_deref()
         .ok_or_else(|| "interactable-reference-source-absent".to_string())?;
     crate::atoms::files::validate_interactable_target(target_path)?;
-    if !reference_source_path.is_file() {
+    let compiled_target_absent = item
+        .extra
+        .get("compiled_target_absent")
+        .and_then(Value::as_bool)
+        == Some(true);
+    let mut reference_options = fs::OpenOptions::new();
+    reference_options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    let mut reference_file = reference_options.open(reference_source_path).map_err(|error| {
+        format!(
+            "interactable-reference-source-open-failed {}: {error}",
+            reference_source_path.display()
+        )
+    })?;
+    let reference_metadata = reference_file.metadata().map_err(|error| {
+        format!(
+            "interactable-reference-source-stat-failed {}: {error}",
+            reference_source_path.display()
+        )
+    })?;
+    if !reference_metadata.is_file() {
         return Err(format!(
-            "interactable-reference-source-missing {}",
+            "interactable-reference-source-not-regular {}",
             reference_source_path.display()
         ));
     }
-    let target_metadata = fs::symlink_metadata(target_path).map_err(|error| {
-        format!(
-            "interactable-target-stat-failed {}: {error}",
-            target_path.display()
-        )
-    })?;
-    if !target_metadata.file_type().is_file() {
-        return Err(format!(
-            "interactable-target-not-regular-file {}",
-            target_path.display()
-        ));
-    }
-    let desired_uid = item
-        .owner
-        .as_deref()
-        .map(crate::atoms::files::resolve_uid)
-        .transpose()?
-        .unwrap_or_else(|| target_metadata.uid());
-    let desired_gid = item
-        .group
-        .as_deref()
-        .map(crate::atoms::files::resolve_gid)
-        .transpose()?
-        .unwrap_or_else(|| target_metadata.gid());
-    let desired_mode = item
-        .mode
-        .or_else(|| crate::atoms::files::source_mode(reference_source_path).ok())
-        .ok_or_else(|| "interactable-reference-source-mode-failed".to_string())?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().to_string())
-        .unwrap_or_else(|_| "0".to_string());
-    let backup = backup_root.join(&item.id).join(format!(
-        "{}-{}",
-        stamp,
-        target_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("target")
-    ));
-    let desired_bytes = fs::read(reference_source_path).map_err(|error| {
+    let mut desired_bytes = Vec::new();
+    reference_file.read_to_end(&mut desired_bytes).map_err(|error| {
         format!(
             "interactable-reference-source-read-failed {}: {error}",
             reference_source_path.display()
         )
     })?;
-    let projectio_receipt = crate::atoms::projectio::strike(crate::atoms::projectio::Request {
-        target: target_path,
-        desired_bytes: &desired_bytes,
-        mode: desired_mode,
-        uid: desired_uid,
-        gid: desired_gid,
-        backup_path: &backup,
-        witness: crate::atoms::projectio::owner_acceptance(operator_hand()),
-    })?;
-    let mut receipt = serde_json::json!({
-        "schema": "harmonia.interactables.hard_stamp.receipt.v1",
-        "ok": true,
-        "id": item.id.clone(),
-        "kind": "hard-stamp",
-        "backup_path": projectio_receipt.backup_path.clone(),
-        "backed_up_to": projectio_receipt.backup_path.clone(),
-        "before_sha256": projectio_receipt.before_sha256.clone(),
-        "reference_sha256": projectio_receipt.struck_sha256.clone(),
-        "target_sha256": projectio_receipt.target_sha256.clone(),
-        "target": item.target_path.clone(),
-        "reference_source": item.reference_source_path.clone(),
-        "changed": true,
-    });
+    let reference_sha256 = format!("{:x}", Sha256::digest(&desired_bytes));
+    let mut receipt = if compiled_target_absent {
+        if item.live_sha.is_some()
+            || item
+                .reference_sha
+                .as_deref()
+                .is_some_and(|reference_sha| reference_sha != reference_sha256.as_str())
+        {
+            return Err("compiled-absent-interactable-preimage-invalid".to_string());
+        }
+        let expected_id = crate::bands::propose_edits::compiled_absent_proposal_id(
+            target_path,
+            &reference_sha256,
+        );
+        if item.id != expected_id {
+            return Err("compiled-absent-interactable-id-binding-invalid".to_string());
+        }
+        if reference_source_path.file_name().and_then(|name| name.to_str())
+            != Some(format!("{}.source", item.id).as_str())
+            || reference_source_path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                != Some("proposal-sources")
+        {
+            return Err("compiled-absent-reference-snapshot-binding-invalid".to_string());
+        }
+        match fs::symlink_metadata(target_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(format!("compiled-absent-target-appeared {}", target_path.display())),
+            Err(error) => {
+                return Err(format!(
+                    "compiled-absent-target-observe-failed {}: {error}",
+                    target_path.display()
+                ))
+            }
+        }
+        let parent = target_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent_metadata = fs::symlink_metadata(parent).map_err(|error| {
+            format!(
+                "compiled-absent-target-parent-observe-failed {}: {error}",
+                parent.display()
+            )
+        })?;
+        if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+            return Err(format!(
+                "compiled-absent-target-parent-not-directory {}",
+                parent.display()
+            ));
+        }
+        let mut default_uid = parent_metadata.uid();
+        let mut default_gid = parent_metadata.gid();
+        if let Some(owner) = item
+            .owner
+            .as_deref()
+            .filter(|owner| item.group.is_none() && owner.parse::<u32>().is_err())
+        {
+            let (owner_uid, owner_gid) =
+                crate::tools::files::compile_fragments_owner_primary_ids(owner)?;
+            default_uid = owner_uid;
+            default_gid = owner_gid;
+        }
+        let desired_uid = item
+            .owner
+            .as_deref()
+            .map(crate::atoms::files::resolve_uid)
+            .transpose()?
+            .unwrap_or(default_uid);
+        let desired_gid = item
+            .group
+            .as_deref()
+            .map(crate::atoms::files::resolve_gid)
+            .transpose()?
+            .unwrap_or(default_gid);
+        let desired_mode = item.mode.unwrap_or(reference_metadata.mode() & 0o7777);
+        let projectio_receipt = crate::atoms::projectio::create_absent(
+            crate::atoms::projectio::AbsentCreationRequest {
+                target: target_path,
+                desired_bytes: &desired_bytes,
+                mode: desired_mode,
+                uid: desired_uid,
+                gid: desired_gid,
+                witness: crate::atoms::projectio::owner_acceptance(operator_hand()),
+            },
+        )?;
+        serde_json::json!({
+            "schema": "harmonia.interactables.hard_stamp.receipt.v1",
+            "ok": true,
+            "id": item.id.clone(),
+            "kind": "hard-stamp",
+            "backup_path": projectio_receipt.backup_path.clone(),
+            "backed_up_to": projectio_receipt.backup_path,
+            "before_sha256": projectio_receipt.before_sha256,
+            "reference_sha256": projectio_receipt.struck_sha256,
+            "target_sha256": projectio_receipt.target_sha256,
+            "target": item.target_path.clone(),
+            "reference_source": item.reference_source_path.clone(),
+            "compiled_target_absent": true,
+            "changed": true,
+        })
+    } else {
+        let target_metadata = fs::symlink_metadata(target_path).map_err(|error| {
+            format!(
+                "interactable-target-stat-failed {}: {error}",
+                target_path.display()
+            )
+        })?;
+        if !target_metadata.file_type().is_file() {
+            return Err(format!(
+                "interactable-target-not-regular-file {}",
+                target_path.display()
+            ));
+        }
+        let desired_uid = item
+            .owner
+            .as_deref()
+            .map(crate::atoms::files::resolve_uid)
+            .transpose()?
+            .unwrap_or_else(|| target_metadata.uid());
+        let desired_gid = item
+            .group
+            .as_deref()
+            .map(crate::atoms::files::resolve_gid)
+            .transpose()?
+            .unwrap_or_else(|| target_metadata.gid());
+        let desired_mode = item
+            .mode
+            .or_else(|| crate::atoms::files::source_mode(reference_source_path).ok())
+            .ok_or_else(|| "interactable-reference-source-mode-failed".to_string())?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos().to_string())
+            .unwrap_or_else(|_| "0".to_string());
+        let backup = backup_root.join(&item.id).join(format!(
+            "{}-{}",
+            stamp,
+            target_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("target")
+        ));
+        let projectio_receipt = crate::atoms::projectio::strike(crate::atoms::projectio::Request {
+            target: target_path,
+            desired_bytes: &desired_bytes,
+            mode: desired_mode,
+            uid: desired_uid,
+            gid: desired_gid,
+            backup_path: &backup,
+            witness: crate::atoms::projectio::owner_acceptance(operator_hand()),
+        })?;
+        serde_json::json!({
+            "schema": "harmonia.interactables.hard_stamp.receipt.v1",
+            "ok": true,
+            "id": item.id.clone(),
+            "kind": "hard-stamp",
+            "backup_path": projectio_receipt.backup_path.clone(),
+            "backed_up_to": projectio_receipt.backup_path.clone(),
+            "before_sha256": projectio_receipt.before_sha256.clone(),
+            "reference_sha256": projectio_receipt.struck_sha256.clone(),
+            "target_sha256": projectio_receipt.target_sha256.clone(),
+            "target": item.target_path.clone(),
+            "reference_source": item.reference_source_path.clone(),
+            "changed": true,
+        })
+    };
     receipt["has_run"] = serde_json::Value::Bool(true);
     receipt["config_state"] = serde_json::Value::String("interactable".into());
-    let feed_receipt = serde_json::json!({
-        "schema": "harmonia.config_state.receipt.v1",
-        "config_state": "interactable",
-        "id": item.id,
-        "target": item.target_path,
-        "reference_id": item.reference_source_path,
-        "score": item.recognition_score,
-        "actuator": receipt.clone(),
-    });
-    crate::bands::propose_edits::persist_feed_with_intent(
-        &path,
-        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
-            ids: [item.id.clone()].into_iter().collect(),
-            receipts: vec![feed_receipt],
-        },
-    )?;
+    if compiled_target_absent {
+        crate::bands::propose_edits::persist_feed_with_intent(
+            &path,
+            crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+                ids: [item.id.clone()].into_iter().collect(),
+                receipts: Vec::new(),
+            },
+        )?;
+    } else {
+        let feed_receipt = serde_json::json!({
+            "schema": "harmonia.config_state.receipt.v1",
+            "config_state": "interactable",
+            "id": item.id,
+            "target": item.target_path,
+            "reference_id": item.reference_source_path,
+            "score": item.recognition_score,
+            "actuator": receipt.clone(),
+        });
+        crate::bands::propose_edits::persist_feed_with_intent(
+            &path,
+            crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+                ids: [item.id.clone()].into_iter().collect(),
+                receipts: vec![feed_receipt],
+            },
+        )?;
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?

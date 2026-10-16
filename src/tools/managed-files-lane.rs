@@ -150,7 +150,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
@@ -391,6 +391,135 @@ pub(crate) fn compile_fragments(
     Ok(bytes)
 }
 
+fn compile_fragments_target_exists(target: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(format!("compile-fragments-target-nonregular-refused {}", target.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("compile-fragments-target-observe-failed {}: {error}", target.display())),
+    }
+}
+
+pub(crate) fn compile_fragments_owner_primary_ids(owner: &str) -> Result<(u32, u32), String> {
+    let name = std::ffi::CString::new(owner)
+        .map_err(|error| format!("compile-fragments-owner-invalid {owner:?}: {error}"))?;
+    let entry = unsafe { libc::getpwnam(name.as_ptr()) };
+    if entry.is_null() {
+        return Err(format!("compile-fragments-owner-account-unknown {owner}"));
+    }
+    let entry = unsafe { &*entry };
+    Ok((entry.pw_uid, entry.pw_gid))
+}
+
+fn compile_fragments_declared_owner_group(
+    step: &ValidatedStep,
+    target: &Path,
+    parent_metadata: &fs::Metadata,
+) -> Result<(String, String), String> {
+    let owner = match step.args.get("owner") {
+        Some(Value::String(owner)) => Some(owner.as_str()),
+        Some(Value::Null) | None => None,
+        Some(_) => {
+            return Err(format!(
+                "compile-fragments-absent-target-owner-invalid {}",
+                target.display()
+            ))
+        }
+    };
+    let group = match step.args.get("group") {
+        Some(Value::String(group)) => Some(group.as_str()),
+        Some(Value::Null) | None => None,
+        Some(_) => {
+            return Err(format!(
+                "compile-fragments-absent-target-group-invalid {}",
+                target.display()
+            ))
+        }
+    };
+    let uid_value = step.args.get("uid").filter(|value| !value.is_null());
+    let gid_value = step.args.get("gid").filter(|value| !value.is_null());
+    if uid_value.is_some() || gid_value.is_some() {
+        if owner.is_some() || group.is_some() {
+            return Err(format!(
+                "compile-fragments-absent-target-ownership-ambiguous {}",
+                target.display()
+            ));
+        }
+        let uid = uid_value
+            .map(|value| {
+                value.as_u64().ok_or_else(|| {
+                    format!("compile-fragments-absent-target-uid-invalid {}", target.display())
+                })
+            })
+            .transpose()?
+            .unwrap_or_else(|| u64::from(parent_metadata.uid()));
+        let gid = gid_value
+            .map(|value| {
+                value.as_u64().ok_or_else(|| {
+                    format!("compile-fragments-absent-target-gid-invalid {}", target.display())
+                })
+            })
+            .transpose()?
+            .unwrap_or_else(|| u64::from(parent_metadata.gid()));
+        return Ok((uid.to_string(), gid.to_string()));
+    }
+    match (owner, group) {
+        (Some(owner), Some(group)) => Ok((owner.to_string(), group.to_string())),
+        (Some(owner), None) => {
+            if owner.parse::<u32>().is_ok() {
+                Ok((owner.to_string(), parent_metadata.gid().to_string()))
+            } else {
+                let (_, primary_gid) = compile_fragments_owner_primary_ids(owner)?;
+                Ok((owner.to_string(), primary_gid.to_string()))
+            }
+        }
+        (None, Some(group)) => Ok((parent_metadata.uid().to_string(), group.to_string())),
+        (None, None) => Ok((
+            parent_metadata.uid().to_string(),
+            parent_metadata.gid().to_string(),
+        )),
+    }
+}
+
+fn compile_fragments_absent_offer_persisted(
+    target: &Path,
+    recognition: &crate::bands::propose_edits::ConfigRecognition,
+) -> Result<bool, String> {
+    if recognition.config_state != "interactable"
+        || !recognition.target_absent
+        || recognition.live_sha.is_some()
+    {
+        return Ok(false);
+    }
+    let Some(id) = recognition.interactable_id.as_deref() else {
+        return Ok(false);
+    };
+    let feed = crate::interactables::load_feed(
+        &crate::interactables::feed_path_for_command(),
+    )?;
+    let matching = feed
+        .interactables
+        .iter()
+        .filter(|item| item.target_path.as_deref() == Some(target))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Ok(false);
+    }
+    let item = matching[0];
+    Ok(item.id == id
+        && item.kind == "hard-stamp"
+        && item.live_sha.is_none()
+        && item
+            .reference_sha
+            .as_deref()
+            .map_or(true, |reference_sha| reference_sha == recognition.reference_sha.as_str())
+        && item.extra.get("compiled_target_absent").and_then(Value::as_bool) == Some(true)
+        && crate::bands::propose_edits::compiled_absent_proposal_id(
+            target,
+            &recognition.reference_sha,
+        ) == item.id)
+}
+
 pub(crate) fn compile_fragments_step(
     step: &ValidatedStep,
     manifest: &LadderManifest,
@@ -438,6 +567,16 @@ pub(crate) fn compile_fragments_step(
     if step.args.get("backup_existing").and_then(Value::as_bool) != Some(true) {
         return Err("compile-fragments-backup-existing-required".into());
     }
+    let target_class = crate::atoms::files::classify_target(&target);
+    if let crate::atoms::files::TargetClass::Refused(reason) = &target_class {
+        return Err(reason.clone());
+    }
+    let config_target = matches!(&target_class, crate::atoms::files::TargetClass::Config);
+    let target_exists_before = if config_target {
+        Some(compile_fragments_target_exists(&target)?)
+    } else {
+        None
+    };
     let bytes = compile_fragments(&source_root, &platform, &behavioral_pool)?;
     if bytes.is_empty() {
         crate::place_file::write_compile_fragments_no_claim_projection(
@@ -453,11 +592,26 @@ pub(crate) fn compile_fragments_step(
             command: None,
         });
     }
-    let target_class = crate::atoms::files::classify_target(&target);
-    if let crate::atoms::files::TargetClass::Refused(reason) = &target_class {
-        return Err(reason.clone());
-    }
-    if matches!(target_class, crate::atoms::files::TargetClass::Config) {
+    if config_target {
+        let target_exists_before = target_exists_before
+            .ok_or("compile-fragments-config-target-observation-missing")?;
+        let (owner, group) = if target_exists_before {
+            (None, None)
+        } else {
+            let parent = target
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .ok_or("compile-fragments-target-parent-missing")?;
+            let parent_metadata = fs::symlink_metadata(parent).map_err(|error| {
+                format!("compile-fragments-target-parent-observe-failed {}: {error}", parent.display())
+            })?;
+            if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+                return Err(format!("compile-fragments-target-parent-not-directory {}", parent.display()));
+            }
+            let (owner, group) =
+                compile_fragments_declared_owner_group(step, &target, &parent_metadata)?;
+            (Some(owner), Some(group))
+        };
         let artifact_root = module_dir.join("compiled-fragments");
         crate::atoms::attest::prepare_receipt_parent(&artifact_root)?;
         let artifact_name = target
@@ -483,8 +637,8 @@ pub(crate) fn compile_fragments_step(
             }],
             backup_existing: true,
             receipt_name: step.step_id.clone(),
-            owner: None,
-            group: None,
+            owner,
+            group,
         };
         let outcome = crate::atoms::files::converge_files_authorized_with_interactable_policy(
             &request,
@@ -497,14 +651,27 @@ pub(crate) fn compile_fragments_step(
             crate::bands::propose_edits::refresh_interactables_for_compiled_convergence(
                 manifest, &request, &outcome,
             )?;
-        let target_is_regular_file = fs::symlink_metadata(&target)
-            .map(|metadata| metadata.file_type().is_file())
-            .unwrap_or(false);
+        let target_exists_after = compile_fragments_target_exists(&target)?;
+        let absent_offer_persisted = if !target_exists_before && !target_exists_after {
+            recognitions
+                .iter()
+                .filter(|recognition| recognition.target.as_path() == target.as_path())
+                .try_fold(false, |already, recognition| {
+                    if already {
+                        return Ok(false);
+                    }
+                    compile_fragments_absent_offer_persisted(&target, recognition)
+                })?
+        } else {
+            false
+        };
         let config_state = if outcome.config_state
             == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt)
         {
             "interactable-exempt"
-        } else if !target_is_regular_file
+        } else if !target_exists_before {
+            if absent_offer_persisted { "interactable" } else { "refused-unrecognized" }
+        } else if !target_exists_after
             || recognitions
                 .iter()
                 .any(|recognition| recognition.config_state == "refused-unrecognized")
@@ -518,7 +685,8 @@ pub(crate) fn compile_fragments_step(
         } else {
             "converged"
         };
-        let skipped = config_state != "interactable";
+        let skipped = !target_exists_before || config_state != "interactable";
+        let operation_ok = outcome.ok || absent_offer_persisted;
         let message = format!("compile-fragments-config-{config_state}");
         crate::place_file::write_compile_fragments_config_projection(
             module_dir,
@@ -528,10 +696,11 @@ pub(crate) fn compile_fragments_step(
             &outcome,
             config_state,
             skipped,
+            absent_offer_persisted,
         )?;
         return Ok(OperationOutcome {
-            ok: outcome.ok,
-            changed: outcome.changed,
+            ok: operation_ok,
+            changed: if absent_offer_persisted { false } else { outcome.changed },
             skipped,
             message,
             command: None,

@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -47,6 +47,27 @@ pub(crate) struct Request<'a> {
     pub gid: u32,
     pub backup_path: &'a Path,
     pub witness: OwnerAcceptance,
+}
+
+pub(crate) struct AbsentCreationRequest<'a> {
+    pub target: &'a Path,
+    pub desired_bytes: &'a [u8],
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub witness: OwnerAcceptance,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AbsentCreationReceipt {
+    pub struck_sha256: String,
+    pub backup_path: Option<PathBuf>,
+    pub before_sha256: Option<String>,
+    pub target_sha256: String,
+    pub readback_sha256: String,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -341,6 +362,309 @@ fn strike_with_tracking(
 
 pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
     strike_with_tracking(request, None).result
+}
+
+fn stat_at_nofollow(directory: &File, name: &std::ffi::CString) -> Result<libc::stat, std::io::Error> {
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            &mut stat,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(stat)
+}
+
+fn stat_identity(stat: &libc::stat) -> FileIdentity {
+    FileIdentity {
+        dev: stat.st_dev as u64,
+        ino: stat.st_ino as u64,
+    }
+}
+
+fn create_temp_at(
+    directory: &File,
+    parent: &Path,
+) -> Result<(File, PathBuf, std::ffi::CString), String> {
+    let pid = std::process::id();
+    for sequence in 0..1000u32 {
+        let name = format!(".projectio-absent-{pid}-{sequence}");
+        let name_c = std::ffi::CString::new(name.as_bytes())
+            .map_err(|error| format!("projectio-absent-temp-name-invalid {name:?}: {error}"))?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name_c.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd >= 0 {
+            return Ok((
+                unsafe { File::from_raw_fd(fd) },
+                parent.join(name),
+                name_c,
+            ));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(io_error("absent-temp-create", &parent.join(name), error));
+        }
+    }
+    Err(format!("projectio-absent-temp-create-exhausted {}", parent.display()))
+}
+
+fn unlink_owned_staged_file(
+    directory: &File,
+    name: &std::ffi::CString,
+    identity: FileIdentity,
+    path: &Path,
+    operation: &str,
+) -> Result<(), String> {
+    match stat_at_nofollow(directory, name) {
+        Ok(stat)
+            if stat.st_mode & libc::S_IFMT == libc::S_IFREG
+                && stat_identity(&stat) == identity =>
+        {
+            if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                return Err(io_error(operation, path, std::io::Error::last_os_error()));
+            }
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(operation, path, error)),
+    }
+}
+
+/// Create a genuinely absent target after an owner hand, without a placeholder
+/// or a replace-capable rename. The staged file and final entry share a parent.
+pub(crate) fn create_absent(
+    request: AbsentCreationRequest<'_>,
+) -> Result<AbsentCreationReceipt, String> {
+    let AbsentCreationRequest {
+        target,
+        desired_bytes,
+        mode,
+        uid,
+        gid,
+        witness,
+    } = request;
+    let _witness = witness;
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| format!("projectio-target-parent-missing {}", target.display()))?;
+    let target_name = target
+        .file_name()
+        .ok_or_else(|| format!("projectio-target-name-missing {}", target.display()))?;
+    let target_name = std::ffi::CString::new(target_name.as_encoded_bytes())
+        .map_err(|error| format!("projectio-target-name-invalid {}: {error}", target.display()))?;
+
+    match fs::symlink_metadata(target) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => return Err(format!("projectio-absent-target-already-exists {}", target.display())),
+        Err(error) => return Err(io_error("absent-target-stat", target, error)),
+    }
+    let parent_metadata = fs::symlink_metadata(parent)
+        .map_err(|error| io_error("absent-parent-stat", parent, error))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+        return Err(format!("projectio-absent-parent-not-directory {}", parent.display()));
+    }
+    let mut directory_options = OpenOptions::new();
+    directory_options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let directory = directory_options
+        .open(parent)
+        .map_err(|error| io_error("absent-parent-open", parent, error))?;
+    let opened_parent = directory
+        .metadata()
+        .map_err(|error| io_error("absent-parent-fstat", parent, error))?;
+    if !opened_parent.is_dir() || file_identity(&opened_parent) != file_identity(&parent_metadata) {
+        return Err(format!("projectio-absent-parent-changed {}", parent.display()));
+    }
+    match stat_at_nofollow(&directory, &target_name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => return Err(format!("projectio-absent-target-already-exists {}", target.display())),
+        Err(error) => return Err(io_error("absent-target-stat-at", target, error)),
+    }
+
+    let (mut staged, staged_path, staged_name) = create_temp_at(&directory, parent)?;
+    let staged_identity = staged
+        .metadata()
+        .map(|metadata| file_identity(&metadata))
+        .map_err(|error| io_error("absent-temp-stat", &staged_path, error))?;
+    let mut promoted = false;
+    let result = (|| {
+        staged
+            .write_all(desired_bytes)
+            .map_err(|error| io_error("absent-temp-write", &staged_path, error))?;
+        if unsafe { libc::fchown(staged.as_raw_fd(), uid as libc::uid_t, gid as libc::gid_t) } != 0 {
+            return Err(io_error(
+                "absent-temp-chown",
+                &staged_path,
+                std::io::Error::last_os_error(),
+            ));
+        }
+        if unsafe { libc::fchmod(staged.as_raw_fd(), mode as libc::mode_t) } != 0 {
+            return Err(io_error(
+                "absent-temp-chmod",
+                &staged_path,
+                std::io::Error::last_os_error(),
+            ));
+        }
+        staged
+            .sync_all()
+            .map_err(|error| io_error("absent-temp-sync", &staged_path, error))?;
+        let staged_metadata = staged
+            .metadata()
+            .map_err(|error| io_error("absent-temp-fstat", &staged_path, error))?;
+        if !staged_metadata.is_file()
+            || file_identity(&staged_metadata) != staged_identity
+            || staged_metadata.mode() & 0o7777 != mode & 0o7777
+            || staged_metadata.uid() != uid
+            || staged_metadata.gid() != gid
+        {
+            return Err(format!("projectio-absent-temp-metadata-mismatch {}", staged_path.display()));
+        }
+        drop(staged);
+        let staged_path_stat = stat_at_nofollow(&directory, &staged_name)
+            .map_err(|error| io_error("absent-temp-path-stat", &staged_path, error))?;
+        if staged_path_stat.st_mode & libc::S_IFMT != libc::S_IFREG
+            || stat_identity(&staged_path_stat) != staged_identity
+        {
+            return Err(format!("projectio-absent-temp-path-changed {}", staged_path.display()));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let promoted_result = unsafe {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    directory.as_raw_fd(),
+                    staged_name.as_ptr(),
+                    directory.as_raw_fd(),
+                    target_name.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            };
+            if promoted_result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    return Err(format!("projectio-absent-target-already-exists {}", target.display()));
+                }
+                return Err(io_error("absent-promote-noreplace", target, error));
+            }
+            promoted = true;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err("projectio-absent-noreplace-unsupported".into());
+        }
+
+        directory
+            .sync_all()
+            .map_err(|error| io_error("absent-parent-sync", parent, error))?;
+        let target_fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                target_name.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
+        if target_fd < 0 {
+            return Err(io_error("absent-readback-open", target, std::io::Error::last_os_error()));
+        }
+        let mut readback_file = unsafe { File::from_raw_fd(target_fd) };
+        let readback_metadata = readback_file
+            .metadata()
+            .map_err(|error| io_error("absent-readback-fstat", target, error))?;
+        if !readback_metadata.is_file() || file_identity(&readback_metadata) != staged_identity {
+            return Err(format!("projectio-absent-readback-identity-mismatch {}", target.display()));
+        }
+        let mut readback = Vec::new();
+        readback_file
+            .read_to_end(&mut readback)
+            .map_err(|error| io_error("absent-readback-read", target, error))?;
+        let after_read = readback_file
+            .metadata()
+            .map_err(|error| io_error("absent-readback-fstat", target, error))?;
+        if readback != desired_bytes {
+            return Err(format!("projectio-absent-readback-mismatch {}", target.display()));
+        }
+        if after_read.mode() & 0o7777 != mode & 0o7777
+            || after_read.uid() != uid
+            || after_read.gid() != gid
+            || file_identity(&after_read) != staged_identity
+        {
+            return Err(format!("projectio-absent-readback-metadata-mismatch {}", target.display()));
+        }
+        let path_stat = stat_at_nofollow(&directory, &target_name)
+            .map_err(|error| io_error("absent-readback-stat", target, error))?;
+        if path_stat.st_mode & libc::S_IFMT != libc::S_IFREG
+            || stat_identity(&path_stat) != staged_identity
+        {
+            return Err(format!("projectio-absent-readback-path-changed {}", target.display()));
+        }
+        let readback_sha256 = sha256(&readback);
+        Ok(AbsentCreationReceipt {
+            struck_sha256: sha256(desired_bytes),
+            backup_path: None,
+            before_sha256: None,
+            target_sha256: readback_sha256.clone(),
+            readback_sha256,
+            mode,
+            uid,
+            gid,
+        })
+    })();
+
+    match result {
+        Ok(receipt) => Ok(receipt),
+        Err(error) => {
+            let mut cleanup_failures = Vec::new();
+            if promoted {
+                if let Err(cleanup) = unlink_owned_staged_file(
+                    &directory,
+                    &target_name,
+                    staged_identity,
+                    target,
+                    "absent-created-target-cleanup",
+                ) {
+                    cleanup_failures.push(cleanup);
+                }
+            }
+            if let Err(cleanup) = unlink_owned_staged_file(
+                &directory,
+                &staged_name,
+                staged_identity,
+                &staged_path,
+                "absent-temp-cleanup",
+            ) {
+                cleanup_failures.push(cleanup);
+            }
+            if (!cleanup_failures.is_empty() || promoted)
+                && directory.sync_all().is_err()
+            {
+                cleanup_failures.push(io_error(
+                    "absent-cleanup-parent-sync",
+                    parent,
+                    std::io::Error::last_os_error(),
+                ));
+            }
+            if cleanup_failures.is_empty() {
+                Err(error)
+            } else {
+                Err(format!("{error}; {}", cleanup_failures.join("; ")))
+            }
+        }
+    }
 }
 
 fn remove_engine_state_backup(path: &Path) -> Result<(), String> {
