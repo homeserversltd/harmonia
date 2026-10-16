@@ -15,6 +15,8 @@ const HOUSEHOLD_TRUST_RENEW_RECEIPT: &str =
     "harmonia.interactables.household_trust_renew.receipt.v1";
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
+pub(crate) mod homeserver_clock_utc;
+
 pub(crate) fn is_ruyi_born_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -427,11 +429,12 @@ pub(crate) fn interactable_command(
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
         Some("inspect") => interactable_inspect(&args[1..]),
+        Some("reconcile") => homeserver_clock_utc::reconcile_from_certificate(&args[1..]),
         Some("silence") => interactable_set_silenced(&args[1..], true),
         Some("unsilence") => interactable_set_silenced(&args[1..], false),
         Some("run") | Some("accept") | Some("swap") => interactable_run(&args[1..], invocation),
         _ => Err(
-            "interactable requires list [--json] [--silenced], inspect <id> [--json], run <id>, silence <id>, or unsilence <id>".to_string(),
+            "interactable requires list [--json] [--silenced], inspect <id> [--json], reconcile, run <id>, silence <id>, or unsilence <id>".to_string(),
         ),
     }
 }
@@ -558,6 +561,9 @@ fn interactable_run(
         .position(|item| item.id == args[0])
         .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
     let item = feed.interactables[position].clone();
+    if item.id == homeserver_clock_utc::INTERACTABLE_ID {
+        return homeserver_clock_utc::run(&path, &item, invocation);
+    }
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),
         "household-trust-renew" => return run_household_trust_renew(&path, &item),
