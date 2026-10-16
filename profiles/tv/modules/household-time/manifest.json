@@ -4,7 +4,7 @@
   "title": "Accurate clock",
   "summary": "Keeps the household's time setting and device clock synchronized.",
   "category": "known-good",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "optional": false,
   "description": "Household time watched consumer: applies only a fresh valid resolver fact and proves NTP through systemd.",
   "caduceus_commands": [
@@ -29,6 +29,16 @@
       "tool": "files",
       "permutation": "managed-files",
       "args": {},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "household-time-enable-timesyncd",
+      "tool": "systemd",
+      "permutation": "enable-now",
+      "args": {
+        "service": "systemd-timesyncd.service",
+        "timeout_secs": 15
+      },
       "on_failure": "stop"
     },
     {
