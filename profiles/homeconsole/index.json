@@ -22,6 +22,7 @@
     "keyman-runtime",
     "rust-build-toolchain",
     "arcadia-gui-runtime",
+    "console-session",
     "local-ai-runtime",
     "homeconsole-update-runtime",
     "household-time",

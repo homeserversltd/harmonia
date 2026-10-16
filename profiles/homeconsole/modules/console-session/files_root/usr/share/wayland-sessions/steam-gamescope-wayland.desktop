@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Steam Gaming Mode
+Comment=Steam Big Picture/Gamepad UI through Gamescope
+Exec=/usr/local/sbin/agathodaimon/cli.py console session
+Type=Application
+DesktopNames=gamescope-steam

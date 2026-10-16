@@ -1,0 +1,62 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "console-session",
+  "title": "Console session",
+  "summary": "Maintains the Steam Gaming Mode session and the packaged SDDM display setup.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Converges the exact HomeConsole Steam Gamescope session descriptor and Ubuntu-packaged SDDM Xsetup bytes, then retires the obsolete steam-gamescope-session launcher.",
+  "optional": false,
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "steam-gamescope-session-desktop-entry",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "usr/share/wayland-sessions/steam-gamescope-wayland.desktop"
+        ],
+        "mode": 420,
+        "backup_existing": false,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "console-session-desktop-entry"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sddm-xsetup-vendor-package-bytes",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "usr/share/sddm/scripts/Xsetup"
+        ],
+        "mode": 493,
+        "backup_existing": false,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "console-session-sddm-xsetup"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "retire-steam-gamescope-session-launcher",
+      "tool": "files",
+      "permutation": "remove",
+      "args": {
+        "target_root": "/usr/local/bin",
+        "paths": [
+          "steam-gamescope-session"
+        ]
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
