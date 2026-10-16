@@ -133,7 +133,7 @@ pub(crate) fn validate_command_precondition(
     if shell_command(program, &argv) || inline_payload(program, &argv) {
         return Err(LadderValidationError { step_id: step_id.into(), defect: "command-shell-string-refused".into() });
     }
-    if permutation == "act" {
+    if matches!(permutation, "act" | "propose") {
         let Some(observation) = args.get("observation").and_then(Value::as_object) else {
             return Err(LadderValidationError { step_id: step_id.into(), defect: "command-act-observation-missing".into() });
         };
@@ -143,6 +143,9 @@ pub(crate) fn validate_command_precondition(
             return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-must-select-one-kind".into() });
         }
         if module_signal {
+            if permutation == "propose" {
+                return Err(LadderValidationError { step_id: step_id.into(), defect: "command-proposal-module-signal-unsupported".into() });
+            }
             if observation.len() != 1 { return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-invalid-module-signal".into() }); }
         } else {
             if let Some(value) = observation.get("bearer") {
@@ -165,12 +168,26 @@ pub(crate) fn validate_command_precondition(
             if observe_program.trim().is_empty() {
                 return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-program-empty".into() });
             }
-            let allowed = ["program", "args", "cwd", "expected_exit_code", "expected_stdout", "bearer"];
+            let allowed = ["program", "args", "cwd", "expected_exit_code", "expected_stdout", "bearer", "preimage"];
+            let preimage_valid = observation.get("preimage").is_none_or(|value| {
+                permutation == "act"
+                    && value.as_object().is_some_and(|preimage| {
+                        preimage.len() == 2
+                            && preimage.get("exit_code").and_then(Value::as_i64).is_some()
+                            && preimage.get("stdout_sha256").and_then(Value::as_str).is_some_and(|digest| {
+                                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                            })
+                    })
+            });
             if observation.keys().any(|key| !allowed.contains(&key.as_str()))
                 || observation.get("args").is_some_and(|value| !value.as_array().is_some_and(|items| items.iter().all(Value::is_string)))
                 || observation.get("cwd").is_some_and(|value| !value.is_string())
                 || observation.get("expected_stdout").is_some_and(|value| !value.is_string())
                 || observation.get("expected_exit_code").and_then(Value::as_i64).is_none()
+                || !preimage_valid
+                || (permutation == "propose"
+                    && (observation.get("expected_exit_code").and_then(Value::as_i64) != Some(0)
+                        || !observation.get("expected_stdout").is_some_and(Value::is_string)))
             {
                 return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-invalid-field-or-type".into() });
             }
@@ -680,7 +697,7 @@ pub(crate) fn execute_validated_step_with_source(
             )
         }
         ("ask", "path-exists") => tools::ask::execute_validated_step(step, module_dir),
-        ("command", "capture") | ("command", "act") => {
+        ("command", "capture") | ("command", "act") | ("command", "propose") => {
             tools::command::execute_validated_step(
                 step,
                 module_dir,

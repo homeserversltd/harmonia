@@ -5,6 +5,7 @@
   "summary": "Keeps the owner's command shortcuts and sign-in preferences consistent.",
   "category": "interactable",
   "version": "1.0.0",
+  "login_shell": "/usr/bin/zsh",
   "description": "Shared Harmonia dot-files compiled from ordered appliance fragments.",
   "optional": false,
   "config_deploy": "interactable",
@@ -62,6 +63,101 @@
         "source_root": "files_root/zshrc",
         "target_path": "/home/owner/.zshrc",
         "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-aliases",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/aliases",
+        "target_path": "/home/owner/.aliases",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-bashrc",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/bashrc",
+        "target_path": "/home/owner/.bashrc",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-bash-preexec",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/bash-preexec",
+        "target_path": "/home/owner/.bash-preexec.sh",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-enhanced-less-config",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/enhanced-less-config",
+        "target_path": "/home/owner/.enhanced_less_config",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-gitconfig",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/gitconfig",
+        "target_path": "/home/owner/.gitconfig",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-lesskey",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/lesskey",
+        "target_path": "/home/owner/.lesskey",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-tmux",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/tmux",
+        "target_path": "/home/owner/.tmux.conf",
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "observe-login-shell",
+      "tool": "command",
+      "permutation": "propose",
+      "args": {
+        "program": "/usr/bin/chsh",
+        "args": ["-s", "$constants.login_shell", "owner"],
+        "timeout_secs": 15,
+        "observation": {
+          "program": "/usr/bin/python3",
+          "args": ["${module_dir}/files_root/helpers/owner-login-shell.py"],
+          "expected_exit_code": 0,
+          "expected_stdout": "$constants.login_shell",
+          "bearer": "owner"
+        }
       },
       "on_failure": "stop"
     }

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -163,6 +164,168 @@ fn feed_path() -> PathBuf {
     env::var_os("HARMONIA_INTERACTABLES_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FEED_PATH))
+}
+
+pub(crate) fn feed_path_for_command() -> PathBuf {
+    feed_path()
+}
+
+pub(crate) fn retire_command_proposal(module_id: &str, step_id: &str) -> Result<(), String> {
+    let path = feed_path();
+    let feed = load_feed(&path)?;
+    let remove_ids = feed
+        .interactables
+        .iter()
+        .filter(|item| item.module_id == module_id)
+        .filter(|item| {
+            item.extra
+                .get("command_proposal")
+                .and_then(|value| value.get("step_id"))
+                .and_then(Value::as_str)
+                == Some(step_id)
+        })
+        .map(|item| item.id.clone())
+        .collect::<BTreeSet<_>>();
+    if remove_ids.is_empty() {
+        return Ok(());
+    }
+    crate::bands::propose_edits::persist_feed_with_intent(
+        &path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
+            entries: Vec::new(),
+            remove_ids,
+            sort_by_id: true,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn refresh_command_proposal(
+    path: &Path,
+    manifest_path: &Path,
+    module_id: &str,
+    step_id: &str,
+    arguments: &BTreeMap<String, Value>,
+    observed_exit_code: i32,
+    observed_stdout: &str,
+    desired_stdout: &str,
+) -> Result<Option<String>, String> {
+    let manifest_metadata = fs::metadata(manifest_path).map_err(|error| {
+        format!("command-proposal-manifest-stat-failed {}: {error}", manifest_path.display())
+    })?;
+    if manifest_metadata.len() > 256 * 1024 {
+        return Err("command-proposal-manifest-too-large".to_string());
+    }
+    let manifest_bytes = fs::read(manifest_path).map_err(|error| {
+        format!("command-proposal-manifest-read-failed {}: {error}", manifest_path.display())
+    })?;
+    let manifest_sha = format!("{:x}", Sha256::digest(&manifest_bytes));
+    let observed_sha = format!("{:x}", Sha256::digest(observed_stdout.as_bytes()));
+    let desired_sha = format!("{:x}", Sha256::digest(desired_stdout.as_bytes()));
+    let id_material = format!("{module_id}\0{step_id}\0{}", manifest_path.display());
+    let id = format!("config-proposal-{:x}", Sha256::digest(id_material.as_bytes()));
+    let mut feed = load_feed(path)?;
+    let matching_ids = feed
+        .interactables
+        .iter()
+        .filter(|item| item.module_id == module_id)
+        .filter(|item| {
+            item.extra
+                .get("command_proposal")
+                .and_then(|value| value.get("step_id"))
+                .and_then(Value::as_str)
+                == Some(step_id)
+        })
+        .map(|item| item.id.clone())
+        .collect::<BTreeSet<_>>();
+    let drift = observed_exit_code != 0 || observed_stdout != desired_stdout;
+    if !drift {
+        if matching_ids.is_empty() {
+            return Ok(None);
+        }
+        crate::bands::propose_edits::persist_feed_with_intent(
+            path,
+            crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
+                entries: Vec::new(),
+                remove_ids: matching_ids,
+                sort_by_id: true,
+            },
+        )?;
+        return Ok(None);
+    }
+    let payload = serde_json::json!({
+        "step_id": step_id,
+        "manifest_sha256": manifest_sha,
+        "arguments": arguments,
+        "preimage": {
+            "exit_code": observed_exit_code,
+            "stdout_sha256": observed_sha
+        },
+        "desired": {
+            "exit_code": 0,
+            "stdout_sha256": desired_sha
+        }
+    });
+    let prior = feed.interactables.iter().find(|item| item.id == id).cloned();
+    if prior.as_ref().is_some_and(|item| {
+        item.reference_sha.as_deref() == Some(manifest_sha.as_str())
+            && item.extra.get("command_proposal") == Some(&payload)
+    }) {
+        return Ok(Some(id));
+    }
+    let now = crate::bands::propose_edits::iso8601_now();
+    let mut extra = prior
+        .as_ref()
+        .map(|item| item.extra.clone())
+        .unwrap_or_default();
+    extra.insert("command_proposal".to_string(), payload);
+    let item = Interactable {
+        id: id.clone(),
+        module_id: module_id.to_string(),
+        name: format!("{module_id}: {step_id}"),
+        description: "An observed command differs from its declared desired state; accept explicitly to act.".to_string(),
+        kind: "hard-stamp".to_string(),
+        target_path: None,
+        reference_source_path: Some(manifest_path.to_path_buf()),
+        drift: DriftSummary {
+            content: true,
+            mode: false,
+            ownership: false,
+        },
+        created_at: prior.as_ref().map(|item| item.created_at.clone()).unwrap_or_else(|| now.clone()),
+        refreshed_at: now.clone(),
+        available_at: prior.as_ref().and_then(|item| item.available_at.clone()).or_else(|| Some(now.clone())),
+        silenced: prior.as_ref().is_some_and(|item| item.silenced),
+        silenced_at: prior.as_ref().and_then(|item| item.silenced_at.clone()),
+        has_run: false,
+        mode: None,
+        owner: None,
+        group: None,
+        source_sha: None,
+        target_sha: None,
+        commits_behind: None,
+        live_sha: Some(observed_sha),
+        reference_sha: Some(manifest_sha),
+        recognition_score: None,
+        diff: Some(format!("observed exit={} stdout={:?}; desired exit=0 stdout={:?}", observed_exit_code, observed_stdout, desired_stdout)),
+        script: format!("harmonia interactable accept {id}"),
+        show_only_if: "command_state=drift".to_string(),
+        completion_check: format!("sha256:{desired_sha}"),
+        evidence: Value::Null,
+        extra,
+    };
+    crate::bands::propose_edits::persist_feed_with_intent(
+        path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
+            entries: vec![item],
+            remove_ids: matching_ids
+                .into_iter()
+                .filter(|candidate| candidate != &id)
+                .collect(),
+            sort_by_id: true,
+        },
+    )?;
+    Ok(Some(id))
 }
 
 pub(crate) fn make_feed(interactables: Vec<Interactable>) -> InteractablesFeed {
@@ -412,6 +575,9 @@ fn interactable_run(
         "hard-stamp" => {}
         _ => return Err(format!("interactable-kind-unsupported {}", item.kind)),
     }
+    if item.extra.contains_key("command_proposal") {
+        return run_command_proposal(&path, &item, invocation);
+    }
     let backup_root = path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -522,6 +688,190 @@ fn interactable_run(
         "{}",
         serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
     );
+    Ok(())
+}
+
+fn run_command_proposal(
+    path: &Path,
+    item: &Interactable,
+    invocation: Option<&crate::Invocation>,
+) -> Result<(), String> {
+    let payload = item
+        .extra
+        .get("command_proposal")
+        .and_then(Value::as_object)
+        .ok_or("command-proposal-payload-missing")?;
+    let step_id = payload
+        .get("step_id")
+        .and_then(Value::as_str)
+        .ok_or("command-proposal-step-binding-missing")?;
+    let manifest_path = item
+        .reference_source_path
+        .as_deref()
+        .ok_or("command-proposal-manifest-binding-missing")?;
+    if !manifest_path.is_absolute()
+        || manifest_path.file_name().and_then(|name| name.to_str()) != Some("manifest.json")
+        || manifest_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some(item.module_id.as_str())
+    {
+        return Err("command-proposal-manifest-binding-invalid".to_string());
+    }
+    let metadata = fs::symlink_metadata(manifest_path).map_err(|error| {
+        format!("command-proposal-manifest-stat-failed {}: {error}", manifest_path.display())
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() > 256 * 1024 {
+        return Err("command-proposal-manifest-not-regular-or-too-large".to_string());
+    }
+    let manifest_bytes = fs::read(manifest_path).map_err(|error| {
+        format!("command-proposal-manifest-read-failed {}: {error}", manifest_path.display())
+    })?;
+    let manifest_sha = format!("{:x}", Sha256::digest(&manifest_bytes));
+    if payload.get("manifest_sha256").and_then(Value::as_str) != Some(manifest_sha.as_str())
+        || item.reference_sha.as_deref() != Some(manifest_sha.as_str())
+    {
+        return Err("command-proposal-manifest-digest-stale".to_string());
+    }
+    let id_material = format!("{}\0{step_id}\0{}", item.module_id, manifest_path.display());
+    let expected_id = format!("config-proposal-{:x}", Sha256::digest(id_material.as_bytes()));
+    if item.id != expected_id {
+        return Err("command-proposal-id-binding-invalid".to_string());
+    }
+    let manifest = crate::tools::ladder::load_ladder_manifest(manifest_path)?;
+    if manifest.id != item.module_id {
+        return Err("command-proposal-module-binding-stale".to_string());
+    }
+    let step = manifest
+        .ladder
+        .iter()
+        .find(|step| step.step_id == step_id)
+        .ok_or("command-proposal-step-binding-stale")?;
+    if step.tool != "command" || step.permutation != "propose" {
+        return Err("command-proposal-step-permutation-stale".to_string());
+    }
+    let resolved_args = crate::tools::routine::resolve_args(&step.args, &manifest.constants)?;
+    let stored_args = payload
+        .get("arguments")
+        .ok_or("command-proposal-arguments-missing")?;
+    if serde_json::to_value(&resolved_args).map_err(|error| error.to_string())? != *stored_args {
+        return Err("command-proposal-arguments-stale".to_string());
+    }
+    let contract = crate::tools::get("command").ok_or("command-proposal-command-tool-unavailable")?;
+    let propose = contract
+        .permutation("propose")
+        .ok_or("command-proposal-permutation-unavailable")?;
+    crate::tools::routine::validate_args(step_id, propose, &resolved_args)
+        .map_err(|error| format!("command-proposal-manifest-invalid {}", error.defect))?;
+    crate::tools::routine::validate_command_precondition(step_id, "command", "propose", &resolved_args)
+        .map_err(|error| format!("command-proposal-manifest-invalid {}", error.defect))?;
+    let observation = resolved_args
+        .get("observation")
+        .and_then(Value::as_object)
+        .ok_or("command-proposal-observation-binding-missing")?;
+    let expected_stdout = observation
+        .get("expected_stdout")
+        .and_then(Value::as_str)
+        .ok_or("command-proposal-desired-state-missing")?;
+    if observation.get("expected_exit_code").and_then(Value::as_i64) != Some(0) {
+        return Err("command-proposal-desired-exit-code-invalid".to_string());
+    }
+    let desired_sha = format!("{:x}", Sha256::digest(expected_stdout.as_bytes()));
+    let desired = payload
+        .get("desired")
+        .ok_or("command-proposal-desired-binding-missing")?;
+    if desired.get("exit_code").and_then(Value::as_i64) != Some(0)
+        || desired.get("stdout_sha256").and_then(Value::as_str) != Some(desired_sha.as_str())
+    {
+        return Err("command-proposal-desired-binding-stale".to_string());
+    }
+    let preimage = payload
+        .get("preimage")
+        .and_then(Value::as_object)
+        .ok_or("command-proposal-preimage-missing")?;
+    let preimage_exit = preimage
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .ok_or("command-proposal-preimage-exit-code-missing")?;
+    let preimage_sha = preimage
+        .get("stdout_sha256")
+        .and_then(Value::as_str)
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or("command-proposal-preimage-digest-invalid")?;
+    if item.live_sha.as_deref() != Some(preimage_sha) {
+        return Err("command-proposal-preimage-binding-stale".to_string());
+    }
+    let mut args = resolved_args;
+    let mut observation = args
+        .get("observation")
+        .cloned()
+        .and_then(|value| value.as_object().cloned())
+        .ok_or("command-proposal-observation-binding-missing")?;
+    observation.insert("preimage".to_string(), Value::Object(preimage.clone()));
+    args.insert("observation".to_string(), Value::Object(observation));
+    let act = contract
+        .permutation("act")
+        .ok_or("command-proposal-act-permutation-unavailable")?;
+    crate::tools::routine::validate_args(step_id, act, &args)
+        .map_err(|error| format!("command-proposal-act-invalid {}", error.defect))?;
+    crate::tools::routine::validate_command_precondition(step_id, "command", "act", &args)
+        .map_err(|error| format!("command-proposal-act-invalid {}", error.defect))?;
+    let current_bytes = fs::read(manifest_path).map_err(|error| {
+        format!("command-proposal-manifest-reread-failed {}: {error}", manifest_path.display())
+    })?;
+    if format!("{:x}", Sha256::digest(&current_bytes)) != manifest_sha {
+        return Err("command-proposal-manifest-changed-before-act".to_string());
+    }
+    let invocation_key = invocation
+        .and_then(crate::Invocation::key)
+        .ok_or("command-proposal-owner-acceptance-required")?;
+    let validated = crate::tools::routine::ValidatedStep {
+        step_id: step.step_id.clone(),
+        tool: "command".to_string(),
+        permutation: "act".to_string(),
+        args,
+        on_failure: step.on_failure.clone(),
+    };
+    let outcome = crate::atoms::command::execute_validated_step_without_receipt_files(
+        &validated,
+        &manifest.base_dir,
+        Some(invocation_key),
+    )?;
+    if !outcome.ok {
+        let signal = outcome
+            .command
+            .as_ref()
+            .map(|result| result.stderr.as_str())
+            .filter(|signal| !signal.is_empty())
+            .unwrap_or(outcome.message.as_str());
+        return Err(format!("command-proposal-act-refused: {signal}"));
+    }
+    let receipt = serde_json::json!({
+        "schema": "harmonia.interactables.hard_stamp.receipt.v1",
+        "ok": true,
+        "id": item.id,
+        "kind": "hard-stamp",
+        "command_proposal": {
+            "step_id": step_id,
+            "manifest_sha256": manifest_sha,
+            "accepted": true,
+            "changed": outcome.changed,
+            "converged": true,
+            "preimage_exit_code": preimage_exit,
+            "preimage_stdout_sha256": preimage_sha,
+            "desired_stdout_sha256": desired_sha,
+            "command_exit_code": outcome.command.as_ref().map(|result| result.code)
+        }
+    });
+    crate::bands::propose_edits::persist_feed_with_intent(
+        path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Remove {
+            ids: [item.id.clone()].into_iter().collect(),
+            receipts: Vec::new(),
+        },
+    )?;
+    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
     Ok(())
 }
 

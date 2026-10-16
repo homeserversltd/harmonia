@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use sha2::{Digest, Sha256};
 
 const NAME: &str = "command";
 pub const DEFAULT_TIMEOUT_SECS: u64 = 900;
@@ -16,6 +17,7 @@ const DEFAULT_SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr
 
 const TERMINATION_GRACE_SECS: u64 = 3;
 const RECEIPT_OUTPUT_LIMIT: usize = 16 * 1024;
+const PROPOSAL_OBSERVATION_LIMIT: usize = 1024;
 
 pub(crate) struct BoundedOutput {
     pub(crate) text: String,
@@ -287,7 +289,7 @@ pub(crate) fn authorized_capture(
     args: &[String],
     cwd: Option<&str>,
     timeout: Duration,
-    attest_log: &Path,
+    attest_log: Option<&Path>,
     bearer: Option<&CommandBearer>,
 ) -> Result<crate::atoms::CommandObservation, String> {
     crate::atoms::r#do::run_command::command_with_timeout_attested(
@@ -1186,6 +1188,140 @@ fn redact(text: &str, redactions: &BTreeSet<String>) -> String {
     })
 }
 
+fn execute_command_proposal(
+    step: &crate::tools::ladder::ValidatedStep,
+    module_dir: &Path,
+    source_module_dir: &Path,
+    timeout: u64,
+    requested_lane: Option<&str>,
+    active_lane: Option<&str>,
+    step_bearer: &CommandBearer,
+) -> Result<crate::OperationOutcome, String> {
+    let observation = step
+        .args
+        .get("observation")
+        .ok_or("command-proposal-observation-missing")?;
+    let observe_program = observation
+        .get("program")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("command-proposal-observation-program-missing")?;
+    let observe_program = expand_module_dir(observe_program, source_module_dir);
+    let observe_args = observation
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(|value| expand_module_dir(value, source_module_dir))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let observe_cwd = observation
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| expand_module_dir(value, source_module_dir));
+    let expected_code = observation
+        .get("expected_exit_code")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or("command-proposal-observation-exit-code-missing")? as i32;
+    let expected_stdout = observation
+        .get("expected_stdout")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("command-proposal-observation-expected-stdout-missing")?;
+    let observation_bearer = observation
+        .get("bearer")
+        .and_then(serde_json::Value::as_str)
+        .map(|name| resolve_command_bearer(Some(name)))
+        .unwrap_or_else(|| step_bearer.clone());
+    let bearer_actual = observation_bearer.actual().to_string();
+    let mut probe = if let Some(failure) = observation_bearer.failure.as_ref() {
+        crate::CmdResult {
+            ok: false,
+            code: -1,
+            stdout: String::new(),
+            stderr: format!("command-proposal-observation-bearer-unavailable: {failure}"),
+        }
+    } else {
+        capture_with_options(
+            &observe_program,
+            &observe_args.iter().map(String::as_str).collect::<Vec<_>>(),
+            CaptureOptions::new()
+                .cwd(observe_cwd.as_deref())
+                .timeout_secs(timeout)
+                .output_limit(PROPOSAL_OBSERVATION_LIMIT)
+                .command_bearer(&observation_bearer),
+        )
+    };
+    let output_truncated = probe
+        .stdout
+        .contains(&format!("[output truncated after first {PROPOSAL_OBSERVATION_LIMIT} bytes]"));
+    if output_truncated {
+        probe.ok = false;
+        probe.stderr = "command-proposal-observation-output-truncated".to_string();
+    }
+    let module_id = source_module_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("command-proposal-module-id-unavailable")?;
+    let observation_ok = probe.ok
+        && probe.code == expected_code
+        && !output_truncated;
+    if !observation_ok {
+        crate::interactables::retire_command_proposal(
+            module_id,
+            &step.step_id,
+        )?;
+    } else {
+        crate::interactables::refresh_command_proposal(
+            &crate::interactables::feed_path_for_command(),
+            &source_module_dir.join("manifest.json"),
+            module_id,
+            &step.step_id,
+            &step.args,
+            probe.code,
+            &probe.stdout,
+            expected_stdout,
+        )?;
+    }
+    crate::receipts::write_command_receipt_with_policy_and_bearer(
+        module_dir,
+        &step.step_id,
+        &observe_program,
+        &observe_args,
+        observe_cwd.as_deref(),
+        &probe,
+        false,
+        requested_lane,
+        active_lane,
+        observation_bearer.failure.is_none(),
+        false,
+        &bearer_actual,
+    )?;
+    let signal = if output_truncated {
+        Some("command-proposal-observation-output-truncated".to_string())
+    } else if probe.code != expected_code {
+        Some(format!("command-proposal-observation-failed exit_code={}", probe.code))
+    } else if !probe.ok {
+        Some(format!("command-proposal-observation-failed {}", probe.stderr))
+    } else {
+        None
+    };
+    Ok(crate::OperationOutcome {
+        ok: signal.is_none(),
+        changed: false,
+        skipped: false,
+        message: signal.unwrap_or_else(|| {
+            if probe.stdout == expected_stdout {
+                "command proposal current".to_string()
+            } else {
+                "command proposal offered".to_string()
+            }
+        }),
+        command: Some(probe),
+    })
+}
+
 pub(crate) fn execute_validated_step(
     step: &crate::tools::ladder::ValidatedStep,
     module_dir: &std::path::Path,
@@ -1194,6 +1330,45 @@ pub(crate) fn execute_validated_step(
     active_lane: Option<&str>,
     module_changed_before_step: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<crate::OperationOutcome, String> {
+    execute_validated_step_inner(
+        step,
+        module_dir,
+        source_module_dir,
+        apply,
+        active_lane,
+        module_changed_before_step,
+        invocation,
+        true,
+    )
+}
+
+pub(crate) fn execute_validated_step_without_receipt_files(
+    step: &crate::tools::ladder::ValidatedStep,
+    source_module_dir: &std::path::Path,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<crate::OperationOutcome, String> {
+    execute_validated_step_inner(
+        step,
+        Path::new("."),
+        source_module_dir,
+        true,
+        None,
+        false,
+        invocation,
+        false,
+    )
+}
+
+fn execute_validated_step_inner(
+    step: &crate::tools::ladder::ValidatedStep,
+    module_dir: &std::path::Path,
+    source_module_dir: &std::path::Path,
+    apply: bool,
+    active_lane: Option<&str>,
+    module_changed_before_step: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    persist_receipt_files: bool,
 ) -> Result<crate::OperationOutcome, String> {
     let program = step.args.get("program").and_then(serde_json::Value::as_str).unwrap_or("");
     let argv: Vec<String> = step.args.get("args").and_then(serde_json::Value::as_array)
@@ -1208,6 +1383,17 @@ pub(crate) fn execute_validated_step(
     let bearer_resolved = step_bearer.failure.is_none();
     let program = expand_module_dir(program, source_module_dir);
     let argv = argv.iter().map(|value| expand_module_dir(value, source_module_dir)).collect::<Vec<_>>();
+    if step.permutation == "propose" {
+        return execute_command_proposal(
+            step,
+            module_dir,
+            source_module_dir,
+            timeout,
+            requested_lane,
+            active_lane,
+            &step_bearer,
+        );
+    }
     let is_act = step.permutation == "act";
     let mut decision = "not-applicable";
     let mut observed_state = serde_json::Value::Null;
@@ -1252,9 +1438,22 @@ pub(crate) fn execute_validated_step(
         };
         observed_state = serde_json::json!({"program":observation_program,"args":observation_args,"exit_code":probe.code,"stdout":probe.stdout,"stderr":probe.stderr});
         desired_state = serde_json::json!({"exit_code":expected_code,"stdout":expected_stdout});
-        if probe.code < 0 { observation_failure = Some(format!("command-act-observation-failed: {}", probe.stderr)); }
-        probe.code >= 0 && probe.code == expected_code
-            && expected_stdout.map_or(true, |expected| probe.stdout == expected)
+        let desired_matches = probe.code >= 0
+            && probe.code == expected_code
+            && expected_stdout.map_or(true, |expected| probe.stdout == expected);
+        if probe.code < 0 {
+            observation_failure = Some(format!("command-act-observation-failed: {}", probe.stderr));
+        } else if let Some(preimage) = observation.get("preimage") {
+            let preimage_code = preimage.get("exit_code").and_then(serde_json::Value::as_i64);
+            let preimage_stdout_sha = preimage.get("stdout_sha256").and_then(serde_json::Value::as_str);
+            let observed_stdout_sha = format!("{:x}", Sha256::digest(probe.stdout.as_bytes()));
+            let preimage_matches = preimage_code == Some(probe.code as i64)
+                && preimage_stdout_sha == Some(observed_stdout_sha.as_str());
+            if !preimage_matches {
+                observation_failure = Some("command-act-preimage-stale".to_string());
+            }
+        }
+        desired_matches
         };
         decision = if observation_failure.is_some() {
             "Blocked"
@@ -1264,6 +1463,7 @@ pub(crate) fn execute_validated_step(
             "Different"
         };
         let do_apply = apply && lane_matches;
+        let attest_log = persist_receipt_files.then(|| module_dir.join("harmonia-atoms.log"));
         if let Some(failure) = observation_failure {
             (Some(crate::CmdResult {ok:false, code:-1, stdout:String::new(), stderr:failure}), false)
         } else if do_apply {
@@ -1280,7 +1480,7 @@ pub(crate) fn execute_validated_step(
                         &argv,
                         cwd.as_deref(),
                         Duration::from_secs(timeout),
-                        &module_dir.join("harmonia-atoms.log"),
+                        attest_log.as_deref(),
                         step_bearer.is_explicit().then_some(&step_bearer),
                     )
                 },
@@ -1359,35 +1559,37 @@ pub(crate) fn execute_validated_step(
         && executed
         && comparison_changed
         && command_result.as_ref().is_some_and(|result| result.ok);
-    if is_act {
-        crate::receipts::write_command_comparison_receipt(
-            module_dir,
-            &step.step_id,
-            &observed_state,
-            &desired_state,
-            decision,
-            executed,
-            changed,
-            &final_observed_state,
-            command_result.as_ref(),
-            &step_bearer_actual,
-            observation_bearer_actual.as_deref(),
-        )?;
-    } else {
-        crate::receipts::write_command_receipt_with_policy_and_bearer(
-            module_dir,
-            &step.step_id,
-            &program,
-            &argv,
-            cwd.as_deref(),
-            command_result.as_ref().ok_or("command-result-missing")?,
-            advisory,
-            requested_lane,
-            active_lane,
-            executed,
-            skipped,
-            &step_bearer_actual,
-        )?;
+    if persist_receipt_files {
+        if is_act {
+            crate::receipts::write_command_comparison_receipt(
+                module_dir,
+                &step.step_id,
+                &observed_state,
+                &desired_state,
+                decision,
+                executed,
+                changed,
+                &final_observed_state,
+                command_result.as_ref(),
+                &step_bearer_actual,
+                observation_bearer_actual.as_deref(),
+            )?;
+        } else {
+            crate::receipts::write_command_receipt_with_policy_and_bearer(
+                module_dir,
+                &step.step_id,
+                &program,
+                &argv,
+                cwd.as_deref(),
+                command_result.as_ref().ok_or("command-result-missing")?,
+                advisory,
+                requested_lane,
+                active_lane,
+                executed,
+                skipped,
+                &step_bearer_actual,
+            )?;
+        }
     }
     Ok(crate::OperationOutcome {
         ok: command_result.as_ref().is_none_or(|result| {

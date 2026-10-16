@@ -42,6 +42,8 @@ pub(crate) struct LadderManifest {
     pub files_root: Option<String>,
     #[serde(default)]
     pub config_deploy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_shell: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub suppress_interactable: bool,
     #[serde(default)]
@@ -179,7 +181,7 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
         .get("category")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let constants = raw
+    let mut constants = raw
         .get("constants")
         .and_then(Value::as_object)
         .map(|values| {
@@ -189,6 +191,13 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
+    if let Some(value) = raw.get("login_shell").filter(|value| !value.is_null()) {
+        let login_shell = value
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("ladder-manifest-login-shell-invalid {}", path.display()))?;
+        constants.insert("login_shell".into(), Value::String(login_shell.to_owned()));
+    }
     raw.as_object_mut()
         .and_then(|object| object.remove("category"));
     normalize_managed_file_categories(&mut raw, module_category.as_deref(), &constants)?;
@@ -197,6 +206,7 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))
         .and_then(|mut manifest| {
             manifest.category = module_category;
+            manifest.constants = constants;
             if manifest.schema == SCHEMA {
                 validate_package_pins(&manifest.package_pins)
                     .map_err(|e| format!("ladder-manifest-pin-validation-failed {e}"))?;

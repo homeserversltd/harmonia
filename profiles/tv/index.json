@@ -14,7 +14,6 @@
   "modules": [
     "system-packages",
     "dot-files",
-    "operator-rc-profile",
     "hyprland",
     "sway",
     "kitty",

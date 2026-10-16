@@ -71,7 +71,7 @@ pub(crate) fn command_with_timeout_attested(
     args: &[String],
     cwd: Option<&str>,
     timeout: Duration,
-    attest_log: &Path,
+    attest_log: Option<&Path>,
     bearer: Option<&crate::atoms::command::CommandBearer>,
 ) -> Result<CommandObservation, String> {
     let path_cwd = cwd.map(Path::new);
@@ -98,16 +98,23 @@ pub(crate) fn command_with_timeout_attested(
         program: program.into(), args: args.to_vec(), ok: result.ok,
         code: result.code, stdout: result.stdout, stderr: result.stderr,
     };
-    crate::atoms::attest::attest(
-        attest_log,
-        &Receipt {
-            atom: "run-command".into(), ok: outcome.ok, drift: Drift::Current,
-            // Never place command output, argv, or environment in the shared
-            // attestation log; these can carry credentials or private data.
-            message: format!("bounded command action completed={}", outcome.ok),
-        },
-        &[],
-    )?;
+    let receipt = Receipt {
+        atom: "run-command".into(),
+        ok: outcome.ok,
+        drift: Drift::Current,
+        // Never place command output, argv, or environment in the shared
+        // attestation log; these can carry credentials or private data.
+        message: format!("bounded command action completed={}", outcome.ok),
+    };
+    if let Some(attest_log) = attest_log {
+        crate::atoms::attest::attest(attest_log, &receipt, &[])?;
+    } else {
+        let value = serde_json::to_value(&receipt)
+            .map_err(|error| format!("attest-serialize: {error}"))?;
+        let stderr = std::io::stderr();
+        let mut stderr = stderr.lock();
+        crate::atoms::attest::append_jsonl_to(&mut stderr, &value)?;
+    }
     Ok(outcome)
 }
 pub(crate) fn mutating_command(
