@@ -439,80 +439,84 @@ pub(crate) fn observe_staged_candidate(
     })
 }
 
+/// Select only the first answering Git candidate. A preceding local checkout
+/// remains a barrier: it cannot be skipped to report a later Git as Current.
+pub(crate) fn first_answering_source_candidate<'a>(
+    plan: &'a SourcePlan,
+    observations: &'a [SourceObservation],
+) -> Option<(usize, &'a git_artifact::SourceCandidate, &'a SourceObservation)> {
+    for (offset, candidate) in plan.candidates.iter().enumerate() {
+        if candidate.kind == SourceCandidateKind::LocalCheckout {
+            return None;
+        }
+        let Some(observation) = observations.get(offset) else {
+            continue;
+        };
+        if observation.remote_head.is_some() {
+            return Some((offset + 1, candidate, observation));
+        }
+    }
+    None
+}
+
+fn source_observation_is_current(observation: &SourceObservation) -> bool {
+    observation.destination_is_git_checkout
+        && observation.destination_status.ok
+        && observation.destination_status.stdout.trim().is_empty()
+        && !observation.dirty
+        && observation.local_head.is_some()
+        && observation.local_head == observation.remote_head
+        && observation.expected_matches
+}
+
 pub(crate) fn compare_source_candidates(
     plan: &SourcePlan,
     observations: &[SourceObservation],
 ) -> DiffDecision {
-    let Some(candidate) = plan.candidates.first() else {
+    let Some((_, _, observation)) = first_answering_source_candidate(plan, observations) else {
         return DiffDecision::Different;
     };
-    if candidate.kind != SourceCandidateKind::Git {
-        return DiffDecision::Different;
-    }
-    let Some(observation) = observations.first() else {
-        return DiffDecision::Different;
-    };
-    if !observation.destination_is_git_checkout
-        || observation.dirty
-        || observation.local_head.is_none()
-        || observation.remote_head.is_none()
-        || !observation.expected_matches
-        || observation.local_head != observation.remote_head
-    {
-        DiffDecision::Different
-    } else {
+    if source_observation_is_current(observation) {
         DiffDecision::Empty
+    } else {
+        // The first answering candidate is decisive, even when it does not
+        // project the destination or satisfy the expected commit.
+        DiffDecision::Different
     }
 }
 
 pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome> {
-    let candidate = plan.candidates.first()?;
-    if candidate.kind != SourceCandidateKind::Git {
+    let mut observations = Vec::new();
+    for candidate in &plan.candidates {
+        if candidate.kind == SourceCandidateKind::LocalCheckout {
+            break;
+        }
+        let observation = observe_source_candidate(plan, candidate);
+        let answered = observation.remote_head.is_some();
+        observations.push(observation);
+        if answered {
+            break;
+        }
+    }
+    let (index, candidate, observation) =
+        first_answering_source_candidate(plan, &observations)?;
+    if !source_observation_is_current(observation) {
         return None;
     }
-    let destination = source_head(&plan.destination, &plan.bearer);
-    let destination_commit = destination
-        .ok
-        .then(|| destination.stdout.trim().to_string())
-        .filter(|v| crate::atoms::git_artifact::is_lower_hex_sha(v))?;
-    let request = scoped_request(plan, candidate, plan.destination.clone());
-    let destination_status = git_observe(
-        &request,
-        &["status", "--porcelain", "--", ".", ":(exclude).worktrees"],
-        plan.destination.to_str(),
-    );
-    if !destination_status.ok || !destination_status.stdout.trim().is_empty() {
-        return None;
-    }
-    let reference = format!("refs/heads/{}", plan.reference);
-    let remote = git_observe(
-        &request,
-        &["ls-remote", "--refs", &candidate.locator, &reference],
-        None,
-    );
-    let remote_commit = remote
-        .ok
-        .then(|| crate::atoms::git_artifact::parse_declared_remote_head(&remote.stdout, &reference))
-        .flatten()?;
-    if plan.expected_commit.as_deref().is_some_and(|expected| remote_commit != expected)
-        || destination_commit != remote_commit
-    {
-        return None;
-    }
-    let commit = remote_commit.clone();
+    let commit = observation.remote_head.clone()?;
     Some(SourceOutcome {
         ok: true,
         changed: false,
         receipt: SourceReceipt {
             attempts: vec![source_attempt(
-                1,
+                index,
                 candidate,
                 "already-current",
                 Some(commit.clone()),
                 false,
                 "destination-already-projects-observed-head".into(),
             )],
-            served_index: Some(1),
+            served_index: Some(index),
             resolved_commit: Some(commit),
             promotion: "already-current; destination projects observed remote head; no clone, stage, or promotion".into(),
         },

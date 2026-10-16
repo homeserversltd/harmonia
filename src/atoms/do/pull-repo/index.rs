@@ -1379,23 +1379,26 @@ pub(crate) fn acquire_source(
     );
     match run {
         Ok(comparison::ComparisonRun::Current { observation, .. }) => {
-            let candidate = &plan.candidates[0];
-            let commit = observation[0].remote_head.clone().expect("empty comparison has remote identity");
+            let (index, candidate, current) =
+                crate::atoms::ask::pull_repo::first_answering_source_candidate(plan, &observation)
+                    .expect("Current comparison has an answering Git candidate");
+            let commit = current
+                .remote_head
+                .clone()
+                .expect("Current comparison has remote identity");
             SourceOutcome {
                 ok: true,
                 changed: false,
                 receipt: git_artifact::SourceReceipt {
-                    attempts: vec![git_artifact::SourceAttemptReceipt {
-                        index: 1,
-                        kind: candidate.kind,
-                        locator: candidate.locator.clone(),
-                        credential_selector: candidate.credential_selector.clone(),
-                        disposition: "already-current".into(),
-                        resolved_commit: Some(commit.clone()),
-                        external_freshness: false,
-                        detail: "destination-already-projects-observed-head".into(),
-                    }],
-                    served_index: Some(1),
+                    attempts: vec![source_attempt(
+                        index,
+                        candidate,
+                        "already-current",
+                        Some(commit.clone()),
+                        false,
+                        "destination-already-projects-observed-head".into(),
+                    )],
+                    served_index: Some(index),
                     resolved_commit: Some(commit),
                     promotion: "already-current; destination projects observed remote head; no clone, stage, or promotion".into(),
                 },
