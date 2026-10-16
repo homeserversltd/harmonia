@@ -42,7 +42,6 @@
         "target_root": "/",
         "files": [
           "etc/systemd/system/homeserver-nas-open@.service",
-          "etc/systemd/system/homeserver-nas-open@backup.service",
           "etc/systemd/system/mnt-nas.mount",
           "etc/systemd/system/mnt-nas_backup.mount"
         ],
