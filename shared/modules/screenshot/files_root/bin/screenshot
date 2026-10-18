@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# screenshot {area|full|window}: capture to the clipboard, then open swappy.
+# Saving is on demand (Ctrl+S in swappy) into save_dir from ~/.config/swappy/config.
+set -euo pipefail
+
+mode="${1:-area}"
+
+window_geometry() {
+  if [[ -n "${SWAYSOCK:-}" ]]; then
+    swaymsg -t get_tree | jq -r '.. | select(.focused? == true) | .rect | "\(.x),\(.y) \(.width)x\(.height)"' | head -n1
+  elif [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    hyprctl activewindow -j | jq -r '"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"'
+  fi
+}
+
+case "$mode" in
+  area)   geometry="$(slurp)" || exit 0 ;;
+  full)   geometry="" ;;
+  window) geometry="$(window_geometry)" ;;
+  *)      echo "usage: screenshot {area|full|window}" >&2; exit 2 ;;
+esac
+
+shot="$(mktemp --suffix=.png)"
+trap 'rm -f "$shot"' EXIT
+
+if [[ -n "$geometry" ]]; then
+  grim -g "$geometry" "$shot"
+else
+  grim "$shot"
+fi
+
+wl-copy --type image/png < "$shot"
+swappy -f "$shot"

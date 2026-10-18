@@ -1,0 +1,37 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "screenshot",
+  "title": "Screenshots",
+  "summary": "Capture an area, the full screen, or the focused window to the clipboard and save screenshots on demand.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Captures an area, the full screen, or the focused window to the clipboard, then opens the image in Swappy. Saving is on demand from Swappy.",
+  "optional": false,
+  "constants": {
+    "target_dir": "/home/owner",
+    "expected_files": [
+      "bin/screenshot",
+      ".config/swappy/config"
+    ]
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "managed-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "$constants.target_dir",
+        "files": [
+          "bin/screenshot",
+          ".config/swappy/config"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "screenshot-files"
+      }
+    }
+  ]
+}

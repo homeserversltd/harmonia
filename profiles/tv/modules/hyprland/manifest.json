@@ -4,7 +4,7 @@
   "title": "Previous desktop layout",
   "summary": "Keeps the earlier TV desktop layout available as a fallback.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TV Hyprland configuration is converged from this module into the owner home.",
   "optional": false,
   "constants": {
