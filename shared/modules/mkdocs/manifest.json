@@ -5,7 +5,7 @@
   "summary": "Keeps the household's documentation site configured and available.",
   "category": "interactable",
   "version": "1.0.3",
-  "description": "The shared documentation module owns documentation bytes; this module retains the HomeServer MkDocs human face and its runtime configuration.",
+  "description": "The shared documentation module owns the documentation bytes; this module keeps the whole MkDocs hub serving at loopback 127.0.0.1:8005 on every sold appliance. Only HomeServer nginx publishes it to the LAN.",
   "constants": {},
   "files_root": "files_root",
   "ladder": [

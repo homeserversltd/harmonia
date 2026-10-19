@@ -30,6 +30,7 @@
     "caduceus",
     "sbin",
     "documentation",
+    "mkdocs",
     "sudoers",
     "sunshine",
     "retroarch-input",
