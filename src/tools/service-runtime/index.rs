@@ -1,5 +1,8 @@
 pub(crate) const DEFAULT_BEARER: &str = "owner";
 use serde_json::Value;
+#[path = "profile_input.rs"]
+mod profile_input;
+pub(crate) use profile_input::apply as apply_profile_input;
 use std::collections::BTreeMap;
 
 fn string_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> Result<&'a str, String> {

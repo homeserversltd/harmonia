@@ -27,7 +27,7 @@
     "local-ai-runtime",
     "homeconsole-update-runtime",
     "household-time",
-    "install-caduceus",
+    "caduceus",
     "sbin",
     "documentation",
     "sudoers",

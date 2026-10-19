@@ -584,6 +584,11 @@
               "required": true
             },
             {
+              "name": "skip_if_absent",
+              "kind": "string",
+              "required": false
+            },
+            {
               "name": "lane",
               "kind": "string",
               "required": false

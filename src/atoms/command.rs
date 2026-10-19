@@ -1370,6 +1370,17 @@ fn execute_validated_step_inner(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     persist_receipt_files: bool,
 ) -> Result<crate::OperationOutcome, String> {
+    if step.permutation == "act" {
+        if let Some(path) = crate::tools::routine::command_skip_if_absent(&step.args)? {
+            return Ok(crate::OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: format!("command-skipped-absent-path {path}"),
+                command: None,
+            });
+        }
+    }
     let program = step.args.get("program").and_then(serde_json::Value::as_str).unwrap_or("");
     let argv: Vec<String> = step.args.get("args").and_then(serde_json::Value::as_array)
         .map(|items| items.iter().filter_map(serde_json::Value::as_str).map(ToString::to_string).collect())

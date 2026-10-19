@@ -40,6 +40,8 @@ pub(crate) struct LadderManifest {
     pub caduceus_commands: Vec<String>,
     #[serde(default)]
     pub files_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_input: Option<Value>,
     #[serde(default)]
     pub config_deploy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,10 +174,19 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
     path: &Path,
     categories_required: bool,
 ) -> Result<LadderManifest, String> {
+    load_ladder_manifest_with_context(path, categories_required, None)
+}
+
+pub(crate) fn load_ladder_manifest_with_context(
+    path: &Path,
+    categories_required: bool,
+    selected_profile_index: Option<&Path>,
+) -> Result<LadderManifest, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("ladder-manifest-read-failed {}: {e}", path.display()))?;
     let mut raw = serde_json::from_str::<Value>(&text)
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))?;
+    crate::tools::service_runtime::apply_profile_input(&mut raw, path, selected_profile_index)?;
     reject_restart_policy(&raw, path)?;
     let module_category = raw
         .get("category")
@@ -207,6 +218,7 @@ pub(crate) fn load_ladder_manifest_with_category_requirement(
         .and_then(|mut manifest| {
             manifest.category = module_category;
             manifest.constants = constants;
+            manifest.selected_profile_index = selected_profile_index.map(Path::to_path_buf);
             if manifest.schema == SCHEMA {
                 validate_package_pins(&manifest.package_pins)
                     .map_err(|e| format!("ladder-manifest-pin-validation-failed {e}"))?;
@@ -336,7 +348,11 @@ pub(crate) fn validate_profile_managed_file_categories(
         let path = crate::bands::stage_profile::resolve_module_dir(module_root, module)?
             .join("manifest.json");
         if path.exists() && is_ladder_manifest(&path) {
-            load_ladder_manifest_with_category_requirement(&path, required)?;
+            let profile_index = module_root
+                .parent()
+                .map(|profile_root| profile_root.join("index.json"))
+                .filter(|path| path.is_file());
+            load_ladder_manifest_with_context(&path, required, profile_index.as_deref())?;
         }
     }
     Ok(())

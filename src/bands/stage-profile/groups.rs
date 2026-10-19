@@ -691,9 +691,20 @@ pub(crate) fn load_profile_module_for_authority(
     let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, module_id)?;
     let manifest_path = module_dir.join("manifest.json");
     if manifest_path.exists() && is_ladder_manifest(&manifest_path) {
-        return load_ladder_manifest(&manifest_path).and_then(|mut manifest| {
-            manifest.selected_profile_index = package_authority
-                .and_then(|authority| authority.selected_profile_index.clone());
+        let selected_profile_index = package_authority
+            .and_then(|authority| authority.selected_profile_index.clone())
+            .or_else(|| {
+                module_root
+                    .parent()
+                    .map(|profile_root| profile_root.join("index.json"))
+                    .filter(|profile_index| profile_index.is_file())
+            });
+        return crate::tools::ladder::load_ladder_manifest_with_context(
+            &manifest_path,
+            false,
+            selected_profile_index.as_deref(),
+        )
+        .and_then(|mut manifest| {
             lower_family_package_constants(&mut manifest, package_authority)?;
             crate::tools::ladder::validate_package_pin_module(
                 module_id,

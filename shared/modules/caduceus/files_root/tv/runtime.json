@@ -1,0 +1,29 @@
+{
+  "url": "http://127.0.0.1:8787/health",
+  "managed_files": [
+    {
+      "path": "/etc/caduceus/policies/update.json",
+      "operation": "place",
+      "mode": 420,
+      "content": "{\n  \"schema\": \"caduceus.policy.v1\",\n  \"profile\": \"tv\",\n  \"allowed_public_actions\": [\n    \"identity show\",\n    \"profile show\",\n    \"health\",\n    \"receipts latest\",\n    \"update status\",\n    \"update check\",\n    \"update now\",\n    \"update service status\",\n    \"update service toggle on\",\n    \"update service toggle off\",\n    \"cert status\",\n    \"cert issue-leaf\",\n    \"cert rotate-ca\",\n    \"cert bundle create\"\n  ],\n  \"private_land_organs_exposed\": false\n}\n"
+    },
+    {
+      "path": "/var/lib/caduceus/state.json",
+      "operation": "place",
+      "mode": 420,
+      "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n",
+      "xattrs": {},
+      "no_follow": true,
+      "collision_policy": "refuse",
+      "rollback_policy": "exact",
+      "uid": 0,
+      "gid": 0
+    }
+  ],
+  "caduceus_profile_source": {
+    "source": "profiles/tv/index.yaml",
+    "path": "/etc/caduceus/profile.yaml",
+    "mode": 420,
+    "append": ""
+  }
+}

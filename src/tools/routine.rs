@@ -109,6 +109,23 @@ pub(crate) fn command_precondition(
     Ok(Some(precondition))
 }
 
+pub(crate) fn command_skip_if_absent(
+    args: &BTreeMap<String, Value>,
+) -> Result<Option<String>, String> {
+    let Some(value) = args.get("skip_if_absent").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let path = value
+        .as_str()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| "command-skip-if-absent-invalid".to_string())?;
+    match fs::metadata(path) {
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Some(path.to_owned())),
+        Err(error) => Err(format!("command-skip-if-absent-observe-failed {path}: {error}")),
+    }
+}
+
 pub(crate) fn validate_command_precondition(
     step_id: &str,
     tool: &str,
@@ -191,6 +208,22 @@ pub(crate) fn validate_command_precondition(
             {
                 return Err(LadderValidationError { step_id: step_id.into(), defect: "command-observation-invalid-field-or-type".into() });
             }
+        }
+    }
+    if let Some(value) = args.get("skip_if_absent").filter(|value| !value.is_null()) {
+        let path = value.as_str().unwrap_or("");
+        let path_value = Path::new(path);
+        if permutation != "act"
+            || !path_value.is_absolute()
+            || path.trim().is_empty()
+            || path_value
+                .components()
+                .any(|component| matches!(component, std::path::Component::CurDir | std::path::Component::ParentDir))
+        {
+            return Err(LadderValidationError {
+                step_id: step_id.into(),
+                defect: "command-skip-if-absent-invalid".into(),
+            });
         }
     }
     if let Some(value) = args.get("precondition") {

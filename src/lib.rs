@@ -525,9 +525,11 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let path = args
                 .get(1)
                 .ok_or("validate-ladder requires <manifest.json>")?;
-            let manifest = load_ladder_manifest_with_category_requirement(
+            let selected_profile_index = value_arg(&args, "--profile-index");
+            let manifest = load_ladder_manifest_with_context(
                 Path::new(path),
                 args.iter().any(|arg| arg == "--require-categories"),
+                selected_profile_index.as_deref(),
             )?;
             match validate_ladder(&manifest) {
                 Ok(steps) => {

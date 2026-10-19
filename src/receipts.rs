@@ -1237,6 +1237,108 @@ pub(crate) fn event(events: &mut File, event: &str, ok: bool, message: &str) -> 
     )
 }
 
+fn planned_routine_child_args(
+    child: &crate::tools::routine::ProjectedRoutineChild,
+) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    let mut planned = Map::new();
+    let copy_fields = |output: &mut Map<String, Value>, fields: &[&str]| {
+        for field in fields {
+            if let Some(value) = child.args.get(*field) {
+                output.insert((*field).to_string(), value.clone());
+            }
+        }
+    };
+    match child.tool.as_str() {
+        "pull-repo" => copy_fields(&mut planned, &["component", "path"]),
+        "fetch-artifact" => copy_fields(
+            &mut planned,
+            &[
+                "component",
+                "release_repo",
+                "artifact_name",
+                "asset_name",
+                "profile_axis",
+                "profile_source",
+            ],
+        ),
+        "check-health" => {
+            if let Some(url) = child.args.get("url").and_then(Value::as_str) {
+                planned.insert(
+                    "url".into(),
+                    Value::String(url.split(['?', '#']).next().unwrap_or(url).to_string()),
+                );
+            }
+        }
+        "files" => {
+            let file_fields = [
+                "path",
+                "operation",
+                "mode",
+                "owner",
+                "group",
+                "uid",
+                "gid",
+                "xattrs",
+                "no_follow",
+                "collision_policy",
+                "rollback_policy",
+            ];
+            let files = child
+                .args
+                .get("files")
+                .and_then(Value::as_array)
+                .map(|files| {
+                    files
+                        .iter()
+                        .map(|file| {
+                            let mut declaration = Map::new();
+                            for field in file_fields {
+                                if let Some(value) = file.get(field) {
+                                    declaration.insert(field.into(), value.clone());
+                                }
+                            }
+                            Value::Object(declaration)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            planned.insert("files".into(), Value::Array(files));
+            let profile_sources = child
+                .args
+                .get("profile_sources")
+                .and_then(Value::as_object)
+                .map(|sources| {
+                    sources
+                        .iter()
+                        .map(|(key, source)| {
+                            let mut descriptor = Map::new();
+                            for field in ["source", "path", "mode"] {
+                                if let Some(value) = source.get(field) {
+                                    descriptor.insert(field.into(), value.clone());
+                                }
+                            }
+                            if let Some(append) = source.get("append").and_then(Value::as_str) {
+                                descriptor.insert("append_present".into(), Value::Bool(!append.is_empty()));
+                                descriptor.insert("append_bytes".into(), Value::from(append.len()));
+                            }
+                            (key.clone(), Value::Object(descriptor))
+                        })
+                        .collect::<Map<String, Value>>()
+                })
+                .unwrap_or_default();
+            planned.insert("profile_sources".into(), Value::Object(profile_sources));
+        }
+        "place-file" => copy_fields(
+            &mut planned,
+            &["path", "mode", "owner", "group", "uid", "gid", "operation"],
+        ),
+        _ => {}
+    }
+    Value::Object(planned)
+}
+
 pub(crate) fn write_plan_receipts(
     profile: &Profile,
     module_root: &Path,
@@ -1288,10 +1390,18 @@ pub(crate) fn write_plan_receipts(
                     }
                     crate::bands::stage_profile::LoadedModule::Sidecar(_) => None,
                 });
+            let selected_profile_index = module_root
+                .parent()
+                .map(|profile_root| profile_root.join("index.json"))
+                .filter(|path| path.is_file());
             let loaded = if let Some(manifest) = projected_manifest {
                 Ok(manifest)
             } else {
-                load_ladder_manifest(&manifest_path)
+                crate::tools::ladder::load_ladder_manifest_with_context(
+                    &manifest_path,
+                    false,
+                    selected_profile_index.as_deref(),
+                )
             };
             loaded.and_then(|manifest| {
                 if manifest.id != *module {
@@ -1304,13 +1414,25 @@ pub(crate) fn write_plan_receipts(
                 // initial validation. Revalidate that effective declaration for
                 // plan-run instead of reusing the pre-projection step cache.
                 let steps = validate_ladder(&manifest).map_err(|err| err.first_missing_signal())?;
+                let projected_routines =
+                    crate::tools::routine::project_manifest_routines(&manifest, &steps)?;
                 for step in steps {
+                    let skipped_path = if step.tool == "command" && step.permutation == "act" {
+                        crate::tools::routine::command_skip_if_absent(&step.args)?
+                    } else {
+                        None
+                    };
                     let mut planned = json!({
                         "event":"step-planned", "module":module,
                         "step_id":step.step_id, "tool":step.tool,
                         "permutation":step.permutation, "args":step.args,
-                        "ok":true, "mutation":false
+                        "ok":true, "mutation":false,
+                        "status":if skipped_path.is_some() {"skipped"} else {"planned"},
+                        "skipped":skipped_path.is_some()
                     });
+                    if let Some(path) = skipped_path {
+                        planned["message"] = json!(format!("command-skipped-absent-path {path}"));
+                    }
                     if extension.is_some() && step.tool == "package" {
                         let pins = serde_json::to_value(&manifest.package_pins)
                             .map_err(|error| error.to_string())?;
@@ -1320,6 +1442,27 @@ pub(crate) fn write_plan_receipts(
                     }
                     crate::atoms::attest::append_jsonl_to(&mut events, &planned)
                         .map_err(|error| error.to_string())?;
+                    if let Some(children) = projected_routines.get(&step.step_id) {
+                        for child in children {
+                            crate::atoms::attest::append_jsonl_to(
+                                &mut events,
+                                &json!({
+                                    "event":"step-planned",
+                                    "module":module,
+                                    "parent_step_id":step.step_id,
+                                    "step_id":child.name,
+                                    "tool":child.tool,
+                                    "permutation":child.permutation,
+                                    "args":planned_routine_child_args(child),
+                                    "ok":true,
+                                    "mutation":false,
+                                    "status":"planned",
+                                    "skipped":false
+                                }),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        }
+                    }
                 }
                 Ok(())
             })
