@@ -1,0 +1,28 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "homeconsole-network",
+  "title": "Console startup",
+  "summary": "Lets the console start without waiting for its network connection.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "ladder": [
+    {
+      "step_id": "homeconsole-network-managed-files",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {
+        "files": [
+          {
+            "path": "/etc/systemd/system/systemd-networkd-wait-online.service.d/10-no-wait.conf",
+            "content": "[Service]\nExecStart=\nExecStart=/bin/true\n",
+            "mode": 420,
+            "category": "interactable"
+          }
+        ],
+        "owner": "root",
+        "group": "root"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

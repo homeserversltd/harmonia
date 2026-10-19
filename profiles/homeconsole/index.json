@@ -21,6 +21,7 @@
     "dot-files",
     "keyman-runtime",
     "rust-build-toolchain",
+    "homeconsole-network",
     "arcadia-gui-runtime",
     "console-session",
     "local-ai-runtime",
