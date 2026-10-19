@@ -25,6 +25,44 @@ const MAX_RELEASE_PAGES: usize = 5;
 const RELEASES_PER_PAGE: usize = 50;
 
 #[derive(Clone, Debug, Default)]
+pub(crate) struct FireSealObservation {
+    pub(crate) profile: String,
+    pub(crate) status: String,
+    pub(crate) band: Option<String>,
+    pub(crate) licensee: Option<String>,
+    pub(crate) issued: Option<String>,
+    pub(crate) source: Option<String>,
+    pub(crate) signal: String,
+    pub(crate) terms: std::collections::BTreeMap<String, String>,
+}
+
+impl FireSealObservation {
+    pub(crate) fn as_json(&self) -> Value {
+        json!({
+            "profile": self.profile,
+            "status": self.status,
+            "band": self.band,
+            "licensee": self.licensee,
+            "issued": self.issued,
+            "source": self.source,
+            "signal": self.signal,
+            "reason": if self.signal == "none" { Value::Null } else { json!(self.signal) },
+        })
+    }
+
+    pub(crate) fn ruyi_value(&self) -> Value {
+        if self.status != "VALID" {
+            return Value::Null;
+        }
+        json!({
+            "band": self.band,
+            "licensee": self.licensee,
+            "issued": self.issued,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct StampObservation {
     pub(crate) declared: bool,
     pub(crate) verdict: Option<String>,
@@ -35,10 +73,11 @@ pub(crate) struct StampObservation {
     pub(crate) terms: std::collections::BTreeMap<String, String>,
     pub(crate) declared_members: Vec<String>,
     pub(crate) attempts: Vec<Value>,
+    pub(crate) fire_seal: Option<FireSealObservation>,
 }
 
 impl StampObservation {
-    pub(crate) fn target(&self, member: &str) -> Option<&str> {
+    pub(crate) fn stamp_target(&self, member: &str) -> Option<&str> {
         if self.verdict.as_deref() != Some("VALID")
             || !self
                 .declared_members
@@ -48,6 +87,23 @@ impl StampObservation {
             return None;
         }
         self.terms.get(member).map(String::as_str)
+    }
+
+    pub(crate) fn target(&self, member: &str) -> Option<&str> {
+        self.seal_target(member).or_else(|| self.stamp_target(member))
+    }
+
+    pub(crate) fn seal_target(&self, member: &str) -> Option<&str> {
+        let seal = self.fire_seal.as_ref()?;
+        if seal.status != "VALID"
+            || !self
+                .declared_members
+                .iter()
+                .any(|declared| declared == member)
+        {
+            return None;
+        }
+        seal.terms.get(member).map(String::as_str)
     }
 
     pub(crate) fn as_json(&self) -> Value {
@@ -69,19 +125,19 @@ impl StampObservation {
         } else {
             "UNAVAILABLE"
         });
-        json!({
+        let mut value = json!({
             "declared": self.declared,
             "verdict": self.verdict,
             "signal": self.signal,
             "stamp_sha": self.stamp_sha,
-            "stamp_source": self.stamp_source,
+            "stamp_source": self.stamp_source.as_deref().map(safe_source_label),
             "key_id": self.key_id,
             "terms": self.terms,
             "declared_members": self.declared_members,
             "candidate_attempts": self.attempts,
             "observed": {
                 "source_declaration": source_declaration,
-                "stamp_source": self.stamp_source,
+                "stamp_source": self.stamp_source.as_deref().map(safe_source_label),
                 "key_id": self.key_id,
                 "verdict": self.verdict,
                 "signal": self.signal,
@@ -96,20 +152,65 @@ impl StampObservation {
                 "disposition": disposition,
                 "selected_target": self.verdict.as_deref() == Some("VALID"),
             },
-        })
+        });
+        if let Some(fire_seal) = self.fire_seal.as_ref() {
+            value["wukong_fire_seal"] = fire_seal.as_json();
+        }
+        value
     }
 }
 
-static OBSERVATION: OnceLock<StampObservation> = OnceLock::new();
+struct CachedSourceObservation {
+    stamp: StampObservation,
+    own_profile: Option<String>,
+    verified_candidates: Vec<FetchedStamp>,
+    fire_seal: OnceLock<FireSealObservation>,
+}
 
-/// One process observes the declared source once; callers share that immutable
-/// result so no member hot path repeats the external door.
+static OBSERVATION: OnceLock<CachedSourceObservation> = OnceLock::new();
+
+fn source_observation() -> &'static CachedSourceObservation {
+    OBSERVATION.get_or_init(|| {
+        let own_profile = crate::device_profile::own_sold_profile();
+        let mut verified_candidates = Vec::new();
+        let stamp = observe_uncached(&mut verified_candidates);
+        CachedSourceObservation {
+            stamp,
+            own_profile,
+            verified_candidates,
+            fire_seal: OnceLock::new(),
+        }
+    })
+}
+
+/// All public observation/target consumers share the same immutable own-profile observation; probe kernel resolves no seal.
 pub(crate) fn current() -> StampObservation {
-    OBSERVATION.get_or_init(observe_uncached).clone()
+    current_with_fire_seal()
+}
+
+/// Resolve the optional fire seal lazily, sharing the already-read stamp candidates.
+pub(crate) fn current_with_fire_seal() -> StampObservation {
+    let cached = source_observation();
+    let mut observation = cached.stamp.clone();
+    if let Some(profile) = cached.own_profile.as_deref() {
+        observation.fire_seal = Some(
+            cached
+                .fire_seal
+                .get_or_init(|| {
+                    observe_fire_seal_for_profile(
+                        profile,
+                        cached.stamp.stamp_source.as_deref(),
+                        &cached.verified_candidates,
+                    )
+                })
+                .clone(),
+        );
+    }
+    observation
 }
 
 pub(crate) fn target_sha(member: &str) -> Option<String> {
-    current().target(member).map(str::to_owned)
+    current_with_fire_seal().target(member).map(str::to_owned)
 }
 
 pub(crate) fn write_receipt(receipt_dir: &std::path::Path) -> Result<(), String> {
@@ -123,7 +224,7 @@ pub(crate) fn write_receipt(receipt_dir: &std::path::Path) -> Result<(), String>
     )
 }
 
-fn observe_uncached() -> StampObservation {
+fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObservation {
     let config_path = crate::bands::pull_source::appliance_config_path();
     let config_bytes = match std::fs::read(&config_path) {
         Ok(bytes) => bytes,
@@ -171,15 +272,16 @@ fn observe_uncached() -> StampObservation {
         declared_members: members,
         ..StampObservation::default()
     };
+    let mut best_failure: Option<CandidateFailure> = None;
 
     for (index, candidate) in candidates.iter().enumerate() {
         let locator = candidate_locator(candidate);
         let mut receipt = json!({
             "candidate_index": index + 1,
-            "candidate_locator": locator,
+            "candidate_locator": locator.as_deref().map(safe_source_label),
             "observed": {"configured": true},
             "could_change": false,
-            "attempt": {"operation":"inspect-newest-release-stamp"},
+            "attempt": {"operation":"inspect-newest-verified-release-stamp"},
             "final_state": {"disposition":"unavailable"},
         });
         let configured_key_candidates = candidate
@@ -191,163 +293,75 @@ fn observe_uncached() -> StampObservation {
             .take(MAX_KEY_CANDIDATES)
             .collect::<Vec<_>>();
         let Some(locator) = locator else {
+            let failure = CandidateFailure {
+                verdict: "UNKNOWN".into(),
+                signal: "wukong-staff-source-candidate-invalid".into(),
+                selected_release: "unknown".into(),
+                http_status: None,
+            };
             receipt["final_state"] = json!({
-                "disposition":"invalid-candidate",
-                "signal":"wukong-staff-source-candidate-invalid"
+                "disposition":"unknown",
+                "verdict":failure.verdict,
+                "signal":failure.signal,
             });
+            if best_failure.as_ref().is_none_or(|current| {
+                candidate_failure_rank(&failure) > candidate_failure_rank(current)
+            }) {
+                best_failure = Some(failure);
+            }
             observation.attempts.push(receipt);
             continue;
         };
 
-        match fetch_candidate_stamp(&locator) {
+        match fetch_candidate_stamp(&locator, &configured_key_candidates) {
             Ok(fetched) => {
-                observation.stamp_source = Some(fetched.stamp_source.clone());
-                match parse_collective_stamp(&fetched.bytes) {
-                    Err((verdict, signal)) => {
-                        observation.key_id = trim_extraction_padding(&fetched.bytes)
-                            .and_then(stamp_key_id_hint);
-                        receipt["final_state"] = json!({
-                            "disposition":"selected",
-                            "verdict":verdict,
-                            "signal":signal,
-                            "selected_release":fetched.selected_release,
-                            "stamp_source":fetched.stamp_source,
-                            "key_id":observation.key_id,
-                        });
-                        observation.signal = signal;
-                        observation.verdict = Some(verdict);
-                        observation.attempts.push(receipt);
-                        return observation;
-                    }
-                    Ok(parsed) => {
-                        observation.key_id = Some(parsed.key_id.clone());
-                        let mut key_inputs = Vec::<(String, &'static str)>::new();
-                        if let Some(asset_url) = fetched.key_asset_url.as_ref() {
-                            key_inputs.push((asset_url.clone(), "release-key-asset"));
-                        }
-                        for key_candidate in &configured_key_candidates {
-                            key_inputs.push((key_candidate.clone(), "declared-key-line"));
-                        }
-                        if let Some(mirror_url) = fetched.mirror_key_url(&parsed.key_id) {
-                            key_inputs.push((mirror_url, "source-mirror-key"));
-                        }
-                        let mut seen = Vec::new();
-                        key_inputs.retain(|(candidate, _)| {
-                            if seen.iter().any(|previous| previous == candidate) {
-                                false
-                            } else {
-                                seen.push(candidate.clone());
-                                true
-                            }
-                        });
-
-                        let mut key_attempts = Vec::new();
-                        let mut last_invalid = None;
-                        let mut last_unavailable = "wukong-staff-key-line-unavailable".to_string();
-                        for (key_candidate, source_kind) in
-                            key_inputs.into_iter().take(MAX_KEY_CANDIDATES + 2)
-                        {
-                            match read_key_candidate(&key_candidate) {
-                                Ok(key_line) => match verify_collective_stamp(&parsed, &key_line) {
-                                    Ok((sha, terms, key_id)) => {
-                                        key_attempts.push(json!({
-                                            "source":source_kind,
-                                            "disposition":"verified",
-                                        }));
-                                        receipt["key_attempts"] = json!(key_attempts);
-                                        receipt["final_state"] = json!({
-                                            "disposition":"selected",
-                                            "verdict":"VALID",
-                                            "stamp_sha":sha,
-                                            "selected_release":fetched.selected_release,
-                                            "stamp_source":fetched.stamp_source,
-                                            "key_id":key_id,
-                                        });
-                                        observation.signal = "none".into();
-                                        observation.verdict = Some("VALID".into());
-                                        observation.stamp_sha = Some(sha);
-                                        observation.key_id = Some(key_id);
-                                        observation.terms = terms;
-                                        observation.attempts.push(receipt);
-                                        return observation;
-                                    }
-                                    Err((verdict, signal)) => {
-                                        key_attempts.push(json!({
-                                            "source":source_kind,
-                                            "disposition":"invalid",
-                                            "signal":signal,
-                                        }));
-                                        if verdict == "INVALID" {
-                                            last_invalid = Some(signal);
-                                        }
-                                    }
-                                },
-                                Err(KeyReadFailure::Unavailable(signal)) => {
-                                    key_attempts.push(json!({
-                                        "source":source_kind,
-                                        "disposition":"unavailable",
-                                        "signal":signal,
-                                    }));
-                                    last_unavailable = signal;
-                                }
-                                Err(KeyReadFailure::Invalid(signal)) => {
-                                    key_attempts.push(json!({
-                                        "source":source_kind,
-                                        "disposition":"invalid",
-                                        "signal":signal,
-                                    }));
-                                    last_unavailable = signal;
-                                }
-                            }
-                        }
-                        receipt["key_attempts"] = json!(key_attempts);
-                        if let Some(signal) = last_invalid {
-                            receipt["final_state"] = json!({
-                                "disposition":"selected",
-                                "verdict":"INVALID",
-                                "signal":signal,
-                                "selected_release":fetched.selected_release,
-                                "stamp_source":fetched.stamp_source,
-                                "key_id":observation.key_id,
-                            });
-                            observation.signal = signal;
-                            observation.verdict = Some("INVALID".into());
-                            observation.attempts.push(receipt);
-                            return observation;
-                        }
-                        receipt["final_state"] = json!({
-                            "disposition":"unavailable",
-                            "signal":last_unavailable,
-                            "selected_release":fetched.selected_release,
-                            "stamp_source":fetched.stamp_source,
-                            "key_id":observation.key_id,
-                        });
-                        observation.signal = last_unavailable;
-                        observation.attempts.push(receipt);
-                    }
-                }
-            }
-            Err((reason, selected_release, http_status)) => {
-                let mut final_state = json!({
-                    "disposition":"unavailable",
-                    "signal":reason,
-                    "selected_release":selected_release,
+                let parsed = &fetched.parsed;
+                receipt["key_attempts"] = json!(fetched.key_attempts);
+                receipt["final_state"] = json!({
+                    "disposition":"selected",
+                    "verdict":"VALID",
+                    "stamp_sha":parsed.stamp_sha,
+                    "selected_release":fetched.selected_release,
+                    "stamp_source":safe_source_label(&fetched.stamp_source),
+                    "key_id":parsed.key_id,
                 });
-                if reason == "wukong-staff-stamp-response-oversized" {
-                    observation.stamp_source = Some(locator.clone());
-                    final_state["stamp_source"] = json!(locator);
+                if observation.verdict.as_deref() != Some("VALID") {
+                    observation.signal = "none".into();
+                    observation.verdict = Some("VALID".into());
+                    observation.stamp_sha = Some(parsed.stamp_sha.clone());
+                    observation.key_id = Some(parsed.key_id.clone());
+                    observation.terms = parsed.terms.clone();
+                    observation.stamp_source = Some(fetched.stamp_source.clone());
                 }
-                if let Some(status) = http_status {
-                    final_state["http_status"] = json!(status);
+                verified_candidates.push(fetched);
+            }
+            Err(failure) => {
+                let disposition = failure.verdict.to_ascii_lowercase();
+                receipt["final_state"] = json!({
+                    "disposition":disposition,
+                    "verdict":failure.verdict,
+                    "signal":failure.signal,
+                    "selected_release":failure.selected_release,
+                    "http_status":failure.http_status,
+                });
+                if best_failure.as_ref().is_none_or(|current| {
+                    candidate_failure_rank(&failure) > candidate_failure_rank(current)
+                }) {
+                    best_failure = Some(failure);
                 }
-                receipt["final_state"] = final_state;
-                observation.signal = reason;
-                observation.attempts.push(receipt);
             }
         }
+        observation.attempts.push(receipt);
     }
-    if observation.attempts.is_empty() {
-        observation.signal = "wukong-staff-stamp-unreachable".into();
+
+    if verified_candidates.is_empty() {
+        if let Some(failure) = best_failure {
+            observation.signal = failure.signal;
+            observation.verdict = Some(failure.verdict);
+        }
+        if observation.attempts.is_empty() && !candidates.is_empty() {
+            observation.signal = "wukong-staff-stamp-unreachable".into();
+        }
     }
     observation
 }
@@ -406,22 +420,30 @@ fn candidate_locator(candidate: &Value) -> Option<String> {
             .iter()
             .find_map(|name| candidate.get(*name).and_then(Value::as_str))
     })?;
-    #[cfg(feature = "test-facade")]
-    {
-        safe_https_url(url).or_else(|| fixture_stamp_file_path(url).map(|_| url.to_owned()))
+    #[cfg(all(feature = "test-facade", unix))]
+    if fixture_stamp_file_path(url).is_some() {
+        return Some(url.to_owned());
     }
-    #[cfg(not(feature = "test-facade"))]
-    {
-        safe_https_url(url)
-    }
+    safe_https_url(url).or_else(|| {
+        safe_local_directory_root(url).map(|_| url.trim().to_owned())
+    })
 }
 
-#[cfg(feature = "test-facade")]
+fn key_candidate_locator(candidate: &Value) -> Option<String> {
+    let url = candidate.as_str().or_else(|| {
+        ["url", "base_url", "release_url", "file_url", "locator"]
+            .iter()
+            .find_map(|name| candidate.get(*name).and_then(Value::as_str))
+    })?;
+    safe_locator(url)
+}
+
+#[cfg(all(feature = "test-facade", unix))]
 const TEST_STAMP_FILE_ENV: &str = "HARMONIA_TEST_COLLECTIVE_STAMP_FILE";
 
-/// The fixture seam accepts one explicit regular file beneath this ground's
-/// receipts tree. Production builds retain the HTTPS-only candidate surface.
-#[cfg(feature = "test-facade")]
+/// The fixture seam accepts only one explicit regular file beneath this
+/// ground's receipts tree. Production file:// candidates remain directory roots.
+#[cfg(all(feature = "test-facade", unix))]
 fn fixture_stamp_file_path(locator: &str) -> Option<std::path::PathBuf> {
     let path_text = locator.strip_prefix("file://")?;
     if !path_text.starts_with('/')
@@ -442,6 +464,7 @@ fn fixture_stamp_file_path(locator: &str) -> Option<std::path::PathBuf> {
     }
 
     let receipts_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("receipts");
+    validate_local_path_components(&receipts_root).ok()?;
     let root_metadata = std::fs::symlink_metadata(&receipts_root).ok()?;
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
         return None;
@@ -473,46 +496,101 @@ fn fixture_stamp_file_path(locator: &str) -> Option<std::path::PathBuf> {
 #[cfg(all(feature = "test-facade", unix))]
 fn fetch_fixture_stamp_file(
     locator: &str,
-) -> Result<FetchedStamp, (String, String, Option<u16>)> {
-    let path = fixture_stamp_file_path(locator).ok_or_else(|| {
-        (
-            "wukong-staff-source-candidate-invalid".into(),
-            "unknown".into(),
-            None,
-        )
+    configured_key_candidates: &[String],
+) -> Result<FetchedStamp, CandidateFailure> {
+    let path = fixture_stamp_file_path(locator).ok_or_else(|| CandidateFailure {
+        verdict: "UNKNOWN".into(),
+        signal: "wukong-staff-source-candidate-invalid".into(),
+        selected_release: "unknown".into(),
+        http_status: None,
     })?;
-    let file = crate::atoms::attest::open_nofollow_read(&path).map_err(|_| {
-        (
-            "wukong-staff-stamp-unreachable".into(),
-            "test-facade-file".into(),
-            None,
-        )
+    let selected_release = "test-facade-file".to_owned();
+    let mut file = crate::atoms::attest::open_nofollow_read(&path).map_err(|_| CandidateFailure {
+        verdict: "UNAVAILABLE".into(),
+        signal: "wukong-staff-stamp-unreachable".into(),
+        selected_release: selected_release.clone(),
+        http_status: None,
     })?;
     let mut bytes = Vec::with_capacity(MAX_STAMP_BYTES.min(1024));
     file.take((MAX_STAMP_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| {
-            (
-                "wukong-staff-stamp-unreachable".into(),
-                "test-facade-file".into(),
-                None,
-            )
+        .map_err(|_| CandidateFailure {
+            verdict: "UNAVAILABLE".into(),
+            signal: "wukong-staff-stamp-unreachable".into(),
+            selected_release: selected_release.clone(),
+            http_status: None,
         })?;
     if bytes.len() > MAX_STAMP_BYTES {
-        return Err((
-            "wukong-staff-stamp-response-oversized".into(),
-            "test-facade-file".into(),
-            None,
-        ));
+        return Err(CandidateFailure {
+            verdict: "INVALID".into(),
+            signal: "wukong-staff-stamp-response-oversized".into(),
+            selected_release,
+            http_status: None,
+        });
     }
+    let parsed = parse_collective_stamp(&bytes).map_err(|(verdict, signal)| CandidateFailure {
+        verdict,
+        signal,
+        selected_release: selected_release.clone(),
+        http_status: None,
+    })?;
+    let mirror_base = MirrorBase::None;
+    let key_attempts = verify_parsed_stamp(
+        &parsed,
+        configured_key_candidates,
+        None,
+        &mirror_base,
+    )
+    .map_err(|failure| CandidateFailure {
+        selected_release: selected_release.clone(),
+        ..failure
+    })?;
     Ok(FetchedStamp {
-        bytes,
+        parsed,
         stamp_source: locator.to_owned(),
-        selected_release: "test-facade-file".into(),
-        key_asset_url: None,
-        mirror_base: MirrorBase::File(locator.to_owned()),
+        selected_release,
+        key_attempts,
+        key_candidates: configured_key_candidates.to_vec(),
+        fire_asset_urls: std::collections::BTreeMap::new(),
+        mirror_base,
     })
 }
+
+fn safe_locator(locator: &str) -> Option<String> {
+    let locator = locator.trim();
+    safe_https_url(locator)
+        .or_else(|| local_file_url_path(locator).map(|_| locator.to_owned()))
+}
+
+fn local_file_url_path(locator: &str) -> Option<std::path::PathBuf> {
+    let path = locator.strip_prefix("file://")?;
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.bytes().any(|byte| {
+            byte.is_ascii_control() || matches!(byte, b'%' | b'?' | b'#' | b'\\')
+        })
+    {
+        return None;
+    }
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            !matches!(component, std::path::Component::RootDir | std::path::Component::Normal(_))
+        })
+        || path.file_name().is_none()
+    {
+        return None;
+    }
+    Some(path)
+}
+
+fn safe_local_directory_root(locator: &str) -> Option<std::path::PathBuf> {
+    let path = local_file_url_path(locator)?;
+    validate_local_path_components(&path).ok()?;
+    let metadata = std::fs::symlink_metadata(&path).ok()?;
+    (!metadata.file_type().is_symlink() && metadata.is_dir()).then_some(path)
+}
+
 
 fn safe_https_url(url: &str) -> Option<String> {
     let url = url.trim();
@@ -554,7 +632,7 @@ fn candidate_strings(value: &Value) -> Vec<String> {
             Value::Object(object) => {
                 if let Some(line) = object.get("line").or_else(|| object.get("key_line")) {
                     collect(line, output);
-                } else if let Some(locator) = candidate_locator(value) {
+                } else if let Some(locator) = key_candidate_locator(value) {
                     output.push(locator);
                 }
             }
@@ -702,6 +780,65 @@ fn request(url: &str, max_bytes: usize) -> Result<HttpResponse, String> {
     })
 }
 
+fn validate_local_path_components(path: &std::path::Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("wukong-staff-local-file-invalid".into());
+    }
+    let mut current = std::path::PathBuf::from("/");
+    let components = path.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        match component {
+            std::path::Component::RootDir => continue,
+            std::path::Component::Normal(name) => current.push(name),
+            _ => return Err("wukong-staff-local-file-invalid".into()),
+        }
+        let metadata = std::fs::symlink_metadata(&current)
+            .map_err(|_| "wukong-staff-local-file-unavailable".to_string())?;
+        if metadata.file_type().is_symlink()
+            || (index + 1 < components.len() && !metadata.is_dir())
+        {
+            return Err("wukong-staff-local-file-invalid".into());
+        }
+    }
+    Ok(())
+}
+
+fn read_locator(locator: &str, max_bytes: usize) -> Result<HttpResponse, String> {
+    if let Some(path) = local_file_url_path(locator) {
+        validate_local_path_components(&path)?;
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|_| "wukong-staff-local-file-unavailable".to_string())?;
+        if !metadata.file_type().is_file() {
+            return Err("wukong-staff-local-file-invalid".into());
+        }
+        #[cfg(unix)]
+        let mut file = crate::atoms::attest::open_nofollow_read(&path)
+            .map_err(|_| "wukong-staff-local-file-unavailable".to_string())?;
+        #[cfg(not(unix))]
+        let mut file = std::fs::File::open(&path)
+            .map_err(|_| "wukong-staff-local-file-unavailable".to_string())?;
+        if !file
+            .metadata()
+            .map_err(|_| "wukong-staff-local-file-unavailable".to_string())?
+            .is_file()
+        {
+            return Err("wukong-staff-local-file-invalid".into());
+        }
+        let mut body = Vec::with_capacity(max_bytes.min(MAX_HTTP_BODY));
+        file.take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut body)
+            .map_err(|_| "wukong-staff-local-file-unavailable".to_string())?;
+        let oversized = body.len() > max_bytes;
+        body.truncate(max_bytes);
+        return Ok(HttpResponse {
+            status: 200,
+            body,
+            oversized,
+        });
+    }
+    request(locator, max_bytes)
+}
+
 fn curl_authorization_config(token: &str) -> Option<String> {
     if token.bytes().any(|byte| byte.is_ascii_control()) {
         return None;
@@ -711,20 +848,47 @@ fn curl_authorization_config(token: &str) -> Option<String> {
 }
 
 struct FetchedStamp {
-    bytes: Vec<u8>,
+    parsed: ParsedStamp,
     stamp_source: String,
     selected_release: String,
-    key_asset_url: Option<String>,
+    key_attempts: Vec<Value>,
+    key_candidates: Vec<String>,
+    fire_asset_urls: std::collections::BTreeMap<String, String>,
     mirror_base: MirrorBase,
 }
 
 enum MirrorBase {
-    File(String),
+    None,
+    HttpsFile(String),
+    LocalRoot(std::path::PathBuf),
     Forgejo {
         authority: String,
         repo_path: String,
         commit: String,
     },
+}
+
+struct CandidateFailure {
+    verdict: String,
+    signal: String,
+    selected_release: String,
+    http_status: Option<u16>,
+}
+
+fn candidate_failure_rank(failure: &CandidateFailure) -> u8 {
+    match failure.verdict.as_str() {
+        "INVALID" => 3,
+        "UNKNOWN" => 2,
+        _ => 1,
+    }
+}
+
+fn fire_failure_rank(seal: &FireSealObservation) -> u8 {
+    match seal.status.as_str() {
+        "INVALID" => 4,
+        "UNKNOWN" => 3,
+        _ => 1,
+    }
 }
 
 impl FetchedStamp {
@@ -733,16 +897,16 @@ impl FetchedStamp {
             return None;
         }
         match &self.mirror_base {
-            MirrorBase::File(stamp_url) => {
+            MirrorBase::None => None,
+            MirrorBase::HttpsFile(stamp_url) => {
                 let rest = stamp_url.strip_prefix("https://")?;
                 let (authority, path) = rest.split_once('/')?;
                 let path = path.split(['?', '#']).next()?;
-                let parent = path.rsplit_once('/')?.0.trim_end_matches('/');
-                Some(if parent.is_empty() {
-                    format!("https://{authority}/keys/{key_id}.txt")
-                } else {
-                    format!("https://{authority}/{parent}/keys/{key_id}.txt")
-                })
+                let root = https_stamp_root(path);
+                Some(format!("https://{authority}{root}/keys/{key_id}.txt"))
+            }
+            MirrorBase::LocalRoot(root) => {
+                Some(local_file_url(&root.join("keys").join(format!("{key_id}.txt"))))
             }
             MirrorBase::Forgejo {
                 authority,
@@ -753,53 +917,383 @@ impl FetchedStamp {
             )),
         }
     }
+
+    fn fire_seal_locator(&self, profile: &str) -> Option<String> {
+        let asset = format!("fire-{profile}.mgla");
+        match &self.mirror_base {
+            MirrorBase::None => None,
+            MirrorBase::HttpsFile(stamp_url) => https_sibling(stamp_url, &asset),
+            MirrorBase::LocalRoot(root) => Some(local_file_url(
+                &root.join("fire").join(profile).join("latest.mgla"),
+            )),
+            MirrorBase::Forgejo { .. } => self.fire_asset_urls.get(&asset).cloned(),
+        }
+    }
 }
 
-fn fetch_candidate_stamp(locator: &str) -> Result<FetchedStamp, (String, String, Option<u16>)> {
+fn unavailable_fire_seal(
+    profile: &str,
+    signal: &str,
+    source: Option<String>,
+) -> FireSealObservation {
+    FireSealObservation {
+        profile: profile.to_owned(),
+        status: "UNAVAILABLE".into(),
+        source: source.map(|locator| safe_source_label(&locator)),
+        signal: signal.to_owned(),
+        ..FireSealObservation::default()
+
+    }
+}
+
+fn observe_fire_seal_for_profile(
+    profile: &str,
+    stamp_source: Option<&str>,
+    verified_candidates: &[FetchedStamp],
+) -> FireSealObservation {
+    if verified_candidates.is_empty() {
+        return unavailable_fire_seal(
+            profile,
+            "wukong-fire-stamp-unavailable",
+            stamp_source.map(str::to_owned),
+        );
+    }
+    let readable_bands = verified_candidates
+        .iter()
+        .map(|candidate| candidate.parsed.stamp_sha.clone())
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut best_seal: Option<FireSealObservation> = None;
+    for candidate in verified_candidates {
+        let Some(locator) = candidate.fire_seal_locator(profile) else {
+            let absent = unavailable_fire_seal(
+                profile,
+                "wukong-fire-seal-absent",
+                Some(candidate.stamp_source.clone()),
+            );
+            if best_seal.as_ref().is_none_or(|current| {
+                fire_failure_rank(&absent) > fire_failure_rank(current)
+            }) {
+                best_seal = Some(absent);
+            }
+            continue;
+        };
+        if !seen.insert(locator) {
+            continue;
+        }
+        let seal = observe_fire_seal(candidate, profile, &readable_bands);
+        if seal.status == "VALID" {
+            return seal;
+        }
+        if best_seal.as_ref().is_none_or(|current| {
+            fire_failure_rank(&seal) > fire_failure_rank(current)
+        }) {
+            best_seal = Some(seal);
+        }
+    }
+    best_seal.unwrap_or_else(|| {
+        unavailable_fire_seal(
+            profile,
+            "wukong-fire-seal-absent",
+            stamp_source.map(str::to_owned),
+        )
+    })
+}
+
+fn observe_fire_seal(
+    fetched: &FetchedStamp,
+    profile: &str,
+    readable_stamp_bands: &[String],
+) -> FireSealObservation {
+    let Some(locator) = fetched.fire_seal_locator(profile) else {
+        return unavailable_fire_seal(
+            profile,
+            "wukong-fire-seal-absent",
+            Some(fetched.stamp_source.clone()),
+        );
+    };
+    let response = match read_locator(&locator, MAX_STAMP_BYTES) {
+        Ok(response) => response,
+        Err(_) => {
+            return unavailable_fire_seal(
+                profile,
+                "wukong-fire-seal-unreachable",
+                Some(locator),
+            );
+        }
+    };
+    if response.oversized {
+        return FireSealObservation {
+            profile: profile.to_owned(),
+            status: "INVALID".into(),
+            source: Some(safe_source_label(&locator)),
+            signal: "wukong-fire-seal-response-oversized".into(),
+            ..FireSealObservation::default()
+        };
+    }
+    if !(200..300).contains(&response.status) {
+        return unavailable_fire_seal(
+            profile,
+            if response.status == 404 {
+                "wukong-fire-seal-absent"
+            } else {
+                "wukong-fire-seal-unreachable"
+            },
+            Some(locator),
+        );
+    }
+    let parsed = match parse_mgla(&response.body) {
+        Ok(parsed) => parsed,
+        Err((status, signal)) => {
+            return FireSealObservation {
+                profile: profile.to_owned(),
+                status,
+                source: Some(safe_source_label(&locator)),
+                signal,
+                ..FireSealObservation::default()
+            };
+        }
+    };
+    let expected_product = format!("wukong-fire-{profile}");
+    if parsed.product != expected_product {
+        return FireSealObservation {
+            profile: profile.to_owned(),
+            status: "INVALID".into(),
+            band: Some(parsed.stamp_sha),
+            licensee: Some(parsed.licensee),
+            issued: Some(parsed.issued),
+            source: Some(safe_source_label(&locator)),
+            signal: "wukong-fire-product-invalid".into(),
+            ..FireSealObservation::default()
+        };
+    }
+
+    let mut key_inputs = fetched
+        .key_candidates
+        .iter()
+        .cloned()
+        .map(|candidate| (candidate, "declared-key-line"))
+        .collect::<Vec<_>>();
+    if let Some(mirror) = fetched.mirror_key_url(&parsed.key_id) {
+        key_inputs.push((mirror, "source-mirror-key"));
+    }
+    let mut seen = Vec::<String>::new();
+    key_inputs.retain(|(candidate, _)| {
+        if seen.iter().any(|previous| previous == candidate) {
+            false
+        } else {
+            seen.push(candidate.clone());
+            true
+        }
+    });
+    let mut last_invalid = None;
+    let mut last_unknown = None;
+    let mut last_unavailable = "wukong-fire-key-line-unavailable".to_string();
+    for (key_candidate, _) in key_inputs.into_iter().take(MAX_KEY_CANDIDATES + 1) {
+        match read_key_candidate(&key_candidate) {
+            Ok(key_line) => match verify_collective_stamp(&parsed, &key_line) {
+                Ok((_, _, _)) => {
+                    if !readable_stamp_bands.iter().any(|band| band == &parsed.stamp_sha) {
+                        return FireSealObservation {
+                            profile: profile.to_owned(),
+                            status: "INVALID".into(),
+                            band: Some(parsed.stamp_sha.clone()),
+                            licensee: Some(parsed.licensee),
+                            issued: Some(parsed.issued),
+                            source: Some(safe_source_label(&locator)),
+                            signal: format!(
+                                "wukong-fire-band-mismatch {profile} fire_band={}",
+                                parsed.stamp_sha
+                            ),
+                            ..FireSealObservation::default()
+                        };
+                    }
+                    return FireSealObservation {
+                        profile: profile.to_owned(),
+                        status: "VALID".into(),
+                        band: Some(parsed.stamp_sha),
+                        licensee: Some(parsed.licensee),
+                        issued: Some(parsed.issued),
+                        source: Some(safe_source_label(&locator)),
+                        signal: "none".into(),
+                        terms: parsed.terms,
+                    };
+                }
+                Err((verdict, signal)) if verdict == "INVALID" => last_invalid = Some(signal),
+                Err((_, signal)) => last_unknown = Some(signal),
+            },
+            Err(KeyReadFailure::Unavailable(signal)) => last_unavailable = signal,
+            Err(KeyReadFailure::Unknown(signal)) | Err(KeyReadFailure::Invalid(signal)) => {
+                last_unknown = Some(signal)
+            }
+        }
+    }
+    FireSealObservation {
+        profile: profile.to_owned(),
+        status: if last_invalid.is_some() {
+            "INVALID".into()
+        } else if last_unknown.is_some() {
+            "UNKNOWN".into()
+        } else {
+            "UNAVAILABLE".into()
+        },
+        band: Some(parsed.stamp_sha),
+        licensee: Some(parsed.licensee),
+        issued: Some(parsed.issued),
+        source: Some(safe_source_label(&locator)),
+        signal: last_invalid
+            .or(last_unknown)
+            .unwrap_or(last_unavailable),
+        ..FireSealObservation::default()
+    }
+}
+
+pub(crate) fn safe_source_label(locator: &str) -> String {
+    locator
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(locator)
+        .to_owned()
+}
+
+fn local_file_url(path: &std::path::Path) -> String {
+    format!("file://{}", path.display())
+}
+
+fn https_stamp_root(path: &str) -> String {
+    let root = path
+        .strip_suffix("/stamps/latest.mgla")
+        .unwrap_or_else(|| path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or_default())
+        .trim_matches('/');
+    if root.is_empty() {
+        String::new()
+    } else {
+        format!("/{root}")
+    }
+}
+
+fn https_sibling(locator: &str, filename: &str) -> Option<String> {
+    let locator = safe_https_url(locator)?;
+    let rest = locator.strip_prefix("https://")?;
+    let (authority, path_and_query) = rest.split_once('/')?;
+    let path = path_and_query.split(['?', '#']).next()?;
+    if path.rsplit('/').next()? != "latest.mgla" {
+        return None;
+    }
+    let parent = path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or_default();
+    Some(if parent.is_empty() {
+        format!("https://{authority}/{filename}")
+    } else {
+        format!("https://{authority}/{parent}/{filename}")
+    })
+}
+
+fn fetch_candidate_stamp(
+    locator: &str,
+    configured_key_candidates: &[String],
+) -> Result<FetchedStamp, CandidateFailure> {
     #[cfg(all(feature = "test-facade", unix))]
     if fixture_stamp_file_path(locator).is_some() {
-        return fetch_fixture_stamp_file(locator);
+        return fetch_fixture_stamp_file(locator, configured_key_candidates);
     }
     if let Some((api, authority, repo_path)) = release_endpoint(locator) {
-        return fetch_release_stamp(&api, &authority, &repo_path)
-            .map_err(|(signal, release)| (signal, release, None));
+        return fetch_release_stamp(&api, &authority, &repo_path, configured_key_candidates);
     }
-    let safe_locator = safe_https_url(locator).ok_or_else(|| {
-        (
-            "wukong-staff-source-candidate-invalid".into(),
-            "unknown".into(),
-            None,
-        )
+    let safe_locator = safe_locator(locator).ok_or_else(|| CandidateFailure {
+        verdict: "UNKNOWN".into(),
+        signal: "wukong-staff-source-candidate-invalid".into(),
+        selected_release: "unknown".into(),
+        http_status: None,
     })?;
-    if !is_file_url(&safe_locator) {
-        return Err((
-            "wukong-staff-source-candidate-invalid".into(),
-            "unknown".into(),
-            None,
-        ));
-    }
-    let response = request(&safe_locator, MAX_STAMP_BYTES)
-        .map_err(|reason| (reason, "plain-https-file".into(), None))?;
+    let local_path = local_file_url_path(&safe_locator);
+    let (stamp_locator, mirror_base, selected_release): (String, MirrorBase, String) =
+        if let Some(path) = local_path.as_ref() {
+            validate_local_path_components(path).map_err(|_| CandidateFailure {
+                verdict: "UNKNOWN".into(),
+                signal: "wukong-staff-local-file-invalid".into(),
+                selected_release: "local-file".into(),
+                http_status: None,
+            })?;
+            let metadata = std::fs::symlink_metadata(path).map_err(|_| CandidateFailure {
+                verdict: "UNAVAILABLE".into(),
+                signal: "wukong-staff-stamp-unreachable".into(),
+                selected_release: "local-file".into(),
+                http_status: None,
+            })?;
+            if !metadata.is_dir() {
+                return Err(CandidateFailure {
+                    verdict: "UNKNOWN".into(),
+                    signal: "wukong-staff-local-file-invalid".into(),
+                    selected_release: "local-file".into(),
+                    http_status: None,
+                });
+            }
+            (
+                local_file_url(&path.join("stamps").join("latest.mgla")),
+                MirrorBase::LocalRoot(path.clone()),
+                "local-file".into(),
+            )
+        } else {
+            if !is_file_url(&safe_locator) {
+                return Err(CandidateFailure {
+                    verdict: "UNKNOWN".into(),
+                    signal: "wukong-staff-source-candidate-invalid".into(),
+                    selected_release: "unknown".into(),
+                    http_status: None,
+                });
+            }
+            (
+                safe_locator.clone(),
+                MirrorBase::HttpsFile(safe_locator.clone()),
+                "plain-https-file".into(),
+            )
+        };
+    let response = read_locator(&stamp_locator, MAX_STAMP_BYTES).map_err(|_| CandidateFailure {
+        verdict: "UNAVAILABLE".into(),
+        signal: "wukong-staff-stamp-unreachable".into(),
+        selected_release: selected_release.clone(),
+        http_status: None,
+    })?;
     if !(200..300).contains(&response.status) {
-        return Err((
-            "wukong-staff-stamp-http-unavailable".into(),
-            "plain-https-file".into(),
-            Some(response.status),
-        ));
+        return Err(CandidateFailure {
+            verdict: "UNAVAILABLE".into(),
+            signal: "wukong-staff-stamp-http-unavailable".into(),
+            selected_release,
+            http_status: Some(response.status),
+        });
     }
     if response.oversized {
-        return Err((
-            "wukong-staff-stamp-response-oversized".into(),
-            "plain-https-file".into(),
-            None,
-        ));
+        return Err(CandidateFailure {
+            verdict: "INVALID".into(),
+            signal: "wukong-staff-stamp-response-oversized".into(),
+            selected_release,
+            http_status: None,
+        });
     }
+    let parsed = parse_collective_stamp(&response.body).map_err(|(verdict, signal)| CandidateFailure {
+        verdict,
+        signal,
+        selected_release: selected_release.clone(),
+        http_status: None,
+    })?;
+    let key_attempts = verify_parsed_stamp(
+        &parsed,
+        configured_key_candidates,
+        None,
+        &mirror_base,
+    )
+    .map_err(|failure| CandidateFailure {
+        selected_release: selected_release.clone(),
+        ..failure
+    })?;
     Ok(FetchedStamp {
-        bytes: response.body,
-        stamp_source: safe_locator.clone(),
-        selected_release: "plain-https-file".into(),
-        key_asset_url: None,
-        mirror_base: MirrorBase::File(safe_locator),
+        parsed,
+        stamp_source: stamp_locator,
+        selected_release,
+        key_attempts,
+        key_candidates: configured_key_candidates.to_vec(),
+        fire_asset_urls: std::collections::BTreeMap::new(),
+        mirror_base,
     })
 }
 
@@ -807,29 +1301,38 @@ fn fetch_release_stamp(
     api: &str,
     authority: &str,
     repo_path: &str,
-) -> Result<FetchedStamp, (String, String)> {
+    configured_key_candidates: &[String],
+) -> Result<FetchedStamp, CandidateFailure> {
     let mut releases = Vec::<Value>::new();
     for page_number in 1..=MAX_RELEASE_PAGES {
         let url = format!("{api}?limit={RELEASES_PER_PAGE}&page={page_number}");
-        let response = request(&url, MAX_HTTP_BODY)
-            .map_err(|reason| (reason, "release-listing".into()))?;
+        let response = request(&url, MAX_HTTP_BODY).map_err(|reason| CandidateFailure {
+            verdict: "UNAVAILABLE".into(),
+            signal: reason,
+            selected_release: "release-listing".into(),
+            http_status: None,
+        })?;
         if response.oversized {
-            return Err((
-                "wukong-staff-release-list-oversized".into(),
-                "release-listing".into(),
-            ));
+            return Err(CandidateFailure {
+                verdict: "UNAVAILABLE".into(),
+                signal: "wukong-staff-release-list-oversized".into(),
+                selected_release: "release-listing".into(),
+                http_status: None,
+            });
         }
         if !(200..300).contains(&response.status) {
-            return Err((
-                "wukong-staff-release-list-unavailable".into(),
-                "release-listing".into(),
-            ));
+            return Err(CandidateFailure {
+                verdict: "UNAVAILABLE".into(),
+                signal: "wukong-staff-release-list-unavailable".into(),
+                selected_release: "release-listing".into(),
+                http_status: Some(response.status),
+            });
         }
-        let page: Vec<Value> = serde_json::from_slice(&response.body).map_err(|_| {
-            (
-                "wukong-staff-release-list-malformed".into(),
-                "release-listing".into(),
-            )
+        let page: Vec<Value> = serde_json::from_slice(&response.body).map_err(|_| CandidateFailure {
+            verdict: "UNKNOWN".into(),
+            signal: "wukong-staff-release-list-malformed".into(),
+            selected_release: "release-listing".into(),
+            http_status: None,
         })?;
         let count = page.len();
         releases.extend(page);
@@ -843,68 +1346,254 @@ fn fetch_release_stamp(
             .cmp(published_at(left))
             .then_with(|| release_tag(right).cmp(&release_tag(left)))
     });
-    let Some(newest) = releases.first() else {
-        return Err((
-            "wukong-staff-stamp-absent".into(),
-            "no-eligible-release".into(),
-        ));
-    };
-    let tag = release_tag(newest).unwrap_or("unknown-tag");
-    let commit = eligible_release(newest)
-        .expect("filtered eligible releases")
-        .to_owned();
-    let selected_release = tag.to_owned();
-    let assets = newest.get("assets").and_then(Value::as_array);
-    let Some(stamp_asset) = assets.and_then(|assets| {
-        assets
-            .iter()
-            .find(|asset| asset.get("name").and_then(Value::as_str) == Some("stamp.mgla"))
-    }) else {
-        return Err(("wukong-staff-stamp-absent".into(), selected_release));
-    };
-    let Some(stamp_url) = release_asset_url(stamp_asset) else {
-        return Err((
-            "wukong-staff-stamp-asset-url-missing".into(),
-            selected_release,
-        ));
-    };
-    let response = request(&stamp_url, MAX_STAMP_BYTES)
-        .map_err(|reason| (reason, selected_release.clone()))?;
-    if response.oversized {
-        return Err((
-            "wukong-staff-stamp-response-oversized".into(),
-            selected_release,
-        ));
+    if releases.is_empty() {
+        return Err(CandidateFailure {
+            verdict: "UNAVAILABLE".into(),
+            signal: "wukong-staff-stamp-absent".into(),
+            selected_release: "no-eligible-release".into(),
+            http_status: None,
+        });
     }
-    if !(200..300).contains(&response.status) {
-        return Err((
-            "wukong-staff-stamp-http-unavailable".into(),
-            selected_release,
-        ));
-    }
-    let bytes = response.body;
-    let key_asset_name = format!(
-        "keys/{}.txt",
-        stamp_key_id_hint_from_bytes(&bytes).unwrap_or_default()
-    );
-    let key_asset_url = assets
-        .and_then(|assets| {
+
+    let mut last_failure = CandidateFailure {
+        verdict: "UNAVAILABLE".into(),
+        signal: "wukong-staff-stamp-absent".into(),
+        selected_release: "no-release-stamp".into(),
+        http_status: None,
+    };
+    for release in &releases {
+        let selected_release = release_tag(release).unwrap_or("unknown-tag").to_owned();
+        let commit = eligible_release(release).unwrap_or_default().to_owned();
+        let assets = release.get("assets").and_then(Value::as_array);
+        let Some(stamp_asset) = assets.and_then(|assets| {
+            assets.iter().find(|asset| {
+                asset.get("name").and_then(Value::as_str) == Some("stamp.mgla")
+            })
+        }) else {
+            last_failure = CandidateFailure {
+                verdict: "UNAVAILABLE".into(),
+                signal: "wukong-staff-stamp-absent".into(),
+                selected_release,
+                http_status: None,
+            };
+            continue;
+        };
+        let Some(stamp_url) = release_asset_url(stamp_asset) else {
+            last_failure = CandidateFailure {
+                verdict: "UNAVAILABLE".into(),
+                signal: "wukong-staff-stamp-asset-url-missing".into(),
+                selected_release,
+                http_status: None,
+            };
+            continue;
+        };
+        let response = match request(&stamp_url, MAX_STAMP_BYTES) {
+            Ok(response) => response,
+            Err(signal) => {
+                last_failure = CandidateFailure {
+                    verdict: "UNAVAILABLE".into(),
+                    signal,
+                    selected_release,
+                    http_status: None,
+                };
+                continue;
+            }
+        };
+        if response.oversized {
+            last_failure = CandidateFailure {
+                verdict: "INVALID".into(),
+                signal: "wukong-staff-stamp-response-oversized".into(),
+                selected_release,
+                http_status: None,
+            };
+            continue;
+        }
+        if !(200..300).contains(&response.status) {
+            last_failure = CandidateFailure {
+                verdict: "UNAVAILABLE".into(),
+                signal: "wukong-staff-stamp-http-unavailable".into(),
+                selected_release,
+                http_status: Some(response.status),
+            };
+            continue;
+        }
+        let parsed = match parse_collective_stamp(&response.body) {
+            Ok(parsed) => parsed,
+            Err((verdict, signal)) => {
+                last_failure = CandidateFailure {
+                    verdict,
+                    signal,
+                    selected_release,
+                    http_status: None,
+                };
+                continue;
+            }
+        };
+        let key_asset_name = format!("keys/{}.txt", parsed.key_id);
+        let key_asset_url = assets.and_then(|assets| {
             assets.iter().find(|asset| {
                 asset.get("name").and_then(Value::as_str) == Some(key_asset_name.as_str())
             })
-        })
-        .and_then(release_asset_url);
-    Ok(FetchedStamp {
-        bytes,
-        stamp_source: stamp_url,
-        selected_release,
-        key_asset_url,
-        mirror_base: MirrorBase::Forgejo {
+        }).and_then(release_asset_url);
+        let mirror_base = MirrorBase::Forgejo {
             authority: authority.to_owned(),
             repo_path: repo_path.to_owned(),
             commit,
-        },
+        };
+        let key_attempts = match verify_parsed_stamp(
+            &parsed,
+            configured_key_candidates,
+            key_asset_url.as_deref(),
+            &mirror_base,
+        ) {
+            Ok(attempts) => attempts,
+            Err(failure) => {
+                last_failure = CandidateFailure {
+                    selected_release,
+                    ..failure
+                };
+                continue;
+            }
+        };
+        let fire_asset_urls = assets
+            .into_iter()
+            .flatten()
+            .filter_map(|asset| {
+                let name = asset.get("name").and_then(Value::as_str)?;
+                (name.starts_with("fire-") && name.ends_with(".mgla"))
+                    .then(|| release_asset_url(asset).map(|url| (name.to_owned(), url)))
+                    .flatten()
+            })
+            .collect();
+        return Ok(FetchedStamp {
+            parsed,
+            stamp_source: stamp_url,
+            selected_release,
+            key_attempts,
+            key_candidates: configured_key_candidates.to_vec(),
+            fire_asset_urls,
+            mirror_base,
+        });
+    }
+    Err(last_failure)
+}
+
+fn verify_parsed_stamp(
+    parsed: &ParsedStamp,
+    configured_key_candidates: &[String],
+    release_key_asset: Option<&str>,
+    mirror_base: &MirrorBase,
+) -> Result<Vec<Value>, CandidateFailure> {
+    let mut key_inputs = Vec::<(String, &'static str)>::new();
+    if let Some(asset_url) = release_key_asset {
+        key_inputs.push((asset_url.to_owned(), "release-key-asset"));
+    }
+    key_inputs.extend(
+        configured_key_candidates
+            .iter()
+            .cloned()
+            .map(|candidate| (candidate, "declared-key-line")),
+    );
+    if let Some(mirror_url) = mirror_base_key_url(mirror_base, &parsed.key_id) {
+        key_inputs.push((mirror_url, "source-mirror-key"));
+    }
+    let mut seen = Vec::new();
+    key_inputs.retain(|(candidate, _)| {
+        if seen.iter().any(|previous| previous == candidate) {
+            false
+        } else {
+            seen.push(candidate.clone());
+            true
+        }
+    });
+    let mut key_attempts = Vec::new();
+    let mut last_invalid = None;
+    let mut last_unknown = None;
+    let mut last_unavailable = "wukong-staff-key-line-unavailable".to_string();
+    for (key_candidate, source_kind) in key_inputs.into_iter().take(MAX_KEY_CANDIDATES + 2) {
+        match read_key_candidate(&key_candidate) {
+            Ok(key_line) => match verify_collective_stamp(parsed, &key_line) {
+                Ok(_) => {
+                    key_attempts.push(json!({
+                        "source":source_kind,
+                        "disposition":"verified",
+                    }));
+                    return Ok(key_attempts);
+                }
+                Err((verdict, signal)) if verdict == "INVALID" => {
+                    key_attempts.push(json!({
+                        "source":source_kind,
+                        "disposition":"invalid",
+                        "signal":signal,
+                    }));
+                    last_invalid = Some(signal);
+                }
+                Err((_, signal)) => {
+                    key_attempts.push(json!({
+                        "source":source_kind,
+                        "disposition":"unknown",
+                        "signal":signal,
+                    }));
+                    last_unknown = Some(signal);
+                }
+            },
+            Err(KeyReadFailure::Unavailable(signal)) => {
+                key_attempts.push(json!({
+                    "source":source_kind,
+                    "disposition":"unavailable",
+                    "signal":signal,
+                }));
+                last_unavailable = signal;
+            }
+            Err(KeyReadFailure::Unknown(signal)) | Err(KeyReadFailure::Invalid(signal)) => {
+                key_attempts.push(json!({
+                    "source":source_kind,
+                    "disposition":"unknown",
+                    "signal":signal,
+                }));
+                last_unknown = Some(signal);
+            }
+        }
+    }
+    let (verdict, signal) = if let Some(signal) = last_invalid {
+        ("INVALID", signal)
+    } else if let Some(signal) = last_unknown {
+        ("UNKNOWN", signal)
+    } else {
+        ("UNAVAILABLE", last_unavailable)
+    };
+    Err(CandidateFailure {
+        verdict: verdict.into(),
+        signal,
+        selected_release: "stamp".into(),
+        http_status: None,
     })
+}
+
+fn mirror_base_key_url(mirror_base: &MirrorBase, key_id: &str) -> Option<String> {
+    if !lower_hex(key_id, 16) {
+        return None;
+    }
+    match mirror_base {
+        MirrorBase::None => None,
+        MirrorBase::HttpsFile(stamp_url) => {
+            let rest = stamp_url.strip_prefix("https://")?;
+            let (authority, path) = rest.split_once('/')?;
+            let path = path.split(['?', '#']).next()?;
+            let root = https_stamp_root(path);
+            Some(format!("https://{authority}{root}/keys/{key_id}.txt"))
+        }
+        MirrorBase::LocalRoot(root) => {
+            Some(local_file_url(&root.join("keys").join(format!("{key_id}.txt"))))
+        }
+        MirrorBase::Forgejo {
+            authority,
+            repo_path,
+            commit,
+        } => Some(format!(
+            "https://{authority}/{repo_path}/raw/commit/{commit}/keys/{key_id}.txt"
+        )),
+    }
 }
 
 fn release_asset_url(asset: &Value) -> Option<String> {
@@ -1025,15 +1714,34 @@ fn trim_extraction_padding(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(&bytes[start..end]).ok()
 }
 
+fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
+    let parsed = parse_mgla(bytes)?;
+    if parsed.product != "wukong-staff" {
+        return Err(("INVALID".into(), "wukong-staff-stamp-terms-invalid".into()));
+    }
+    let concatenated = MEMBERS
+        .iter()
+        .map(|member| parsed.terms.get(*member).expect("fixed grant order").as_str())
+        .collect::<String>();
+    let expected_band = format!("{:x}", Sha256::digest(concatenated.as_bytes()));
+    if parsed.stamp_sha != expected_band {
+        return Err(("INVALID".into(), "wukong-staff-stamp-band-invalid".into()));
+    }
+    Ok(parsed)
+}
+
 struct ParsedStamp {
     body: String,
     signature: Signature,
     key_id: String,
     stamp_sha: String,
     terms: std::collections::BTreeMap<String, String>,
+    licensee: String,
+    issued: String,
+    product: String,
 }
 
-fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
+fn parse_mgla(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
     let line = trim_extraction_padding(bytes)
         .ok_or_else(|| ("INVALID".into(), "wukong-staff-stamp-encoding-invalid".into()))?;
     if !line.starts_with("MGLA1|") {
@@ -1101,25 +1809,18 @@ fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)>
         }
         terms.insert(member.to_owned(), sha.to_owned());
     }
-    if values.get("product").map(String::as_str) != Some("wukong-staff")
-        || values.get("expiry").map(String::as_str) != Some("never")
-    {
+    if values.get("expiry").map(String::as_str) != Some("never") {
         return Err(("INVALID".into(), "wukong-staff-stamp-terms-invalid".into()));
-    }
-    let concatenated = MEMBERS
-        .iter()
-        .map(|member| terms.get(*member).expect("fixed grant order").as_str())
-        .collect::<String>();
-    let expected_band = format!("{:x}", Sha256::digest(concatenated.as_bytes()));
-    if values.get("band") != Some(&expected_band) {
-        return Err(("INVALID".into(), "wukong-staff-stamp-band-invalid".into()));
     }
     Ok(ParsedStamp {
         body: body.to_owned(),
         signature,
         key_id,
-        stamp_sha: expected_band,
+        stamp_sha: values.get("band").cloned().unwrap_or_default(),
         terms,
+        licensee: values.get("licensee").cloned().unwrap_or_default(),
+        issued: values.get("issued").cloned().unwrap_or_default(),
+        product: values.get("product").cloned().unwrap_or_default(),
     })
 }
 
@@ -1128,12 +1829,12 @@ fn verify_collective_stamp(
     key_line: &str,
 ) -> Result<(String, std::collections::BTreeMap<String, String>, String), (String, String)> {
     let (key_id, public_key) = parse_key_line(key_line)
-        .map_err(|_| ("INVALID".into(), "wukong-staff-key-line-invalid".into()))?;
+        .map_err(|_| ("UNKNOWN".into(), "wukong-staff-key-line-foreign".into()))?;
     if stamp.key_id != key_id {
-        return Err(("INVALID".into(), "wukong-staff-key-id-mismatch".into()));
+        return Err(("UNKNOWN".into(), "wukong-staff-key-id-unavailable".into()));
     }
     let verifier = VerifyingKey::from_bytes(&public_key)
-        .map_err(|_| ("INVALID".into(), "wukong-staff-key-line-invalid".into()))?;
+        .map_err(|_| ("UNKNOWN".into(), "wukong-staff-key-line-foreign".into()))?;
     verifier
         .verify_strict(stamp.body.as_bytes(), &stamp.signature)
         .map_err(|_| ("INVALID".into(), "wukong-staff-signature-invalid".into()))?;
@@ -1142,6 +1843,7 @@ fn verify_collective_stamp(
 
 enum KeyReadFailure {
     Unavailable(String),
+    Unknown(String),
     Invalid(String),
 }
 
@@ -1151,9 +1853,25 @@ fn read_key_candidate(candidate: &str) -> Result<String, KeyReadFailure> {
             return Ok(line.to_owned());
         }
     }
-    let locator = safe_https_url(candidate)
-        .ok_or_else(|| KeyReadFailure::Invalid("wukong-staff-key-candidate-invalid".into()))?;
-    let response = match request(&locator, MAX_KEY_LINE_BYTES) {
+    let locator = safe_locator(candidate)
+        .ok_or_else(|| KeyReadFailure::Unknown("wukong-staff-key-candidate-foreign".into()))?;
+    if let Some(path) = local_file_url_path(&locator) {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(KeyReadFailure::Unknown("wukong-staff-key-line-absent".into()));
+            }
+            Err(_) => {
+                return Err(KeyReadFailure::Unavailable(
+                    "wukong-staff-key-line-unavailable".into(),
+                ));
+            }
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(KeyReadFailure::Unknown("wukong-staff-key-line-foreign".into()));
+            }
+            Ok(_) => {}
+        }
+    }
+    let response = match read_locator(&locator, MAX_KEY_LINE_BYTES) {
         Ok(response) => response,
         Err(_) => {
             return Err(KeyReadFailure::Unavailable(
@@ -1166,17 +1884,18 @@ fn read_key_candidate(candidate: &str) -> Result<String, KeyReadFailure> {
             "wukong-staff-key-line-oversized".into(),
         ));
     }
+    if response.status == 404 {
+        return Err(KeyReadFailure::Unknown("wukong-staff-key-line-absent".into()));
+    }
     if !(200..300).contains(&response.status) {
         return Err(KeyReadFailure::Unavailable(
             "wukong-staff-key-line-unavailable".into(),
         ));
     }
     let line = trim_extraction_padding(&response.body)
-        .ok_or_else(|| KeyReadFailure::Invalid("wukong-staff-key-line-invalid".into()))?;
+        .ok_or_else(|| KeyReadFailure::Unknown("wukong-staff-key-line-foreign".into()))?;
     if line.is_empty() {
-        return Err(KeyReadFailure::Invalid(
-            "wukong-staff-key-line-invalid".into(),
-        ));
+        return Err(KeyReadFailure::Unknown("wukong-staff-key-line-foreign".into()));
     }
     Ok(line.to_owned())
 }

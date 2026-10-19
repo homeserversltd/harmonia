@@ -237,6 +237,11 @@ fn seed_perspective_for_with_harmonia_sha(
     };
     validate_row(&row)?;
     let mut self_row = serde_json::to_value(row).map_err(|error| error.to_string())?;
+    self_row["fire_seal"] = crate::atoms::ask::collective_stamp::current_with_fire_seal()
+        .fire_seal
+        .as_ref()
+        .map(crate::atoms::ask::collective_stamp::FireSealObservation::ruyi_value)
+        .unwrap_or(Value::Null);
     if !caduceus_sha_present {
         self_row["caduceus_sha"] = Value::Null;
     }
@@ -284,6 +289,11 @@ fn refresh_self_row_from_beam_observation(
     harmonia_sha: Option<&str>,
 ) -> Value {
     let mut row = row;
+    row["fire_seal"] = crate::atoms::ask::collective_stamp::current_with_fire_seal()
+        .fire_seal
+        .as_ref()
+        .map(crate::atoms::ask::collective_stamp::FireSealObservation::ruyi_value)
+        .unwrap_or(Value::Null);
     for (field, value) in [
         ("harmonia_rustc_version", compiled_rustc_version()),
         ("rustc_installed", installed_rustc_version()),
@@ -560,31 +570,48 @@ pub(crate) fn register_promoted(
         .cloned()
         .unwrap_or_else(|| json!({}));
     let caduceus_port = caduceus_port();
-    merge_fields(
-        &mut row,
-        json!({
-            "schema": ROW_SCHEMA, "mac": identity.mac, "hostname": identity.hostname,
-            "canonical_name": canonical_name(&identity.hostname), "ipv4": identity.ipv4,
-            "profile": profile.id, "gui_face": transaction.gui,
-            "caduceus_port": caduceus_port,
-            "caduceus_sha": if evidence.caduceus_sha.is_empty() { Value::Null } else { json!(evidence.caduceus_sha) },
-            "env_sha": if evidence.env_sha.is_empty() { Value::Null } else { json!(evidence.env_sha) },
-            "harmonia_sha": HARMONIA_BUILD_SHA,
-            "harmonia_rustc_version": compiled_rustc_version(),
-            "rustc_installed": installed_rustc_version(),
-            "syzygy_sha": if evidence.mint.signal == "none" {
-                evidence.mint.syzygy_sha.clone()
-            } else {
-                None
-            },
-            "syzygy_signal": evidence.mint.signal,
-            "stamp_verdict": evidence.stamp_verdict,
-            "stamp_sha": evidence.matched_stamp_sha(),
-            "stamp_signal": evidence.stamp_signal,
-            "member_flags": evidence.member_flags,
-            "last_seen": now()?, "last_update": {"run_id": run_id, "converged": true}
-        }),
-    );
+    let mut updates = json!({
+        "schema": ROW_SCHEMA, "mac": identity.mac, "hostname": identity.hostname,
+        "canonical_name": canonical_name(&identity.hostname), "ipv4": identity.ipv4,
+        "profile": profile.id, "gui_face": transaction.gui,
+        "caduceus_port": caduceus_port,
+        "caduceus_sha": if evidence.caduceus_sha.is_empty() { Value::Null } else { json!(evidence.caduceus_sha) },
+        "env_sha": if evidence.env_sha.is_empty() { Value::Null } else { json!(evidence.env_sha) },
+        "harmonia_sha": HARMONIA_BUILD_SHA,
+        "harmonia_rustc_version": compiled_rustc_version(),
+        "rustc_installed": installed_rustc_version(),
+        "syzygy_sha": if evidence.mint.signal == "none" {
+            evidence.mint.syzygy_sha.clone()
+        } else {
+            None
+        },
+        "syzygy_signal": evidence.mint.signal,
+        "stamp_verdict": evidence.stamp_verdict,
+        "stamp_sha": evidence.matched_stamp_sha(),
+        "stamp_signal": evidence.stamp_signal,
+        "member_flags": evidence.member_flags,
+        "last_seen": now()?, "last_update": {"run_id": run_id, "converged": true}
+    });
+    updates["fire_seal"] = evidence
+        .observations
+        .get("wukong_fire_seal")
+        .filter(|fire_seal| {
+            fire_seal.get("status").and_then(Value::as_str) == Some("VALID")
+                && evidence
+                    .observations
+                    .get("wukong_fire_seal_members_match")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+        })
+        .map(|fire_seal| {
+            json!({
+                "band": fire_seal.get("band").cloned().unwrap_or(Value::Null),
+                "licensee": fire_seal.get("licensee").cloned().unwrap_or(Value::Null),
+                "issued": fire_seal.get("issued").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .unwrap_or(Value::Null);
+    merge_fields(&mut row, updates);
     if caduceus_port.is_none() {
         row.as_object_mut()
             .expect("Ruyi self row is assembled as an object")
@@ -1308,6 +1335,7 @@ fn exchange(
         }
     }
     let mut payload = row.clone();
+    payload["fire_seal"] = row.get("fire_seal").cloned().unwrap_or(Value::Null);
     payload["perspective"] = perspective.clone();
     let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
     // The row and its finalized perspective travel in the single post-reconcile PUT.

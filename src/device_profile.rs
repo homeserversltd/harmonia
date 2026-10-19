@@ -257,6 +257,66 @@ fn certificate_profile() -> Result<String, String> {
     Ok(profile.to_string())
 }
 
+/// Resolve the sold profile whose seal this process wears. This is optional
+/// evidence: a certificate/profile read failure never gates an update press.
+pub(crate) fn own_sold_profile() -> Option<String> {
+    const SOLD_PROFILES: [&str; 3] = ["homeserver", "homeconsole", "tv"];
+    const MAX_PROFILE_LINEAGE: usize = 16;
+
+    let certificate = load_certificate().ok()?;
+    let selected_id = certificate.kernel.profile.trim();
+    if selected_id.is_empty()
+        || selected_id.contains('/')
+        || selected_id.contains('\\')
+        || selected_id == "."
+        || selected_id == ".."
+    {
+        return None;
+    }
+    if SOLD_PROFILES.contains(&selected_id) {
+        return Some(selected_id.to_owned());
+    }
+
+    #[cfg(any(test, feature = "test-facade"))]
+    let module_root = std::env::var_os("HARMONIA_MODULE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(HARMONIA_MODULE_ROOT));
+    #[cfg(not(any(test, feature = "test-facade")))]
+    let module_root = PathBuf::from(HARMONIA_MODULE_ROOT);
+    let profiles_root = module_root.join("profiles");
+    let mut profile_id = selected_id.to_owned();
+    let mut visited = std::collections::BTreeSet::new();
+
+    for _ in 0..MAX_PROFILE_LINEAGE {
+        if !visited.insert(profile_id.clone()) {
+            return None;
+        }
+        if SOLD_PROFILES.contains(&profile_id.as_str()) {
+            return Some(profile_id);
+        }
+        if profile_id.is_empty()
+            || profile_id.contains('/')
+            || profile_id.contains('\\')
+            || profile_id == "."
+            || profile_id == ".."
+        {
+            return None;
+        }
+        let profile_path = profiles_root.join(&profile_id).join("index.json");
+        let bytes = fs::read(profile_path).ok()?;
+        let selected: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        if selected.get("id").and_then(serde_json::Value::as_str) != Some(profile_id.as_str()) {
+            return None;
+        }
+        let base = selected
+            .get("extends")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| selected.get("source_extends").and_then(serde_json::Value::as_str))?;
+        profile_id = base.to_owned();
+    }
+    None
+}
+
 pub(crate) fn verify_asserted_profile(asserted_profile: &str) -> Result<(), String> {
     let certificate_profile = certificate_profile()?;
     if certificate_profile != asserted_profile {

@@ -1389,26 +1389,46 @@ pub(crate) fn toolbelt() -> Result<(), String> {
 
 pub(crate) fn explain() -> Result<(), String> {
     let cadence = bands::stage_profile::read_device_update_cadence()?;
-    let stamp = atoms::ask::collective_stamp::current();
+    let stamp = atoms::ask::collective_stamp::current_with_fire_seal();
     let stamp_explanation = serde_json::json!({
-        "source": &stamp.stamp_source,
+        "source": stamp
+            .stamp_source
+            .as_deref()
+            .map(atoms::ask::collective_stamp::safe_source_label),
         "key_id": &stamp.key_id,
         "verdict": &stamp.verdict,
         "signal": &stamp.signal,
     });
+    let mut effective_targets = stamp
+        .declared_members
+        .iter()
+        .filter_map(|member| {
+            stamp
+                .target(member)
+                .map(|target| (member.clone(), serde_json::json!(target)))
+        })
+        .collect::<serde_json::Map<String, serde_json::Value>>();
+    effective_targets
+        .entry("caduceus".to_owned())
+        .or_insert(serde_json::Value::Null);
+    let mut explanation = serde_json::json!({
+        "schema": "harmonia.explain.v1",
+        "ok": true,
+        "version": VERSION,
+        "compiled_component": COMPILED_COMPONENT,
+        "update_interval": &cadence.calendar,
+        "update_interval_source": cadence.source,
+        "wukong_staff_stamp": &stamp_explanation,
+    });
+    if let Some(fire_seal) = stamp.fire_seal.as_ref() {
+        explanation["wukong_fire_seal"] = fire_seal.as_json();
+        explanation["effective_targets"] = serde_json::Value::Object(effective_targets.clone());
+    }
     println!("schema=harmonia.explain.v1");
     hyalos::forward_receipt(
         "schema=harmonia.explain.v1",
         "schema=harmonia.explain.v1 ok=true",
-        Some(serde_json::json!({
-            "schema": "harmonia.explain.v1",
-            "ok": true,
-            "version": VERSION,
-            "compiled_component": COMPILED_COMPONENT,
-            "update_interval": &cadence.calendar,
-            "update_interval_source": cadence.source,
-            "wukong_staff_stamp": &stamp_explanation,
-        })),
+        Some(explanation),
         Some(true),
         None,
     );
@@ -1418,10 +1438,12 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("compiled_component={}", COMPILED_COMPONENT);
     println!("update_interval={}", cadence.calendar);
     println!("update_interval_source={}", cadence.source);
-    println!(
-        "wukong_staff_stamp_source={}",
-        stamp.stamp_source.as_deref().unwrap_or("none")
-    );
+    let stamp_source_label = stamp
+        .stamp_source
+        .as_deref()
+        .map(atoms::ask::collective_stamp::safe_source_label)
+        .unwrap_or_else(|| "none".to_owned());
+    println!("wukong_staff_stamp_source={stamp_source_label}");
     println!(
         "wukong_staff_stamp_key_id={}",
         stamp.key_id.as_deref().unwrap_or("none")
@@ -1431,6 +1453,21 @@ pub(crate) fn explain() -> Result<(), String> {
         stamp.verdict.as_deref().unwrap_or("UNAVAILABLE")
     );
     println!("wukong_staff_stamp_signal={}", stamp.signal);
+    if let Some(fire_seal) = stamp.fire_seal.as_ref() {
+        println!("wukong_fire_seal_profile={}", fire_seal.profile);
+        println!("wukong_fire_seal_status={}", fire_seal.status);
+        println!(
+            "wukong_fire_seal_band={}",
+            fire_seal.band.as_deref().unwrap_or("none")
+        );
+        println!("wukong_fire_seal_signal={}", fire_seal.signal);
+        for (member, target) in effective_targets {
+            println!(
+                "effective_target_{member}={}",
+                target.as_str().unwrap_or("none")
+            );
+        }
+    }
     println!("covenant=Rust update manager and appliance-profile execution engine");
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");

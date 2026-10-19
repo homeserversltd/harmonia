@@ -561,7 +561,7 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
     }
     evidence.mint.signal = signals.first().cloned().unwrap_or_else(|| "none".into());
     evidence.observations["signals"] = json!(signals);
-    let stamp = crate::atoms::ask::collective_stamp::current();
+    let stamp = crate::atoms::ask::collective_stamp::current_with_fire_seal();
     evidence.stamp_verdict = stamp.verdict.clone();
     evidence.stamp_sha = if stamp.verdict.as_deref() == Some("VALID") {
         stamp
@@ -574,6 +574,13 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
     };
     evidence.stamp_signal = stamp.signal.clone();
     evidence.observations["wukong_staff_stamp"] = stamp.as_json();
+    let mut fire_seal_members_match = false;
+    if let Some(fire_seal) = stamp.fire_seal.as_ref() {
+        evidence.observations["wukong_fire_seal"] =
+            crate::atoms::ask::collective_stamp::FireSealObservation::as_json(fire_seal);
+        fire_seal_members_match = fire_seal.status == "VALID"
+            && !stamp.declared_members.is_empty();
+    }
     if stamp.verdict.as_deref() == Some("VALID") {
         let mut actual_sources = serde_json::Map::new();
         let mut first_stamp_signal = None;
@@ -617,16 +624,23 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                 ),
                 _ => (None, "unsupported-member"),
             };
-            let expected_sha = stamp.target(member);
+            let expected_sha = stamp.stamp_target(member);
             let matches = actual_sha
                 .as_deref()
                 .zip(expected_sha)
                 .map(|(actual, expected)| actual == expected);
+            if fire_seal_members_match {
+                fire_seal_members_match = actual_sha
+                    .as_deref()
+                    .zip(stamp.seal_target(member))
+                    .is_some_and(|(actual, expected)| actual == expected);
+            }
             actual_sources.insert(
                 member.clone(),
                 json!({
                     "source_sha": actual_sha,
                     "stamp_sha": expected_sha,
+                    "effective_target": stamp.target(member),
                     "matches": matches,
                     "provenance": provenance,
                 }),
@@ -646,6 +660,17 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
         }
         evidence.observations["wukong_staff_member_sources"] = Value::Object(actual_sources);
         evidence.stamp_signal = first_stamp_signal.unwrap_or_else(|| "none".into());
+    }
+    if stamp.fire_seal.is_some() {
+        evidence.observations["wukong_fire_seal_members_match"] = json!(fire_seal_members_match);
+    }
+    if let Some(fire_seal) = stamp.fire_seal.as_ref() {
+        if evidence.mint.signal == "none" && !fire_seal_members_match {
+            let signal = format!("wukong-fire-unsealed {}", fire_seal.profile);
+            evidence.mint.signal = signal.clone();
+            signals.push(signal);
+            evidence.observations["signals"] = json!(signals);
+        }
     }
     // Validate before any consumer can persist the mint. A desync refuses the
     // digest, never the already committed module transaction or its receipt.
@@ -690,6 +715,9 @@ fn transaction_value(
         .get("wukong_staff_stamp")
         .cloned()
         .unwrap_or(Value::Null);
+    if let Some(fire_seal) = evidence.observations.get("wukong_fire_seal") {
+        value["wukong_fire_seal"] = fire_seal.clone();
+    }
     value["wukong_staff_member_sources"] = evidence
         .observations
         .get("wukong_staff_member_sources")
@@ -758,6 +786,11 @@ pub(crate) fn augment_run_json_with_stamp(
             .cloned()
             .unwrap_or(serde_json::Value::Null),
     );
+    if let Some(fire_seal) = evidence.observations.get("wukong_fire_seal") {
+        object.insert("wukong_fire_seal".into(), fire_seal.clone());
+    } else {
+        object.remove("wukong_fire_seal");
+    }
     object.insert(
         "wukong_staff_member_sources".into(),
         evidence
