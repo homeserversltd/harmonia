@@ -5,7 +5,7 @@
   "summary": "Keeps the household's documentation site configured and available.",
   "category": "interactable",
   "version": "1.0.3",
-  "description": "Quarry-lifted HOMESERVER MkDocs configuration: assert the birth-provided runtime and documentation source, converge product-owned configuration and unit bytes with backups, validate the unit.",
+  "description": "The shared documentation module owns documentation bytes; this module retains the HomeServer MkDocs human face and its runtime configuration.",
   "constants": {},
   "files_root": "files_root",
   "ladder": [

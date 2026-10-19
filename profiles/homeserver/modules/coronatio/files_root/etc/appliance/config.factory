@@ -9,6 +9,15 @@
         "key_line_candidates": [
           "https://raw.githubusercontent.com/homeserversltd/mgla/main/1141623189b165d8.txt"
         ]
+      },
+      "documentation": {
+        "ref": "main",
+        "candidates": [
+          {
+            "kind": "git",
+            "url": "https://github.com/homeserversltd/documentation"
+          }
+        ]
       }
     },
     "caduceus": {
@@ -17,7 +26,7 @@
     },
     "syzygy": {
       "schema": "appliance.syzygy.v1",
-      "members": ["harmonia", "caduceus", "sbin", "coronatio"],
+      "members": ["harmonia", "caduceus", "sbin", "documentation", "coronatio"],
       "gui_face": "Coronatio"
     },
     "tabs": {

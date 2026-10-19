@@ -240,6 +240,36 @@ fn committed_routine_source_sha(
     }
 }
 
+/// Read the documentation member's worn identity from this committed run's
+/// direct git-artifact sync receipt, never from the newest desired release flag.
+fn committed_documentation_source_sha(
+    dir: &Path,
+    receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+) -> Option<String> {
+    let modules = receipt.member_modules.get("documentation")?;
+    if modules.len() != 1 || modules[0] != "documentation" {
+        return None;
+    }
+    let module_dir = dir.join("modules").join("documentation");
+    let source: serde_json::Value =
+        serde_json::from_slice(&fs::read(module_dir.join("documentation-source-sync.json")).ok()?)
+            .ok()?;
+    let command: serde_json::Value = serde_json::from_slice(
+        &fs::read(module_dir.join("documentation-source-sync.command.json")).ok()?,
+    )
+    .ok()?;
+    if command.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+        || command.get("code").and_then(serde_json::Value::as_i64) != Some(0)
+    {
+        return None;
+    }
+    source
+        .get("resolved_commit")
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| valid_lower_hex(sha, 40))
+        .map(str::to_owned)
+}
+
 /// Resolve each available member independently, then mint only from a complete
 /// known-good set. Stamp comparisons use this run's committed source receipts,
 /// never a latest remote flag as the member's worn identity.
@@ -442,6 +472,31 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
             }
         }
     }
+    if members.contains("documentation") {
+        match &seats.release_flag {
+            Ok(seat) => {
+                let observed =
+                    crate::atoms::ask::member_flag::resolve_component("documentation", seat);
+                evidence.observations["documentation"] = observed.evidence();
+                if observed.signal == "none" {
+                    if let Some(flag) = &observed.selected {
+                        evidence.member_flags["documentation"] = json!({
+                            "source_sha": flag.get("source_sha"),
+                            "flagged_at": flag.get("flagged_at"),
+                            "malformed_flags": observed.malformed_flags,
+                            "release_flag": flag
+                        });
+                    }
+                } else {
+                    evidence.member_flags["documentation"] = json!(observed.signal);
+                    signals.push(observed.signal);
+                }
+            }
+            Err(signal) => {
+                evidence.member_flags["documentation"] = json!(signal);
+            }
+        }
+    }
     if members.contains("sudoers") {
         let mut fragments = declared_fragments
             .values()
@@ -555,6 +610,10 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                         "source_build_sha",
                     ),
                     "routine-child.outputs.source_build_sha",
+                ),
+                "documentation" => (
+                    committed_documentation_source_sha(dir, receipt),
+                    "modules.documentation.documentation-source-sync.json+command.json",
                 ),
                 _ => (None, "unsupported-member"),
             };

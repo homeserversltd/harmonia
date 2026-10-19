@@ -8,7 +8,14 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-const MEMBERS: [&str; 5] = ["harmonia", "caduceus", "sbin", "coronatio", "arcadia"];
+const MEMBERS: [&str; 6] = [
+    "harmonia",
+    "caduceus",
+    "sbin",
+    "coronatio",
+    "arcadia",
+    "documentation",
+];
 const MAX_HTTP_BODY: usize = 2 * 1024 * 1024;
 const MAX_STAMP_BYTES: usize = 16 * 1024;
 const MAX_KEY_LINE_BYTES: usize = 4096;
@@ -399,7 +406,112 @@ fn candidate_locator(candidate: &Value) -> Option<String> {
             .iter()
             .find_map(|name| candidate.get(*name).and_then(Value::as_str))
     })?;
-    safe_https_url(url)
+    #[cfg(feature = "test-facade")]
+    {
+        safe_https_url(url).or_else(|| fixture_stamp_file_path(url).map(|_| url.to_owned()))
+    }
+    #[cfg(not(feature = "test-facade"))]
+    {
+        safe_https_url(url)
+    }
+}
+
+#[cfg(feature = "test-facade")]
+const TEST_STAMP_FILE_ENV: &str = "HARMONIA_TEST_COLLECTIVE_STAMP_FILE";
+
+/// The fixture seam accepts one explicit regular file beneath this ground's
+/// receipts tree. Production builds retain the HTTPS-only candidate surface.
+#[cfg(feature = "test-facade")]
+fn fixture_stamp_file_path(locator: &str) -> Option<std::path::PathBuf> {
+    let path_text = locator.strip_prefix("file://")?;
+    if !path_text.starts_with('/')
+        || path_text
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        || path_text.contains(['?', '#', '\\', '%'])
+    {
+        return None;
+    }
+    let path = std::path::PathBuf::from(path_text);
+    if !path.is_absolute() || path.to_str().is_none() {
+        return None;
+    }
+    let configured = std::env::var_os(TEST_STAMP_FILE_ENV)?;
+    if std::path::PathBuf::from(configured) != path {
+        return None;
+    }
+
+    let receipts_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("receipts");
+    let root_metadata = std::fs::symlink_metadata(&receipts_root).ok()?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return None;
+    }
+    let relative = path.strip_prefix(&receipts_root).ok()?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let mut current = receipts_root;
+    for (index, component) in components.iter().enumerate() {
+        current.push(component.as_os_str());
+        let metadata = std::fs::symlink_metadata(&current).ok()?;
+        if metadata.file_type().is_symlink() {
+            return None;
+        }
+        let is_file = index + 1 == components.len();
+        if (is_file && !metadata.is_file()) || (!is_file && !metadata.is_dir()) {
+            return None;
+        }
+    }
+    (current.canonicalize().ok()? == path).then_some(path)
+}
+
+#[cfg(all(feature = "test-facade", unix))]
+fn fetch_fixture_stamp_file(
+    locator: &str,
+) -> Result<FetchedStamp, (String, String, Option<u16>)> {
+    let path = fixture_stamp_file_path(locator).ok_or_else(|| {
+        (
+            "wukong-staff-source-candidate-invalid".into(),
+            "unknown".into(),
+            None,
+        )
+    })?;
+    let file = crate::atoms::attest::open_nofollow_read(&path).map_err(|_| {
+        (
+            "wukong-staff-stamp-unreachable".into(),
+            "test-facade-file".into(),
+            None,
+        )
+    })?;
+    let mut bytes = Vec::with_capacity(MAX_STAMP_BYTES.min(1024));
+    file.take((MAX_STAMP_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            (
+                "wukong-staff-stamp-unreachable".into(),
+                "test-facade-file".into(),
+                None,
+            )
+        })?;
+    if bytes.len() > MAX_STAMP_BYTES {
+        return Err((
+            "wukong-staff-stamp-response-oversized".into(),
+            "test-facade-file".into(),
+            None,
+        ));
+    }
+    Ok(FetchedStamp {
+        bytes,
+        stamp_source: locator.to_owned(),
+        selected_release: "test-facade-file".into(),
+        key_asset_url: None,
+        mirror_base: MirrorBase::File(locator.to_owned()),
+    })
 }
 
 fn safe_https_url(url: &str) -> Option<String> {
@@ -644,6 +756,10 @@ impl FetchedStamp {
 }
 
 fn fetch_candidate_stamp(locator: &str) -> Result<FetchedStamp, (String, String, Option<u16>)> {
+    #[cfg(all(feature = "test-facade", unix))]
+    if fixture_stamp_file_path(locator).is_some() {
+        return fetch_fixture_stamp_file(locator);
+    }
     if let Some((api, authority, repo_path)) = release_endpoint(locator) {
         return fetch_release_stamp(&api, &authority, &repo_path)
             .map_err(|(signal, release)| (signal, release, None));
@@ -956,6 +1072,15 @@ fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)>
         }
         values.insert(name.to_owned(), value.to_owned());
     }
+    let grant = values.get("grant").map(String::as_str).unwrap_or_default();
+    let parsed_terms = grant.split(',').collect::<Vec<_>>();
+    if parsed_terms.len() != MEMBERS.len() {
+        return Err((
+            "UNKNOWN".into(),
+            "stamp-grant-term-count-foreign".into(),
+        ));
+    }
+
     let key_id = values.get("key").cloned().unwrap_or_default();
     if !lower_hex(&key_id, 16) {
         return Err(("INVALID".into(), "wukong-staff-key-id-invalid".into()));
@@ -966,11 +1091,6 @@ fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)>
     let signature = Signature::from_slice(&signature_bytes)
         .map_err(|_| ("INVALID".into(), "wukong-staff-signature-invalid".into()))?;
 
-    let grant = values.get("grant").map(String::as_str).unwrap_or_default();
-    let parsed_terms = grant.split(',').collect::<Vec<_>>();
-    if parsed_terms.len() != MEMBERS.len() {
-        return Err(("INVALID".into(), "wukong-staff-stamp-terms-invalid".into()));
-    }
     let mut terms = std::collections::BTreeMap::new();
     for (item, member) in parsed_terms.iter().zip(MEMBERS) {
         let Some((name, sha)) = item.split_once(':') else {

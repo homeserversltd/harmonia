@@ -1460,6 +1460,14 @@ fn is_sbin_source_sync(step: &ValidatedStep, manifest: &LadderManifest) -> bool 
         && string_arg(&step.args, "component") == "sbin"
 }
 
+fn is_documentation_source_sync(step: &ValidatedStep, manifest: &LadderManifest) -> bool {
+    manifest.id == "documentation"
+        && step.step_id == "documentation-source-sync"
+        && step.tool == "git-artifact"
+        && step.permutation == "sync"
+        && string_arg(&step.args, "component") == "documentation"
+}
+
 fn path_is_git_checkout(destination_path: &Path, bearer: &str) -> bool {
     let Ok(destination) = destination_path.canonicalize() else {
         return false;
@@ -1581,32 +1589,40 @@ pub(crate) fn execute_git_artifact_step(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let source_plan = routine_source_plan(step, manifest)?;
-    let outcome =
-        if is_sbin_source_sync(step, manifest) && !destination_is_git_checkout(&source_plan) {
-            tools::git_artifact::SourceOutcome {
-                ok: false,
-                changed: false,
-                receipt: tools::git_artifact::SourceReceipt {
-                    attempts: Vec::new(),
-                    served_index: None,
-                    resolved_commit: None,
-                    promotion: "sbin-source-checkout-required".to_string(),
-                },
-            }
-        } else if apply {
-            crate::pull_repo::acquire_source(&source_plan, invocation)
-        } else {
-            tools::git_artifact::SourceOutcome {
-                ok: true,
-                changed: false,
-                receipt: tools::git_artifact::SourceReceipt {
-                    attempts: Vec::new(),
-                    served_index: None,
-                    resolved_commit: None,
-                    promotion: "planned source acquisition".to_string(),
-                },
-            }
-        };
+    let checkout_signal = if is_sbin_source_sync(step, manifest) {
+        Some("sbin-source-checkout-required")
+    } else if is_documentation_source_sync(step, manifest) {
+        Some("documentation-source-checkout-required")
+    } else {
+        None
+    };
+    let missing_checkout =
+        checkout_signal.filter(|_| !destination_is_git_checkout(&source_plan));
+    let outcome = if let Some(signal) = missing_checkout {
+        tools::git_artifact::SourceOutcome {
+            ok: false,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: signal.to_string(),
+            },
+        }
+    } else if apply {
+        crate::pull_repo::acquire_source(&source_plan, invocation)
+    } else {
+        tools::git_artifact::SourceOutcome {
+            ok: true,
+            changed: false,
+            receipt: tools::git_artifact::SourceReceipt {
+                attempts: Vec::new(),
+                served_index: None,
+                resolved_commit: None,
+                promotion: "planned source acquisition".to_string(),
+            },
+        }
+    };
     let command = source_outcome_command(&outcome);
     crate::write_tool_receipt(
         module_dir,

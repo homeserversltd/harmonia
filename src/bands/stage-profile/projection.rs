@@ -431,6 +431,15 @@ fn projection_derive_plan_inner(
         }) {
             record_module("keyman", module_id);
         }
+        if module_id == "documentation"
+            && steps.iter().any(|step| {
+                step.tool == "git-artifact"
+                    && step.args.get("component").and_then(Value::as_str)
+                        == Some("documentation")
+            })
+        {
+            record_module("documentation", module_id);
+        }
         // Census declarations independently of module placement: a sudoers
         // fragment is owned by the sudoers member, not by its declaring module.
         for step in steps.iter().filter(|step| {
@@ -496,11 +505,16 @@ fn projection_derive_plan_inner(
             if s.tool == "files"
                 && s.permutation == "source-shelf-sweep"
                 && (module_id == "sbin"
+                    || module_id == "documentation"
                     || projected_runtime_args(projected).iter().any(|args| {
                         args.get("component").and_then(Value::as_str) == Some("caduceus")
                     }))
             {
-                let staff_member = "sbin";
+                let staff_member = if module_id == "documentation" {
+                    "documentation"
+                } else {
+                    "sbin"
+                };
                 if let Some(p) = projection_text(&s.args, "target_shelf") {
                     projection_add_census_target(
                         &mut targets,
