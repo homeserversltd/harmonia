@@ -54,11 +54,16 @@ pub(crate) fn execute_step(
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect::<Vec<_>>();
+    let editable = args
+        .get("editable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     crate::build_venv::run(
         &crate::build_venv::Request {
             venv: &venv,
             source_root: &source_root,
             source_patterns: &patterns,
+            editable,
             receipt_dir,
             receipt_name,
             timeout_secs: crate::tools::command::DEFAULT_TIMEOUT_SECS,

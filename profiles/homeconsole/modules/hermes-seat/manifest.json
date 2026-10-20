@@ -45,7 +45,8 @@
       "args": {
         "venv": "$constants.venv",
         "source_root": "$constants.source_root",
-        "source_patterns": "$constants.source_patterns"
+        "source_patterns": "$constants.source_patterns",
+        "editable": true
       },
       "on_failure": "stop"
     },

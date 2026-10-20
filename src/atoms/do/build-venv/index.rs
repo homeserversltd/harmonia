@@ -29,7 +29,17 @@ pub(crate) fn converge(
                 let (args, cwd) =
                     if file.file_name().and_then(|n| n.to_str()) == Some("pyproject.toml") {
                         (
-                            vec!["-m".into(), "pip".into(), "install".into(), ".".into()],
+                            if request.editable {
+                                vec![
+                                    "-m".into(),
+                                    "pip".into(),
+                                    "install".into(),
+                                    "-e".into(),
+                                    ".".into(),
+                                ]
+                            } else {
+                                vec!["-m".into(), "pip".into(), "install".into(), ".".into()]
+                            },
                             Some(request.source_root),
                         )
                     } else {
