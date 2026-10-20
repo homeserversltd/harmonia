@@ -1,16 +1,16 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "screenshot",
-  "title": "Screenshots",
-  "summary": "Capture an area, the full screen, or the focused window to the clipboard and save screenshots on demand.",
+  "title": "Screenshots through Caduceus into satty (swappy fallback), with copy/save toasts.",
+  "summary": "Keys capture an area, full screen, or window through the Caduceus face door into satty (swappy where absent); copy and save toast a thumbnail.",
   "category": "interactable",
-  "version": "1.0.0",
-  "description": "Captures an area, the full screen, or the focused window to the clipboard, then opens the image in Swappy. Saving is on demand from Swappy.",
+  "version": "1.1.0",
+  "description": "Screenshot keys send capture requests through the Caduceus face door into satty (swappy where absent). Ctrl+C copies and Ctrl+S saves; either action toasts with a thumbnail and closes, while Esc closes silently.",
   "optional": false,
   "constants": {
     "target_dir": "/home/owner",
     "expected_files": [
-      "bin/screenshot",
+      ".config/satty/config.toml",
       ".config/swappy/config"
     ]
   },
@@ -24,7 +24,7 @@
         "source_root": "files_root",
         "target_root": "$constants.target_dir",
         "files": [
-          "bin/screenshot",
+          ".config/satty/config.toml",
           ".config/swappy/config"
         ],
         "backup_existing": true,
