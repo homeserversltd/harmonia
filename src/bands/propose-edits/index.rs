@@ -459,8 +459,12 @@ fn refresh_interactables_at_path_with_policy(
             continue;
         }
         let target_absent = !entry.target_exists_before;
+        let config_target = matches!(
+            crate::atoms::files::classify_target(&entry.target),
+            crate::atoms::files::TargetClass::Config
+        );
         if target_absent
-            && (!compiled_artifact_authoritative
+            && (!config_target
                 || outcome.config_state
                     != Some(crate::atoms::files::ConfigConvergenceState::ProposalEligible))
         {
@@ -568,7 +572,7 @@ fn refresh_interactables_at_path_with_policy(
             .ok_or_else(|| "config-recognition-no-known-good".to_string())?
         };
         let score = recognized.score;
-        let threshold = if compiled_artifact_authoritative {
+        let threshold = if target_absent || compiled_artifact_authoritative {
             0.0
         } else {
             0.33

@@ -481,7 +481,7 @@ fn compile_fragments_declared_owner_group(
     }
 }
 
-fn compile_fragments_absent_offer_persisted(
+fn absent_config_offer_persisted(
     target: &Path,
     recognition: &crate::bands::propose_edits::ConfigRecognition,
 ) -> Result<bool, String> {
@@ -660,7 +660,7 @@ pub(crate) fn compile_fragments_step(
                     if already {
                         return Ok(false);
                     }
-                    compile_fragments_absent_offer_persisted(&target, recognition)
+                    absent_config_offer_persisted(&target, recognition)
                 })?
         } else {
             false
@@ -849,6 +849,7 @@ fn config_plane_witness(
     observed: &crate::atoms::files::FileConvergenceOutcome,
     recognitions: &[crate::bands::propose_edits::ConfigRecognition],
     interactable_exempt: bool,
+    absent_offer_persisted: bool,
 ) -> Result<Option<crate::atoms::attest::ConfigPlaneWitness>, String> {
     let target = Path::new(&file.path);
     if !matches!(
@@ -867,9 +868,9 @@ fn config_plane_witness(
         .iter()
         .find(|entry| entry.target.as_path() == target)
         .ok_or_else(|| "config-plane-target-observation-missing".to_string())?;
-    if !entry.target_exists_after {
-        // A missing managed target is a named step failure, not one of the
-        // ConfigPlane disposition values.
+    if !entry.target_exists_after && !absent_offer_persisted {
+        // An absent Config target is complete only while its exact creation
+        // proposal remains present in the interactables feed.
         return Ok(None);
     }
     let recognition = recognitions
@@ -1167,16 +1168,30 @@ pub(crate) fn managed_files_step_with_authorization(
             invocation,
             interactable_policy(manifest),
         )?;
-        let target_exists = target.exists();
-        let file_ok = observed.ok && target_exists;
+        let target_exists_before = target.exists();
         let missing_signal = format!("managed-file-target-absent:{}", target.display());
-        result.ok &= file_ok;
-        if !target_exists {
-            first_missing_signal.get_or_insert(missing_signal.clone());
-        }
         let recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence(
             manifest, &request, &observed,
         )?;
+        let target_exists_after = target.exists();
+        let absent_offer_persisted = if !target_exists_before && !target_exists_after {
+            recognitions
+                .iter()
+                .filter(|recognition| recognition.target.as_path() == target.as_path())
+                .try_fold(false, |already, recognition| {
+                    if already {
+                        return Ok(false);
+                    }
+                    absent_config_offer_persisted(&target, recognition)
+                })?
+        } else {
+            false
+        };
+        let file_ok = observed.ok && (target_exists_after || absent_offer_persisted);
+        result.ok &= file_ok;
+        if !file_ok {
+            first_missing_signal.get_or_insert(missing_signal.clone());
+        }
         let interactable_exempt = observed.config_state
             == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt);
         result.changed |= observed.changed;
@@ -1194,6 +1209,7 @@ pub(crate) fn managed_files_step_with_authorization(
             &observed,
             &recognitions,
             interactable_exempt,
+            absent_offer_persisted,
         )?;
         let attestation_message = if let Some(witness) = witness.as_ref() {
             let serialized = serde_json::to_value(witness)
@@ -1218,7 +1234,7 @@ pub(crate) fn managed_files_step_with_authorization(
                 observed.changed,
                 observed.ownership_changed,
             )
-        } else if !target_exists {
+        } else if !target_exists_after {
             missing_signal.clone()
         } else {
             return Err(format!("config-plane-witness-missing:{}", target.display()));

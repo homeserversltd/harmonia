@@ -1426,7 +1426,7 @@ fn converge_files_authorized_with_policy(
     let mut written = 0usize;
     let mut backed_up = 0usize;
 
-    for spec in &request.files {
+    for (spec, class) in request.files.iter().zip(&classes) {
         let source = request.source_root.join(&spec.relative_path);
         let target = request.target_root.join(&spec.relative_path);
         let relative_path = spec.relative_path.to_string_lossy().to_string();
@@ -1462,8 +1462,16 @@ fn converge_files_authorized_with_policy(
             continue;
         }
 
+        let absent_config_proposal = matches!(class, TargetClass::Config)
+            && matches!(
+                &policy,
+                ConvergencePolicy::Interactable(
+                    crate::atoms::files::InteractablePolicy::Default
+                )
+            );
         if !target_exists_before
             && !matches!(&policy, ConvergencePolicy::EstateOwnedDeclaredSudoers(_))
+            && !absent_config_proposal
         {
             missing.push(target.display().to_string());
             let file_diff = unified_file_diff(&source, &target)?;
