@@ -1,0 +1,18 @@
+[Unit]
+Description=Hermes messaging gateway
+After=sway-seat.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hermes
+Environment=HOME=/home/hermes
+Environment=HERMES_HOME=/home/hermes/.hermes
+Environment=XDG_RUNTIME_DIR=%t
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=/opt/hermes/venv/bin/hermes gateway
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

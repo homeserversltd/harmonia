@@ -1,0 +1,2 @@
+#!/bin/sh
+printf '%s\n' 'Arcadia OS: steamos-select-branch is unavailable.' >&2; exit 7

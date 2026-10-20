@@ -1,0 +1,28 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "homeconsole-sway-session",
+  "title": "Owner Sway session",
+  "summary": "Provides an owner Sway session entry separate from the Hermes user services.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Place the Ubuntu Sway desktop entry in the standard software-owned Wayland session directory; keep it separate from Hermes services and SDDM Config proposals.",
+  "optional": false,
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "homeconsole-sway-desktop-entry",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/session",
+        "target_path": "/usr/share/wayland-sessions/homeconsole-sway.desktop",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

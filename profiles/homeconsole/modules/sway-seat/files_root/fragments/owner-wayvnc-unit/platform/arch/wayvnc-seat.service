@@ -1,0 +1,13 @@
+[Unit]
+Description=Loopback WayVNC seat
+Requires=sway-seat.service
+After=sway-seat.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/run/sway-seat/session.env
+ExecStartPre=/usr/local/libexec/sway-seat/sway-seat-wait-ready
+ExecStart=/usr/bin/wayvnc --config /home/owner/.config/wayvnc/config
+
+[Install]
+WantedBy=default.target

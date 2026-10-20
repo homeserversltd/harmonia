@@ -5,8 +5,9 @@
   "summary": "Keeps a remote support screen ready without starting it automatically.",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Maintain the shared-birth-rendered headless Sway seat, loopback WayVNC user unit, and readiness helpers without writing birth-owned linger markers or enable links, or activating units.",
+  "description": "Preserves Arch seat payloads and offers a private Hermes headless Sway readiness helper without writing birth-owned linger markers or enable links, or activating units.",
   "optional": false,
+  "config_deploy": "interactable",
   "constants": {
     "packages": [
       "sway",
@@ -47,85 +48,64 @@
     {
       "step_id": "sway-seat-session-helper",
       "tool": "files",
-      "permutation": "converge",
+      "permutation": "compile-fragments",
       "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "usr/local/libexec/sway-seat/sway-seat-session",
-          "usr/local/libexec/sway-seat/sway-seat-wait-ready"
-        ],
+        "source_root": "files_root/fragments/session-helper",
+        "target_path": "/usr/local/libexec/sway-seat/sway-seat-session",
         "mode": 493,
-        "backup_existing": false,
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "sway-seat-session-helper"
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-readiness-helper",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/ready-helper",
+        "target_path": "/usr/local/libexec/sway-seat/sway-seat-wait-ready",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
       },
       "on_failure": "stop"
     },
     {
       "step_id": "sway-seat-runtime-tmpfiles",
       "tool": "files",
-      "permutation": "converge",
+      "permutation": "compile-fragments",
       "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "etc/tmpfiles.d/sway-seat.conf"
-        ],
+        "source_root": "files_root/fragments/tmpfiles",
+        "target_path": "/etc/tmpfiles.d/sway-seat.conf",
         "mode": 420,
-        "backup_existing": false,
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "sway-seat-runtime-tmpfiles"
+        "backup_existing": true
       },
       "on_failure": "stop"
     },
     {
-      "step_id": "sway-seat-owner-files",
+      "step_id": "sway-seat-owner-unit",
       "tool": "files",
-      "permutation": "converge",
+      "permutation": "compile-fragments",
       "args": {
-        "source_root": "files_root/home/owner",
-        "target_root": "/home/owner",
-        "files": [
-          ".config/sway/config",
-          ".config/systemd/user/sway-seat.service",
-          ".config/systemd/user/wayvnc-seat.service"
-        ],
+        "source_root": "files_root/fragments/owner-sway-unit",
+        "target_path": "/home/owner/.config/systemd/user/sway-seat.service",
         "mode": 420,
-        "backup_existing": false,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "sway-seat-owner-files"
+        "backup_existing": true
       },
       "on_failure": "stop"
     },
     {
-      "step_id": "sway-seat-wayvnc-config",
+      "step_id": "sway-seat-owner-wayvnc-unit",
       "tool": "files",
-      "permutation": "converge",
+      "permutation": "compile-fragments",
       "args": {
-        "source_root": "files_root/home/owner",
-        "target_root": "/home/owner",
-        "files": [
-          ".config/wayvnc/config"
-        ],
-        "mode": 384,
-        "backup_existing": false,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "sway-seat-wayvnc-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "sway-seat-user-manager-reload",
-      "tool": "systemd",
-      "permutation": "user-daemon-reload",
-      "args": {
-        "user": "owner",
-        "timeout_secs": 60
+        "source_root": "files_root/fragments/owner-wayvnc-unit",
+        "target_path": "/home/owner/.config/systemd/user/wayvnc-seat.service",
+        "mode": 420,
+        "backup_existing": true
       },
       "on_failure": "stop"
     }

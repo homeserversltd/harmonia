@@ -1,0 +1,56 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "steam-polkit-helpers",
+  "title": "Console maintenance helper stubs",
+  "summary": "Provides three Arcadia OS refusal stubs until an admitted argv contract is supplied.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Place the three Ubuntu helper stubs. They print an Arcadia OS message and exit 7 without invoking a package manager or elevation path.",
+  "optional": false,
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "steam-update-helper-stub",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/update",
+        "target_path": "/usr/bin/steamos-polkit-helpers/steamos-update",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "steam-select-branch-helper-stub",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/select-branch",
+        "target_path": "/usr/bin/steamos-select-branch",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "steam-session-select-helper-stub",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/session-select",
+        "target_path": "/usr/bin/steamos-session-select",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

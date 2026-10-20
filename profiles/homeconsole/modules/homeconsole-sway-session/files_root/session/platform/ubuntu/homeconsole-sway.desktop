@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=HomeConsole Sway
+Comment=Independent Sway session
+Exec=/usr/bin/sway -c /etc/sway/config
+TryExec=/usr/bin/sway
+Type=Application
+DesktopNames=sway

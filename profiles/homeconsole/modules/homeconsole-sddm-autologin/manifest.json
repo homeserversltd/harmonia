@@ -1,0 +1,27 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "homeconsole-sddm-autologin",
+  "title": "Console login session",
+  "summary": "Offers Steam autologin into the existing Gamescope session without a chooser.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Propose SDDM autologin settings for the existing staff-owned Steam session; does not duplicate the launcher or change accounts.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "homeconsole-sddm-autologin-config",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/sddm",
+        "target_path": "/etc/sddm.conf.d/10-homeconsole-autologin.conf",
+        "mode": 420,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

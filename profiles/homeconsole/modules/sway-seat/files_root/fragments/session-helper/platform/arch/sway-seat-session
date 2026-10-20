@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+: "${XDG_RUNTIME_DIR:?missing logind XDG_RUNTIME_DIR}"
+: "${WAYLAND_DISPLAY:?missing Sway WAYLAND_DISPLAY}"
+: "${DBUS_SESSION_BUS_ADDRESS:?missing owner session bus}"
+: "${XDG_CURRENT_DESKTOP:?missing Wayland desktop identity}"
+: "${XDG_SESSION_DESKTOP:?missing session desktop}"
+: "${SWAYSOCK:?missing Sway IPC socket}"
+: "${XDG_SESSION_TYPE:?missing session type}"
+install -d -m 0755 /run/sway-seat
+umask 022
+tmp=/run/sway-seat/session.env.tmp
+{
+    printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR"
+    printf 'WAYLAND_DISPLAY=%s\n' "$WAYLAND_DISPLAY"
+    if [ -n "${DISPLAY:-}" ]; then printf 'DISPLAY=%s\n' "$DISPLAY"; fi
+    printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS"
+    printf 'XDG_CURRENT_DESKTOP=%s\n' "$XDG_CURRENT_DESKTOP"
+    printf 'XDG_SESSION_DESKTOP=%s\n' "$XDG_SESSION_DESKTOP"
+    printf 'XDG_SESSION_TYPE=%s\n' "$XDG_SESSION_TYPE"
+    printf 'SWAYSOCK=%s\n' "$SWAYSOCK"
+} > "$tmp"
+mv -f "$tmp" /run/sway-seat/session.env

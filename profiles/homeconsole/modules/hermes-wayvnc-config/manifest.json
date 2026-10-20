@@ -1,0 +1,27 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hermes-wayvnc-config",
+  "title": "Hermes WayVNC configuration",
+  "summary": "Offers a loopback-only WayVNC configuration for the Hermes seat.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Compile the Ubuntu-only private WayVNC configuration into the Hermes home as a Config proposal.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "hermes-wayvnc-config",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/config",
+        "target_path": "/home/hermes/.config/wayvnc/config",
+        "mode": 384,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

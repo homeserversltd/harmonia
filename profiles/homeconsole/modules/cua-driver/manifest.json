@@ -5,8 +5,7 @@
   "summary": "Keeps the screen-control helper current and its support screen ready.",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Keep the pinned 0.28.2 CUA release upkeep helper with local currentness observation, and maintain the shared-birth-rendered headless screen supervisor without making it start WayVNC.",
-  "optional": false,
+  "description": "Keep the pinned 0.28.2 CUA release upkeep helper with local currentness observation, and compile the platform-specific screen supervisor without making it start WayVNC.",
   "constants": {
     "release_repo": "trycua/cua",
     "release_tag": "cua-driver-rs-v0.28.2",
@@ -72,18 +71,14 @@
     {
       "step_id": "cua-driver-screen-supervisor",
       "tool": "files",
-      "permutation": "converge",
+      "permutation": "compile-fragments",
       "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "usr/local/libexec/sway-seat/sway-seat-screen-supervisor"
-        ],
+        "source_root": "files_root/fragments/screen-supervisor",
+        "target_path": "/usr/local/libexec/sway-seat/sway-seat-screen-supervisor",
         "mode": 493,
-        "backup_existing": false,
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "cua-driver-screen-supervisor"
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
       },
       "on_failure": "stop"
     }

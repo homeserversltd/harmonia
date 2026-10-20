@@ -1,0 +1,39 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hermes-sway-seat",
+  "title": "Hermes headless desktop services",
+  "summary": "Offers private Hermes user services for Sway and loopback WayVNC.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Compile Ubuntu-only Hermes user units; birth owns the user manager, linger, runtime, unit links, and activation.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "hermes-sway-user-unit",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/sway-seat",
+        "target_path": "/home/hermes/.config/systemd/user/sway-seat.service",
+        "mode": 420,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-wayvnc-user-unit",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/wayvnc-seat",
+        "target_path": "/home/hermes/.config/systemd/user/wayvnc-seat.service",
+        "mode": 420,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

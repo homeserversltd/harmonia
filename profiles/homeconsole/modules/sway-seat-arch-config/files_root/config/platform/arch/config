@@ -1,0 +1,7 @@
+output HEADLESS-1 mode 1920x1080 position 0 0
+set $mod Mod4
+exec_always /usr/local/libexec/sway-seat/sway-seat-session
+exec /usr/local/libexec/sway-seat/sway-seat-screen-supervisor
+bindsym $mod+Return exec foot
+bindsym $mod+Shift+q kill
+bindsym $mod+Shift+c reload

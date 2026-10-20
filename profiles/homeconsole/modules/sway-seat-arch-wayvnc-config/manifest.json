@@ -1,0 +1,27 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sway-seat-arch-wayvnc-config",
+  "title": "Legacy WayVNC configuration",
+  "summary": "Preserves the Arch owner-seat WayVNC configuration.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Compile the unchanged owner WayVNC configuration only for the selected Arch family; Ubuntu receives no claim.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "arch-owner-wayvnc-config",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/config",
+        "target_path": "/home/owner/.config/wayvnc/config",
+        "mode": 384,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

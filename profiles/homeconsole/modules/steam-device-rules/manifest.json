@@ -1,0 +1,42 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "steam-device-rules",
+  "title": "Controller device access",
+  "summary": "Provides the pinned upstream controller udev rules.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Place the two byte-preserved ValveSoftware steam-devices rules under the system udev rules directory on Ubuntu.",
+  "optional": false,
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "steam-input-udev-rule",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/input",
+        "target_path": "/usr/lib/udev/rules.d/60-steam-input.rules",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "steam-vr-udev-rule",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/vr",
+        "target_path": "/usr/lib/udev/rules.d/60-steam-vr.rules",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

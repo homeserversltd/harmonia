@@ -37,6 +37,18 @@
     "grub-branding",
     "sway-seat",
     "cua-driver",
-    "hermes-seat"
+    "hermes-seat",
+    "sway-seat-arch-config",
+    "sway-seat-arch-wayvnc-config",
+    "hermes-sway-config",
+    "hermes-wayvnc-config",
+    "hermes-sway-seat",
+    "hermes-cua-driver-service",
+    "hermes-gateway-service",
+    "homeconsole-netplan",
+    "homeconsole-sddm-autologin",
+    "homeconsole-sway-session",
+    "steam-device-rules",
+    "steam-polkit-helpers"
   ]
 }

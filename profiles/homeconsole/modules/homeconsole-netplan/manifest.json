@@ -1,0 +1,27 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "homeconsole-netplan",
+  "title": "Wired network defaults",
+  "summary": "Offers NetworkManager with DHCP for wired interfaces.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Propose replacement contents for the installer Netplan file on Ubuntu; this is a Config proposal, not a file removal or package action.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "homeconsole-netplan-wired-dhcp",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/netplan",
+        "target_path": "/etc/netplan/00-installer-config.yaml",
+        "mode": 384,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
