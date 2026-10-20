@@ -28,13 +28,13 @@ The underlay offers these Ubuntu placements:
 
 All new Ubuntu Config targets above use `backup_existing=true` and produce proposals rather than silently applying operator configuration. The Netplan payload replaces the target contents with the global `NetworkManager` renderer and DHCP on wired `e*` interfaces; it does not remove the target. The SDDM proposal selects the existing staff-owned `steam-gamescope-wayland.desktop`, sets `User=owner` and `Relogin=true`, and uses the existing owner login identity without adding a `steam` account. The existing Steam desktop entry and its `Exec=/usr/local/sbin/agathodaimon/cli.py console session` remain unchanged; Gamescope flags and sentinels remain staff-owned. The separate Sway session is ordinary Software under `/usr/share/wayland-sessions`, not mislabeled Config.
 
-Each helper stub has a shebang followed by exactly one replaceable executable line. The current lines are:
+The session and branch helpers now hand off to the sbin staff CLI. The Ubuntu helper executable lines are:
 
 - `steamos-update`: `printf '%s\n' 'Arcadia OS: steamos-update is unavailable.' >&2; exit 7`
-- `steamos-select-branch`: `printf '%s\n' 'Arcadia OS: steamos-select-branch is unavailable.' >&2; exit 7`
-- `steamos-session-select`: `printf '%s\n' 'Arcadia OS: steamos-session-select is unavailable.' >&2; exit 7`
+- `steamos-select-branch`: `exec /usr/local/sbin/agathodaimon/cli.py console select-branch "$@"`
+- `steamos-session-select`: `exec /usr/local/sbin/agathodaimon/cli.py console session-select "$@"`
 
-Each line prints a plain Arcadia OS message and exits `7`; no package-manager or elevation path is defined. The exact admitted argv for these verbs has not been supplied. When staff supplies it, replace the entire quoted executable line with that exact implementation rather than appending a command beneath the refusal. Steam uses `pkexec`; no reachable narrow shared sudoers grant is established, and none is added here.
+The current Dove supplied sbin `main` commit `c78f49d98ec8ee30be016bd6adbb573ca3a69d1c`; the parent verified it with `ls-remote`. Both staff calls forward their original arguments with `"$@"`. Only the `steamos-update` refusal line awaits the future `harmonia --check` lane. No elevation or sudoers grant is defined or added.
 
 The Ubuntu Sway seat runs under Hermes's lingering user manager with `WLR_BACKENDS=headless`, a private `%t` runtime, and no `seat0` or VT binding. WayVNC binds `127.0.0.1:5900`. The owner desktop entry executes `/usr/bin/sway -c /etc/sway/config`; birth must provide this distro desktop configuration at `/etc/sway/config`. The owner desktop does not read the legacy headless `/home/owner/.config/sway/config` or launch the Hermes Sway supervisor/session helper. The Sway screen supervisor, readiness helper, CUA Driver user unit, and Hermes gateway unit use the Hermes home/runtime and do not import `/run/sway-seat/session.env` or any owner socket. The Ubuntu Hermes launcher does not import the shared owner session environment or force `HERMES_HOME`; its final line is `exec /opt/hermes/venv/bin/hermes "$@"` and respects the invoking caller's `HOME` and `HERMES_HOME`. The gateway unit keeps its own `HERMES_HOME=/home/hermes/.hermes` and private Wayland runtime while invoking the venv binary directly.
 

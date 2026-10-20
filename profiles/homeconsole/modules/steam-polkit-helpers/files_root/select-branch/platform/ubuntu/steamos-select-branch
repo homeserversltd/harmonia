@@ -1,2 +1,2 @@
 #!/bin/sh
-printf '%s\n' 'Arcadia OS: steamos-select-branch is unavailable.' >&2; exit 7
+exec /usr/local/sbin/agathodaimon/cli.py console select-branch "$@"
