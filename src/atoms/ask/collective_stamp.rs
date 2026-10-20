@@ -183,7 +183,7 @@ fn source_observation() -> &'static CachedSourceObservation {
     })
 }
 
-/// All public observation/target consumers share the same immutable own-profile observation; probe kernel resolves no seal.
+/// All public observation/target consumers share the same immutable own-profile observation; specula kernel resolves no seal.
 pub(crate) fn current() -> StampObservation {
     current_with_fire_seal()
 }

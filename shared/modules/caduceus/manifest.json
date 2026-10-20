@@ -11,7 +11,7 @@
   "profile_input": {
     "axis": "profile",
     "fragment": "runtime.json",
-    "fallback": "probe"
+    "fallback": "specula"
   },
   "ladder": [
     {

@@ -980,7 +980,7 @@ pub(crate) fn resolved_profile_segment(profile: &str) -> Result<String, String> 
         {
             profile.to_ascii_lowercase()
         } else {
-            "probe".to_owned()
+            "specula".to_owned()
         },
     )
 }
@@ -1757,7 +1757,7 @@ pub(crate) fn download_pinned_release(
     .ok_or_else(|| "fetch-artifact-pinned-release-missing".into())
 }
 
-const CADUCEUS_RELEASE_PROFILES: [&str; 4] = ["homeserver", "homeconsole", "tv", "probe"];
+const CADUCEUS_RELEASE_PROFILES: [&str; 4] = ["homeserver", "homeconsole", "tv", "specula"];
 
 fn fetch_exact_pinned_asset_set(
     request: &ReleaseRequest,
