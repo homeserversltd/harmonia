@@ -1,9 +1,10 @@
 [general]
-# Ctrl+C copies, Ctrl+S saves; either one toasts with a thumbnail and closes. Esc closes silently.
+# Ctrl+C copies, Ctrl+S saves; either one shows a text-only toast and closes. Esc closes silently.
 early-exit = ["copy", "save"]
 copy-command = "wl-copy"
 output-filename = "~/Pictures/Screenshots/screenshot-%Y%m%d-%H%M%S.png"
 disable-notifications = false
+notification-thumbnail = "app-icon"
 actions-on-enter = ["save-to-clipboard"]
 actions-on-escape = ["exit"]
 initial-tool = "arrow"
