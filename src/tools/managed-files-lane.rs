@@ -312,6 +312,81 @@ fn profile_fragment_selectors_for_body(
         resolved["package_authority"] = serde_json::to_value(authority)
             .map_err(|error| format!("compile-fragments-profile-authority-serialize-failed: {error}"))?;
     }
+    let has_own_pool = resolved
+        .get("dotfile_pool")
+        .is_some_and(|value| !value.is_null());
+    if !has_own_pool {
+        let base_selector = resolved
+            .get("source_extends")
+            .filter(|value| !value.is_null())
+            .or_else(|| resolved.get("extends").filter(|value| !value.is_null()))
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "compile-fragments-extends-base-selector-invalid".to_string())
+            })
+            .transpose()?;
+        if let Some(base_selector) = base_selector {
+            validate_fragment_path_component(&base_selector, "extends-base")?;
+            let base_index = profile_index
+                .parent()
+                .and_then(Path::parent)
+                .map(|profiles_root| profiles_root.join(&base_selector).join("index.json"))
+                .ok_or_else(|| {
+                    format!(
+                        "compile-fragments-extends-base-index-unreadable {}",
+                        profile_index.display()
+                    )
+                })?;
+            let base_bytes = fs::read(&base_index).map_err(|error| {
+                format!(
+                    "compile-fragments-extends-base-index-unreadable {}: {error}",
+                    base_index.display()
+                )
+            })?;
+            let base: Value = serde_json::from_slice(&base_bytes).map_err(|error| {
+                format!(
+                    "compile-fragments-extends-base-index-unreadable {}: {error}",
+                    base_index.display()
+                )
+            })?;
+            if !base.is_object() {
+                return Err(format!(
+                    "compile-fragments-extends-base-index-unreadable {}",
+                    base_index.display()
+                ));
+            }
+            let base_id = base
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "compile-fragments-extends-base-id-missing {}",
+                        base_index.display()
+                    )
+                })?;
+            if ["source_extends", "extends"].iter().any(|key| {
+                base.get(*key).is_some_and(|value| !value.is_null())
+            }) {
+                return Err(format!(
+                    "compile-fragments-extends-chain-refused {}",
+                    base_index.display()
+                ));
+            }
+            let behavioral_pool = match base.get("dotfile_pool") {
+                Some(value) if !value.is_null() => value.as_str().ok_or_else(|| {
+                    format!(
+                        "compile-fragments-profile-dotfile-pool-invalid {}",
+                        base_index.display()
+                    )
+                })?,
+                _ => base_id,
+            };
+            resolved["dotfile_pool"] = Value::String(behavioral_pool.to_owned());
+        }
+    }
     let (appliance, platform, behavioral_pool) =
         profile_fragment_selectors(&resolved, profile_index)?;
     Ok((
