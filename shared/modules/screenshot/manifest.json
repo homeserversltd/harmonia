@@ -1,10 +1,10 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "screenshot",
-  "title": "Screenshots through Caduceus into satty (swappy fallback), with text-only Satty toasts on copy and save.",
+  "title": "Screenshots",
   "summary": "Keys capture an area, full screen, or window through the Caduceus face door into satty (swappy where absent); Satty shows text-only toasts on copy and save.",
   "category": "interactable",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Screenshot keys send capture requests through the Caduceus face door into satty (swappy where absent). Ctrl+C copies and Ctrl+S saves; either action shows a text-only Satty toast and closes, while Esc closes silently.",
   "optional": false,
   "constants": {
