@@ -1027,7 +1027,7 @@ fn apply_managed_file_modes(
     Ok(())
 }
 
-fn materialize_managed_files(
+pub(crate) fn materialize_managed_files(
     step: &ValidatedStep,
     manifest: &LadderManifest,
 ) -> Result<Vec<crate::ManagedFileManifest>, String> {

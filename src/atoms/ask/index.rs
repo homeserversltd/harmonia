@@ -1,5 +1,6 @@
 //! Typed, bounded, non-blocking observation atoms.
 #![allow(dead_code)]
+pub(crate) mod update_check;
 #[path = "change_unit.rs"]
 pub(crate) mod change_unit;
 #[path = "pull_repo.rs"]

@@ -335,7 +335,23 @@ mod invocation_face {
     }
 }
 
+pub fn invoke_with_exit_code(args: Vec<String>) -> i32 {
+    if let Some(code) = crate::atoms::ask::update_check::invoke_check(&args) {
+        return code;
+    }
+    match invoke(args) {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("harmonia_error={err}");
+            1
+        }
+    }
+}
+
 pub fn invoke(args: Vec<String>) -> Result<(), String> {
+    if let Some(code) = crate::atoms::ask::update_check::invoke_check(&args) {
+        return if matches!(code, 0 | 7) { Ok(()) } else { Err("update-check-failed".into()) };
+    }
     crate::atoms::ask::mint_seats::emit_interactable_seat_signals();
     let invocation = invocation_face::mint(&args);
     run(args, invocation)
@@ -1580,6 +1596,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia acquire-source <component> --entry-file <path> --entry-id <id> [--artifact-name <binary>] [--profile <profile>] [--forge-base <url>] [--schema-base <url>]");
     println!("  harmonia plan-run <profiles/<id>/index.json> [--receipt-dir <path>]");
     println!("  harmonia renew-self (--plan|--apply) --receipt-dir <path> [--module-root <path>]");
+    println!("  harmonia update --check");
     println!("  harmonia update [--apply] [--receipt-dir <path>]");
     println!("  harmonia run-profile <profiles/<id>/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia subscription show");
