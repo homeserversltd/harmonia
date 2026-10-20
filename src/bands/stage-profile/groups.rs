@@ -374,6 +374,9 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     if base.id != base_id {
         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-id-mismatch overlay={} base={} index={}", profile.id, base_id, base.id)));
     }
+    if profile.dotfile_pool.is_none() {
+        profile.dotfile_pool = Some(base.dotfile_pool.clone().unwrap_or_else(|| base.id.clone()));
+    }
     let excluded_module_ids = raw
         .get("excludes")
         .map(|value| parse_excluded_module_ids(value, &profile.id, path))

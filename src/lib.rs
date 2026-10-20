@@ -42,6 +42,8 @@ struct Profile {
     id: String,
     identity: String,
     #[serde(default)]
+    dotfile_pool: Option<String>,
+    #[serde(default)]
     package_authority: Option<PackageAuthority>,
     #[serde(default)]
     modules: Vec<String>,

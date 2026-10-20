@@ -293,24 +293,37 @@ fn profile_fragment_selectors_for_body(
     profile_index: &Path,
 ) -> Result<(String, String, String), String> {
     let mut resolved = profile.clone();
-    if profile
+    let needs_package_authority = profile
         .get("package_authorities")
+        .is_some_and(|value| !value.is_null());
+    let inherits_dotfile_pool = profile
+        .get("extends")
         .is_some_and(|value| !value.is_null())
-    {
+        && profile.get("dotfile_pool").is_none_or(Value::is_null);
+    if needs_package_authority || inherits_dotfile_pool {
         let loaded = crate::bands::stage_profile::load_profile(profile_index).map_err(|error| {
-            format!(
-                "compile-fragments-profile-authority-read-failed {}: {error}",
-                profile_index.display()
-            )
+            let signal = if needs_package_authority {
+                "compile-fragments-profile-authority-read-failed"
+            } else {
+                "compile-fragments-profile-read-failed"
+            };
+            format!("{signal} {}: {error}", profile_index.display())
         })?;
-        let authority = loaded.package_authority.as_ref().ok_or_else(|| {
-            format!(
-                "compile-fragments-profile-authority-missing {}",
-                profile_index.display()
-            )
-        })?;
-        resolved["package_authority"] = serde_json::to_value(authority)
-            .map_err(|error| format!("compile-fragments-profile-authority-serialize-failed: {error}"))?;
+        if needs_package_authority {
+            let authority = loaded.package_authority.as_ref().ok_or_else(|| {
+                format!(
+                    "compile-fragments-profile-authority-missing {}",
+                    profile_index.display()
+                )
+            })?;
+            resolved["package_authority"] = serde_json::to_value(authority)
+                .map_err(|error| format!("compile-fragments-profile-authority-serialize-failed: {error}"))?;
+        }
+        if inherits_dotfile_pool {
+            if let Some(pool) = loaded.dotfile_pool.as_ref() {
+                resolved["dotfile_pool"] = serde_json::json!(pool);
+            }
+        }
     }
     let (appliance, platform, behavioral_pool) =
         profile_fragment_selectors(&resolved, profile_index)?;

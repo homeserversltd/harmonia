@@ -328,30 +328,12 @@ fn molt_from_source_kind_inner(
             serde_json::from_slice(&fs::read(&index_path).map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())?;
         materialized["modules"] = serde_json::json!(profile.modules);
-        let active_base_id = materialized
-            .get("extends")
-            .filter(|value| !value.is_null())
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
         let has_own_dotfile_pool = materialized
             .get("dotfile_pool")
             .is_some_and(|value| !value.is_null());
         if matches!(source_kind, MoltSourceKind::EngineSource) && !has_own_dotfile_pool {
-            if let Some(base_id) = active_base_id {
-                let base_index = harmonia_root
-                    .join("profiles")
-                    .join(&base_id)
-                    .join("index.json");
-                let base_bytes = fs::read(&base_index).map_err(|error| error.to_string())?;
-                let base: serde_json::Value =
-                    serde_json::from_slice(&base_bytes).map_err(|error| error.to_string())?;
-                if let Some(pool) = base
-                    .get("dotfile_pool")
-                    .filter(|value| !value.is_null())
-                    .or_else(|| base.get("id"))
-                {
-                    materialized["dotfile_pool"] = pool.clone();
-                }
+            if let Some(pool) = profile.dotfile_pool.as_ref() {
+                materialized["dotfile_pool"] = serde_json::json!(pool);
             }
         }
         // Keep source lineage as inert metadata. Runtime profile selection uses
