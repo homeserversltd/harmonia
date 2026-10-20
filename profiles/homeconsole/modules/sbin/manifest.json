@@ -4,8 +4,8 @@
   "title": "Appliance controls",
   "summary": "Keeps appliance maintenance controls available and current.",
   "category": "known-good",
-  "version": "1.1.0",
-  "description": "Synchronize the sbin repository, converge its whole owned recursive shelf, and refresh the staff venv only when dependency bytes change.",
+  "version": "1.2.0",
+  "description": "Synchronize the sbin repository, converge its whole owned recursive shelf, and refresh the staff venv only when dependency bytes change, and link /usr/local/bin/agathodaimon to /usr/local/sbin/agathodaimon/cli.py.",
   "optional": false,
   "constants": {},
   "ladder": [
@@ -49,6 +49,19 @@
         "provenance_state": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
         "owned_recursive": true
       }
+    },
+    {
+      "step_id": "agathodaimon-front-door-link",
+      "tool": "files",
+      "permutation": "symlink-converge",
+      "args": {
+        "source": "/usr/local/sbin/agathodaimon/cli.py",
+        "target": "/usr/local/bin/agathodaimon",
+        "required_source_kind": "regular-executable",
+        "owner": "root",
+        "group": "root"
+      },
+      "on_failure": "stop"
     }
   ]
 }
