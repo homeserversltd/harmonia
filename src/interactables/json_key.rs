@@ -342,7 +342,7 @@ pub(crate) fn propose(
     let path = super::feed_path();
     let feed = super::load_feed(&path)?;
     let prior = feed.interactables.iter().find(|item| item.id == id);
-    let current = before == after;
+    let current = document.object.get(key) == step.args.get("value");
     if current {
         if prior.is_some() {
             persist_feed_with_intent(
@@ -495,7 +495,7 @@ pub(crate) fn run(
     }
     let (document, metadata) = observe(target)?;
     let before = KeyState::of(document.object.get(&marker.key));
-    let changed = before != marker.after;
+    let changed = document.object.get(&marker.key) != step.args.get("value");
     // Adding/removing a member necessarily changes separator layout. Only an
     // existing-value replacement (or a no-op) preserves all outside-value bytes.
     let formatting_preserved =
@@ -504,6 +504,7 @@ pub(crate) fn run(
         return Err("json-key-proposal-preimage-stale".into());
     }
     let mut backup_path = None;
+    let mut after = before.clone();
     if changed {
         let bytes = document.edit(&marker.key, step.args.get("value"))?;
         let (reread, current_metadata) = read_regular(target, "json-key-target")?;
@@ -549,7 +550,8 @@ pub(crate) fn run(
         // Do not serialize Projectio::Receipt: it contains struck_bytes.
         backup_path = Some(struck.backup_path);
         let (readback, _) = observe(target)?;
-        if KeyState::of(readback.object.get(&marker.key)) != marker.after {
+        after = KeyState::of(readback.object.get(&marker.key));
+        if after != marker.after {
             return Err("json-key-readback-mismatch".into());
         }
     }
@@ -565,7 +567,7 @@ pub(crate) fn run(
         "{}",
         json!({"schema":"harmonia.interactables.hard_stamp.receipt.v1",
         "ok":true,"id":item.id,"kind":"hard-stamp","config_state":"interactable",
-        "target":target,"key":marker.key,"before":before,"after":marker.after,
+        "target":target,"key":marker.key,"before":before,"after":after,
         "changed":changed,"has_run":true,"formatting_preserved":formatting_preserved,
         "untouched_values_preserved":true,"key_order_preserved":true,
         "formatting_scope":"outside-owned-value","backup_path":backup_path,
