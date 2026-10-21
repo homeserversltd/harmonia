@@ -33,7 +33,39 @@ impl Seat {
     }
 
     pub(crate) fn load(id: &'static str, base: &str) -> Result<Self, String> {
-        let raw = Self::load_declaration(id, base)?;
+        Self::from_declaration(id, Self::load_declaration(id, base)?)
+    }
+
+    /// An explicitly absent public seat selects the reader's primitive field
+    /// uses. Other transport failures are observations we could not establish;
+    /// a served foreign ID or missing frozen kernel still refuses.
+    pub(crate) fn load_if_present(id: &'static str, base: &str) -> Result<Option<Self>, String> {
+        let observed = super::read_only_command_with_timeout(
+            "/usr/bin/curl",
+            &["-sS".into(), "--max-time".into(), "3".into(),
+                "--write-out".into(), "\nharmonia-schema-http-status:%{http_code}".into(),
+                format!("{base}/api/v1/schema/{id}")],
+            Duration::from_secs(4),
+        );
+        if !observed.ok {
+            return Err(format!("schema-seat-unreachable {id}"));
+        }
+        let Some((body, status)) = observed.stdout.rsplit_once("harmonia-schema-http-status:") else {
+            return Err(format!("schema-seat-unreachable {id}: missing HTTP status"));
+        };
+        match status.trim() {
+            "404" => Ok(None),
+            "200" => {
+                let raw = serde_json::from_str(body).map_err(|_| {
+                    format!("schema-seat-desync {id}: invalid seat JSON; reload through Make Modern")
+                })?;
+                Self::from_declaration(id, raw).map(Some)
+            }
+            status => Err(format!("schema-seat-unreachable {id}: HTTP {status}")),
+        }
+    }
+
+    fn from_declaration(id: &'static str, raw: Value) -> Result<Self, String> {
         if raw.get("schema").and_then(Value::as_str) != Some(id) {
             return Err(format!(
                 "schema-seat-desync {id}: foreign schema {}; reload through Make Modern",

@@ -2,6 +2,7 @@
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub(crate) const DATABASE: &str = "/var/lib/harmonia/harmonia.sqlite3";
@@ -56,9 +57,36 @@ pub(crate) fn writer() -> Result<Connection, String> {
     Ok(connection)
 }
 
-fn seat(id: &'static str) -> Result<crate::atoms::ask::mint_seats::Seat, String> {
-    let base = crate::atoms::ask::caduceus_door::base_url()?;
-    crate::atoms::ask::mint_seats::Seat::load(id, base)
+struct LedgerSeats {
+    entry: Option<crate::atoms::ask::mint_seats::Seat>,
+    page: Option<crate::atoms::ask::mint_seats::Seat>,
+}
+
+fn seats() -> Result<&'static LedgerSeats, String> {
+    static SEATS: OnceLock<Result<LedgerSeats, String>> = OnceLock::new();
+    SEATS.get_or_init(|| {
+        let base = crate::atoms::ask::caduceus_door::base_url()?;
+        Ok(LedgerSeats {
+            entry: crate::atoms::ask::mint_seats::Seat::load_if_present(ENTRY, base)?,
+            page: crate::atoms::ask::mint_seats::Seat::load_if_present(PAGE, base)?,
+        })
+    }).as_ref().map_err(Clone::clone)
+}
+
+fn unreported_absences(seats: &LedgerSeats, observed: Option<&Connection>) -> Result<Vec<&'static str>, String> {
+    let mut absent = Vec::new();
+    for (id, loaded) in [(ENTRY, &seats.entry), (PAGE, &seats.page)] {
+        if loaded.is_some() { continue; }
+        let reported = match observed {
+            Some(connection) => connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM migrations WHERE id=?1)",
+                [format!("schema-seat-absent:{id}")], |row| row.get::<_, bool>(0),
+            ).map_err(database_error)?,
+            None => false,
+        };
+        if !reported { absent.push(id); }
+    }
+    Ok(absent)
 }
 
 /// Keep only the newest material outcome for each module. A quiet success keeps
@@ -66,9 +94,9 @@ fn seat(id: &'static str) -> Result<crate::atoms::ask::mint_seats::Seat, String>
 pub(crate) fn record(
     profile: &crate::Profile, run_id: &str, entries: &[crate::receipts::ProfileLedgerEntry<'_>],
 ) -> Result<(), String> {
-    if entries.is_empty() { return Ok(()); }
-    let entry_seat = seat(ENTRY)?;
+    let seats = seats()?;
     let observed = reader()?;
+    let absent = unreported_absences(seats, observed.as_ref())?;
     let mut changes = Vec::new();
     for entry in entries {
         let prior: Option<(Option<String>, Option<String>, Option<bool>, Option<i64>, Option<String>)> =
@@ -98,13 +126,20 @@ pub(crate) fn record(
             "first_missing_signal": entry.first_missing_signal,
             "recorded_at": crate::bands::propose_edits::iso8601_now(),
         });
-        entry_seat.validate(&row)?;
+        if let Some(seat) = &seats.entry { seat.validate(&row)?; }
         changes.push(row);
     }
     drop(observed);
-    if changes.is_empty() { return Ok(()); }
+    if changes.is_empty() && absent.is_empty() { return Ok(()); }
     let mut connection = writer()?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
+    let mut newly_absent = Vec::new();
+    for id in absent {
+        if transaction.execute("INSERT OR IGNORE INTO migrations(id) VALUES(?1)",
+            [format!("schema-seat-absent:{id}")]).map_err(database_error)? > 0 {
+            newly_absent.push(id);
+        }
+    }
     for row in changes {
         transaction.execute("DELETE FROM ledger WHERE module_id=?1 AND run_id<>?2",
             params![row["module_id"].as_str(),row["run_id"].as_str()]).map_err(database_error)?;
@@ -120,7 +155,12 @@ pub(crate) fn record(
                 row["operation_count"].as_i64(),row["first_missing_signal"].as_str(),row["recorded_at"].as_str()],
         ).map_err(database_error)?;
     }
-    transaction.commit().map_err(database_error)
+    transaction.commit().map_err(database_error)?;
+    if !newly_absent.is_empty() {
+        crate::deeds::record("schema-seat-absent", &newly_absent.join(":"), true, true,
+            0, Some(run_id), None, Some("primitive-field-presence"), Some(newly_absent.len() as u64))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn command(args: &[String]) -> Result<(), String> {
@@ -149,8 +189,7 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         }
     }
     if !json_requested { return Err("ledger-json-required".into()); }
-    let entry_seat = seat(ENTRY)?;
-    let page_seat = seat(PAGE)?;
+    let seats = seats()?;
     let connection = reader()?;
     let total: u64 = match connection.as_ref() {
         Some(connection) => connection.query_row(
@@ -181,7 +220,7 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
                 "first_missing_signal": row.get::<_,Option<String>>(7).map_err(database_error)?,
                 "recorded_at": row.get::<_,Option<String>>(8).map_err(database_error)?,
             });
-            entry_seat.validate(&entry)?;
+            if let Some(seat) = &seats.entry { seat.validate(&entry)?; }
             entries.push(json!({"ordinal": total-offset-entries.len() as u64,"entry": entry}));
         }
     }
@@ -189,7 +228,7 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         "page":page,"perPage":per_page,"totalEntries":total,"totalPages":total_pages,
         "entries":entries,"ok":true,
         "firstMissingSignal":if total==0 {"caduceus-ledger-empty"} else {"none"}});
-    page_seat.validate(&page)?;
+    if let Some(seat) = &seats.page { seat.validate(&page)?; }
     println!("{}", serde_json::to_string(&page).map_err(|error| error.to_string())?);
     Ok(())
 }
