@@ -1432,7 +1432,14 @@ pub(crate) fn prune_receipt_root_locked(
         }
         None => None,
     };
-    let retained = retained_root_paths(&root, &candidates, &latest_targets, retention, current_run_dir);
+    let mut retained = retained_root_paths(&root, &candidates, &latest_targets, retention, current_run_dir);
+    if let Err(error) = crate::ledger::retain_referenced_receipts(
+        candidates.iter().map(|candidate| candidate.path.as_path()), &mut retained,
+    ) {
+        report.warnings.push(format!("receipt-prune-ledger-reference-observe-failed: {error}"));
+        report.summarize_warnings();
+        return report;
+    }
     let mut active_profiles = std::collections::BTreeSet::new();
     for candidate in candidates.iter().filter(|candidate| candidate.in_flight) {
         if let Some(profile) = &candidate.profile_id {

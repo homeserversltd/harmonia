@@ -48,6 +48,7 @@ pub(crate) fn writer() -> Result<Connection, String> {
             UNIQUE (run_id, module_id)
          );
          CREATE INDEX IF NOT EXISTS ledger_module ON ledger(module_id, recorded_at DESC);
+         CREATE INDEX IF NOT EXISTS ledger_receipt ON ledger(receipt_ref);
          CREATE TABLE IF NOT EXISTS proposals (
             feed_id TEXT NOT NULL, id TEXT NOT NULL, module_id TEXT NOT NULL,
             kind TEXT NOT NULL, target_path TEXT, reference_source_path TEXT,
@@ -57,6 +58,25 @@ pub(crate) fn writer() -> Result<Connection, String> {
          CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY);"
     ).map_err(database_error)?;
     Ok(connection)
+}
+
+/// A current material outcome owns its existing receipt identity until replaced.
+/// Query candidate identities by key; never load receipts or replay ledger rows.
+pub(crate) fn retain_referenced_receipts<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+    retained: &mut std::collections::BTreeSet<std::path::PathBuf>,
+) -> Result<(), String> {
+    let Some(connection) = reader()? else { return Ok(()); };
+    let mut query = connection.prepare(
+        "SELECT EXISTS(SELECT 1 FROM ledger WHERE receipt_ref=?1)",
+    ).map_err(database_error)?;
+    for path in paths {
+        let identity = path.to_str().ok_or("ledger-receipt-reference-not-utf8")?;
+        if query.query_row([identity], |row| row.get::<_, bool>(0)).map_err(database_error)? {
+            retained.insert(path.to_path_buf());
+        }
+    }
+    Ok(())
 }
 
 struct LedgerSeats {

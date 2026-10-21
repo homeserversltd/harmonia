@@ -1167,12 +1167,11 @@ pub(crate) fn rolling_update_run(
                     }
                 }
                 prune_attempted = true;
-                let mut end_report = crate::atoms::attest::convergence_receipts::prune_receipt_family_locked_for_current(
+                let mut end_report = crate::atoms::attest::convergence_receipts::prune_receipt_root_locked(
                     receipt_dir,
-                    stem,
                     receipt_retention,
-                    &effective_receipt_dir,
-                    Path::new(crate::ledger::DATABASE),
+                    Some(&effective_receipt_dir),
+                    None,
                 );
                 end_report.deletion_attempts += report.deletion_attempts;
                 end_report.deleted_directories += report.deleted_directories;
