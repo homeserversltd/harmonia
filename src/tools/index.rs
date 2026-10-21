@@ -33,6 +33,10 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
         include_str!("hermes-appearance/index.json"),
     ),
     (
+        "mem0-maintenance",
+        include_str!("mem0-maintenance/index.json"),
+    ),
+    (
         "install-package",
         include_str!("install-package/index.json"),
     ),
@@ -273,6 +277,8 @@ pub(crate) mod routine;
 pub(crate) mod hermes_maintenance;
 #[path = "hermes-appearance/index.rs"]
 pub(crate) mod hermes_appearance;
+#[path = "mem0-maintenance/index.rs"]
+pub(crate) mod mem0_maintenance;
 #[path = "release-binary/index.rs"]
 pub(crate) mod release_binary;
 #[path = "service-runtime/index.rs"]

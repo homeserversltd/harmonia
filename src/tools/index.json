@@ -1936,6 +1936,30 @@
           "placement": "PullSource"
         }
       ]
+    },
+    {
+      "name": "mem0-maintenance",
+      "description": "Observe and compare one committed source subtree, promote it only on a nonempty diff and authorized apply, restart its declared service, and prove process-served source identity.",
+      "routine_summonable": true,
+      "permutations": [
+        {
+          "name": "converge",
+          "description": "Observe local HEAD and subtree tree identity without fetching; on changed authorized apply, atomically exchange the app subtree, retain one fixed predecessor, restart the declared service, and verify health plus process-served source identity.",
+          "args": [
+            {"name":"owner","kind":"string","required":true},
+            {"name":"source_root","kind":"string","required":true},
+            {"name":"subtree","kind":"string","required":true},
+            {"name":"app_root","kind":"string","required":true},
+            {"name":"unit","kind":"string","required":false},
+            {"name":"health_url","kind":"string","required":false},
+            {"name":"timeout_secs","kind":"integer","required":true},
+            {"name":"identity_json_pointer","kind":"string","required":false},
+            {"name":"promotion_boot_id","kind":"string","required":false},
+            {"name":"promotion_monotonic_usec","kind":"integer","required":false}
+          ],
+          "placement": "RestartServices"
+        }
+      ]
     }
   ]
 }

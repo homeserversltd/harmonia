@@ -341,6 +341,9 @@ pub fn invoke_with_exit_code(args: Vec<String>) -> i32 {
     if let Some(code) = crate::atoms::ask::update_check::invoke_check(&args) {
         return code;
     }
+    if args.first().map(String::as_str) == Some("mem0-maintenance") {
+        return if invoke(args).is_ok() { 0 } else { 1 };
+    }
     match invoke(args) {
         Ok(()) => 0,
         Err(err) => {
@@ -353,6 +356,19 @@ pub fn invoke_with_exit_code(args: Vec<String>) -> i32 {
 pub fn invoke(args: Vec<String>) -> Result<(), String> {
     if let Some(code) = crate::atoms::ask::update_check::invoke_check(&args) {
         return if matches!(code, 0 | 7) { Ok(()) } else { Err("update-check-failed".into()) };
+    }
+    if args.first().map(String::as_str) == Some("mem0-maintenance") {
+        let apply = tools::mem0_maintenance::cli_apply_requested(&args[1..])?;
+        let invocation = if apply { Some(invocation_face::mint(&args)) } else { None };
+        let mode = device_profile::UpdateMode::from_apply_flag_with_invocation(
+            apply,
+            invocation.as_ref().and_then(Invocation::key),
+        );
+        return tools::mem0_maintenance::invoke_cli(
+            &args[1..],
+            mode.software_authorization(),
+            mode.invocation(),
+        );
     }
     crate::atoms::ask::mint_seats::emit_interactable_seat_signals();
     let invocation = invocation_face::mint(&args);

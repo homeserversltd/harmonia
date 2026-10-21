@@ -866,6 +866,15 @@ fn validate_routine(
                     defect,
                 },
             )?;
+        } else if child.tool == "mem0-maintenance" && permutation_name == "converge" {
+            let resolved = resolve_args(&child.args, &manifest.constants).map_err(|defect| LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect,
+            })?;
+            crate::tools::mem0_maintenance::validate_args(&resolved).map_err(|defect| LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect,
+            })?;
         }
     }
     Ok(())

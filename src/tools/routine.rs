@@ -373,6 +373,12 @@ pub(crate) fn validate_tool_semantics(
                 }
             })
         }
+        ("mem0-maintenance", "converge") => {
+            tools::mem0_maintenance::validate_args(args).map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            })
+        }
         _ => Ok(()),
     }
 }
@@ -580,6 +586,21 @@ fn execute_routine_tool(
             )?;
             Ok((outcome, outputs))
         }
+        "mem0-maintenance" if requested_permutation == Some("converge") => {
+            let authorized_apply = apply && software_authorization.is_some();
+            let step = ValidatedStep {
+                step_id: step_id.to_owned(),
+                tool: "mem0-maintenance".into(),
+                permutation: "converge".into(),
+                args: args.clone(),
+                on_failure: OnFailure::Stop,
+            };
+            tools::mem0_maintenance::execute_step_with_outputs(
+                &step,
+                software_authorization.filter(|_| authorized_apply),
+                invocation.filter(|_| authorized_apply),
+            )
+        }
         "pull-repo" => crate::bands::pull_source::execute_routine_child(
             "pull-repo",
             requested_permutation,
@@ -713,6 +734,7 @@ pub(crate) fn execute_validated_step_with_source(
                 | ("command", "act")
                 | ("release-binary", "install")
                 | ("hermes-maintenance", "converge")
+                | ("mem0-maintenance", "converge")
                 | ("xenia-runtime", "refusal")
                 | ("xenia-runtime", "retire")
         );
@@ -796,6 +818,11 @@ pub(crate) fn execute_validated_step_with_source(
         ("hermes-appearance", "offer") => {
             tools::hermes_appearance::execute_validated_step(step, manifest, module_dir, source_module_dir)
         }
+        ("mem0-maintenance", "converge") => tools::mem0_maintenance::execute_step(
+            step,
+            software_authorization.filter(|_| software_apply),
+            invocation.filter(|_| software_apply),
+        ),
         _ => Err(format!(
             "ladder-executor-missing tool={} permutation={}",
             step.tool, step.permutation
