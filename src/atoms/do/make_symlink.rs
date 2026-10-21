@@ -173,20 +173,35 @@ fn restore_file(
     }
 }
 
+fn remove_link(
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    invocation: &atoms::r#do::InvocationKey,
+    path: &Path,
+) -> Result<(), String> {
+    match atoms::ask::path_kind(path)? {
+        None => Ok(()),
+        Some(atoms::ask::PathKind::Symlink) => {
+            atoms::r#do::symlink_converge::remove_file(authorization, invocation, path)
+        }
+        Some(_) => Err(format!(
+            "validated-file-symlink-link-not-link {}",
+            path.display()
+        )),
+    }
+}
+
 fn restore_link(
     authorization: &crate::atoms::comparison::ActionAuthorization,
     invocation: &atoms::r#do::InvocationKey,
     path: &Path,
     saved: &SavedLink,
 ) -> Result<(), String> {
-    if atoms::ask::path_kind(path)?.is_some() {
-        atoms::r#do::remove_file::remove_file(authorization, invocation, path).map_err(|e| {
-            format!(
-                "validated-file-symlink-restore-link-remove-failed {}: {e}",
-                path.display()
-            )
-        })?;
-    }
+    remove_link(authorization, invocation, path).map_err(|e| {
+        format!(
+            "validated-file-symlink-restore-link-remove-failed {}: {e}",
+            path.display()
+        )
+    })?;
     if saved.exists {
         let link = saved
             .target
@@ -325,7 +340,7 @@ pub(crate) fn execute(
     if request.apply && invocation.is_none() {
         return Err("validated-file-symlink-apply-invocation-required".into());
     }
-    let run = crate::atoms::comparison::execute(
+    let run = crate::atoms::comparison::execute_mode(
         "make-symlink",
         || observe_symlink(&request),
         |observation| {
@@ -341,11 +356,21 @@ pub(crate) fn execute(
         },
         |authorization, observation| {
             let authorization = &authorization;
+            if !request.apply {
+                return write_receipt(
+                    &request,
+                    TerminalReceipt::refusal("validated-file-symlink-report-only-unseated"),
+                );
+            }
             let Some(invocation) = invocation else {
-                return write_receipt(&request, TerminalReceipt::no_change(true));
+                return write_receipt(
+                    &request,
+                    TerminalReceipt::refusal("validated-file-symlink-apply-invocation-required"),
+                );
             };
             execute_action(authorization, invocation, request, observation)
         },
+        request.apply,
     )?;
     match run {
         crate::atoms::comparison::ComparisonRun::Current { .. } => {
@@ -427,15 +452,15 @@ fn execute_action(
     let source_candidate_exists = std::cell::Cell::new(source_candidate_observed);
     let link_candidate_exists = std::cell::Cell::new(link_candidate_observed);
     let mut clean = || {
+        if link_candidate_exists.get()
+            && remove_link(authorization, invocation, &link_candidate).is_ok()
+        {
+            link_candidate_exists.set(false);
+        }
         if source_candidate_exists.get()
             && atoms::r#do::remove_file::remove_file(authorization, invocation, &source_candidate).is_ok()
         {
             source_candidate_exists.set(false);
-        }
-        if link_candidate_exists.get()
-            && atoms::r#do::remove_file::remove_file(authorization, invocation, &link_candidate).is_ok()
-        {
-            link_candidate_exists.set(false);
         }
     };
     clean();
@@ -522,7 +547,7 @@ fn execute_action(
     }
     if promotion_error.is_none() && !link_current {
         if link_candidate_exists.get()
-            && atoms::r#do::remove_file::remove_file(authorization, invocation, &link_candidate).is_ok()
+            && remove_link(authorization, invocation, &link_candidate).is_ok()
         {
             link_candidate_exists.set(false);
         }
