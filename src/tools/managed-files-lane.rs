@@ -7,6 +7,11 @@ pub(crate) fn execute_validated_step(
 ) -> Result<crate::OperationOutcome, String> {
     let apply = software_authorization.is_some();
     match step.permutation.as_str() {
+        // This permutation receives no apply or actuator capability. It only
+        // records an owner-disposed ConfigPlane proposal, including on --apply.
+        "json-key-proposal" => {
+            crate::interactables::json_key::propose(step, manifest, module_dir)
+        }
         "managed-files" => managed_files_step_with_authorization(
             step,
             manifest,
@@ -111,7 +116,8 @@ pub(crate) fn structural_file_blocker(
             crate::atoms::files::TargetClass::Config
                 if !matches!(
                         step.permutation.as_str(),
-                        "managed-files"
+                        "json-key-proposal"
+                            | "managed-files"
                             | "converge"
                             | "directory-sync"
                             | "validated-sudoers-converge"

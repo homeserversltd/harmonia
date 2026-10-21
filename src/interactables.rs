@@ -16,6 +16,7 @@ const HOUSEHOLD_TRUST_RENEW_RECEIPT: &str =
 const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
 pub(crate) mod homeserver_clock_utc;
+pub(crate) mod json_key;
 
 pub(crate) fn is_ruyi_born_kind(kind: &str) -> bool {
     matches!(
@@ -558,6 +559,9 @@ fn interactable_run(
         return Err(format!("interactable-unknown-id {}", args[0]));
     };
     let item = feed.interactables[position].clone();
+    if item.kind == "hard-stamp" && item.extra.contains_key("json_key_proposal") {
+        return json_key::run(&path, &item, invocation);
+    }
     if item.id == homeserver_clock_utc::INTERACTABLE_ID {
         return homeserver_clock_utc::run(&path, &item, invocation);
     }

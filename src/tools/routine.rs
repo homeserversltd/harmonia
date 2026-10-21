@@ -343,6 +343,11 @@ pub(crate) fn validate_tool_semantics(
                 defect,
             }),
         ("files", "metadata") => validate_files_metadata_args(step_id, args),
+        ("files", "json-key-proposal") => crate::interactables::json_key::validate_args(args)
+            .map_err(|defect| LadderValidationError {
+                step_id: step_id.into(),
+                defect,
+            }),
         ("files", "executable-present") => tools::files::validate_executable_present_args(args)
             .map_err(|defect| LadderValidationError {
                 step_id: step_id.into(),
@@ -409,6 +414,14 @@ pub(crate) fn project_routine_children(
     step.steps
         .iter()
         .map(|child| {
+            if child.tool == "files"
+                && child.permutation.as_deref() == Some("json-key-proposal")
+            {
+                return Err(LadderValidationError {
+                    step_id: step.step_id.clone(),
+                    defect: "json-key-proposal-routine-unsupported".into(),
+                });
+            }
             let contract = tools::get(&child.tool).ok_or_else(|| LadderValidationError {
                 step_id: step.step_id.clone(),
                 defect: format!("routine-tool-not-found-{}", child.tool),
