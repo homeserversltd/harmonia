@@ -743,7 +743,10 @@ pub(crate) fn write_compatibility_projection_after_attest(
     receipt: &Receipt,
     projection: &serde_json::Value,
 ) -> Result<(), String> {
-    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), receipt, &[], projection.get("truthful_changed").or_else(||projection.get("changed")).and_then(serde_json::Value::as_bool).unwrap_or(false))?;
+    let changed = projection.get("apply").and_then(serde_json::Value::as_bool) != Some(false)
+        && projection.get("truthful_changed").or_else(|| projection.get("changed"))
+            .and_then(serde_json::Value::as_bool).unwrap_or(false);
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), receipt, &[], changed)?;
     write_compatibility_projection(path, projection)
 }
 
