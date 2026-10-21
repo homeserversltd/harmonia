@@ -604,6 +604,17 @@
       "routine_summonable": true,
       "permutations": [
         {
+          "name": "json-key-proposal",
+          "description": "Compare one top-level JSON key on ConfigPlane; only an owner-run interactable may change the existing file.",
+          "args": [
+            {"name": "target", "kind": "string", "required": true},
+            {"name": "key", "kind": "string", "required": true},
+            {"name": "value", "kind": "json", "required": false},
+            {"name": "receipt_name", "kind": "string", "required": true}
+          ],
+          "placement": "ProposeEdits"
+        },
+        {
           "name": "managed-files",
           "description": "converge managed file declarations from typed JSON",
           "args": [

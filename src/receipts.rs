@@ -1425,7 +1425,12 @@ pub(crate) fn write_plan_receipts(
                     let mut planned = json!({
                         "event":"step-planned", "module":module,
                         "step_id":step.step_id, "tool":step.tool,
-                        "permutation":step.permutation, "args":step.args,
+                        "permutation":step.permutation,
+                        "args": if step.tool == "files" && step.permutation == "json-key-proposal" {
+                            crate::interactables::json_key::planned_args(&step.args)
+                        } else {
+                            step.args.clone()
+                        },
                         "ok":true, "mutation":false,
                         "status":if skipped_path.is_some() {"skipped"} else {"planned"},
                         "skipped":skipped_path.is_some()
