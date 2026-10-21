@@ -9,16 +9,13 @@
   "constants": {
     "sites": [
       "homeserver-calibre-web",
-      "homeserver-element",
       "homeserver-filebrowser",
       "homeserver-forgejo",
       "homeserver-jellyfin",
       "homeserver-main",
-      "homeserver-matrix",
       "homeserver-mkdocs",
       "homeserver-navidrome",
       "homeserver-piwigo",
-      "homeserver-searxng",
       "homeserver-transmission",
       "homeserver-vaultwarden",
       "homeserver-yarr"
