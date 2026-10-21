@@ -846,7 +846,9 @@ pub(crate) fn write_compile_fragments_config_projection(
     let projection = json!({
         "schema":"harmonia.compile-fragments.receipt.v1",
         "ok":outcome.ok || absent_offer_persisted,
-        "changed":if absent_offer_persisted { false } else { outcome.changed },
+        "changed":crate::atoms::files::convergence_truthful_changed(
+            &outcome.entries, false, outcome.config_state,
+        ),
         "ownership_changed":outcome.ownership_changed,
         "skipped":skipped,
         "config_state":config_state,

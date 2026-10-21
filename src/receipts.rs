@@ -168,6 +168,12 @@ pub(crate) fn record_receipt_cleanup(
         "prune_warnings": report.warnings,
     });
     update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup.clone())?;
+    // An unavailable cleanup observation remains in the returned run receipt;
+    // without an attempted deletion it is not a failed mutation deed.
+    if report.deletion_attempts == 0
+        && report.deleted_directories == 0 && report.deleted_files == 0 {
+        return Ok(());
+    }
     crate::deeds::record("receipt-cleanup", "harmonia-receipts", report.warnings.is_empty(),
         report.deleted_directories > 0 || report.deleted_files > 0, 0,
         None,None, if report.warnings.is_empty() {None} else {Some("receipt-cleanup-failed")},

@@ -713,7 +713,9 @@ pub(crate) fn compile_fragments_step(
         )?;
         return Ok(OperationOutcome {
             ok: operation_ok,
-            changed: if absent_offer_persisted { false } else { outcome.changed },
+            changed: crate::atoms::files::convergence_truthful_changed(
+                &outcome.entries, false, outcome.config_state,
+            ),
             skipped,
             message,
             command: None,
@@ -1206,12 +1208,13 @@ pub(crate) fn managed_files_step_with_authorization(
         }
         let interactable_exempt = observed.config_state
             == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt);
-        result.changed |= observed.changed;
-        truthful_changed |= crate::atoms::files::convergence_truthful_changed(
+        let file_changed = crate::atoms::files::convergence_truthful_changed(
             &observed.entries,
             false,
             observed.config_state,
         );
+        result.changed |= file_changed;
+        truthful_changed |= file_changed;
         if interactable_exempt {
             result.message = "managed-files-interactable-exempt".into();
         }
@@ -1243,7 +1246,7 @@ pub(crate) fn managed_files_step_with_authorization(
                     .iter()
                     .filter(|recognition| recognition.config_state == "interactable")
                     .count(),
-                observed.changed,
+                file_changed,
                 observed.ownership_changed,
             )
         } else if !target_exists_after {
@@ -1257,12 +1260,12 @@ pub(crate) fn managed_files_step_with_authorization(
             drift: crate::atoms::Drift::Current,
             message: attestation_message,
         };
-        if !file_ok || observed.changed || observed.ownership_changed {
-            if let Some(witness) = witness {
-                atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness, observed.changed || observed.ownership_changed)?;
-            } else {
-                atoms::attest::attest(&attest_log, &receipt, &[], observed.changed || observed.ownership_changed)?;
-            }
+        if let Some(witness) = witness {
+            // The reply retains its typed observation; only verified movement
+            // (not a proposed difference) may create an appliance deed.
+            atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness, file_changed)?;
+        } else {
+            atoms::attest::attest(&attest_log, &receipt, &[], file_changed)?;
         }
     }
     if let Some(signal) = first_missing_signal {
