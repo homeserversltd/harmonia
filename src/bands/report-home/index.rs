@@ -538,6 +538,16 @@ pub(crate) fn settle(
                 first_missing_signal: step.first_missing_signal.as_deref().unwrap_or("none"),
                 receipt_dir,
                 module_version: loaded.and_then(|module| module.version()),
+                step: if step.ok { None } else {
+                    step.placements.iter()
+                        .find(|placement| placement.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                            || placement.pointer("/outcome/ok").and_then(serde_json::Value::as_bool) == Some(false))
+                        .and_then(|placement| placement.get("step_id").and_then(serde_json::Value::as_str))
+                        .or_else(|| step.first_missing_signal.as_deref().and_then(|signal| {
+                            signal.split_whitespace().find_map(|word| word.strip_prefix("step_id="))
+                        }))
+                },
+                error: if step.ok { None } else { step.first_missing_signal.as_deref() },
             });
         }
     }

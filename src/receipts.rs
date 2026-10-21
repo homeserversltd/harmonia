@@ -81,6 +81,8 @@ pub(crate) struct ProfileLedgerEntry<'a> {
     pub first_missing_signal: &'a str,
     pub receipt_dir: &'a Path,
     pub module_version: Option<&'a str>,
+    pub step: Option<&'a str>,
+    pub error: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -40,10 +40,12 @@ pub(crate) fn writer() -> Result<Connection, String> {
     // SQLite owns its DELETE journal. IF NOT EXISTS does not dirty an existing schema.
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS ledger (
+            ledger_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL, module_id TEXT NOT NULL, profile_id TEXT,
             module_version TEXT, ok INTEGER, changed INTEGER, operation_count INTEGER,
             first_missing_signal TEXT, recorded_at TEXT,
-            PRIMARY KEY (run_id, module_id)
+            receipt_ref TEXT NOT NULL, profile_identity TEXT NOT NULL, step TEXT, error TEXT,
+            UNIQUE (run_id, module_id)
          );
          CREATE INDEX IF NOT EXISTS ledger_module ON ledger(module_id, recorded_at DESC);
          CREATE TABLE IF NOT EXISTS proposals (
@@ -89,6 +91,24 @@ fn unreported_absences(seats: &LedgerSeats, observed: Option<&Connection>) -> Re
     Ok(absent)
 }
 
+/// Failure state is not a transcript. Scrub a credential-bearing suffix rather
+/// than guessing where its value ends, then truncate only at a UTF-8 boundary.
+fn redacted_failure_text(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let sensitive = ["password", "passwd", "secret", "token", "authorization", "bearer ",
+        "credential", "api_key", "apikey", "access_key", "private_key", "private key",
+        "connection_string", "pin=", "pin:", "\"pin\"", "://", "-----begin", "sk-", "ghp_", "glpat-", "eyj"]
+        .iter().filter_map(|marker| lower.find(marker)).min();
+    let mut redacted = match sensitive {
+        Some(index) => format!("{}[REDACTED]", &value[..index]),
+        None => value.to_owned(),
+    };
+    let mut end = redacted.len().min(4096);
+    while !redacted.is_char_boundary(end) { end -= 1; }
+    redacted.truncate(end);
+    redacted
+}
+
 /// Keep only the newest material outcome for each module. A quiet success keeps
 /// that outcome, not a new run-id/timestamp row; repeated identical failures do too.
 pub(crate) fn record(
@@ -99,13 +119,16 @@ pub(crate) fn record(
     let absent = unreported_absences(seats, observed.as_ref())?;
     let mut changes = Vec::new();
     for entry in entries {
-        let prior: Option<(Option<String>, Option<String>, Option<bool>, Option<i64>, Option<String>)> =
+        let first_missing_signal = redacted_failure_text(entry.first_missing_signal);
+        let error = (!entry.ok).then(|| redacted_failure_text(entry.error.unwrap_or(entry.first_missing_signal)));
+        let failed_step = (!entry.ok).then_some(entry.step).flatten();
+        let prior: Option<(Option<String>, Option<String>, Option<bool>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>)> =
             match observed.as_ref() {
                 Some(connection) => connection.query_row(
-                    "SELECT profile_id,module_version,ok,operation_count,first_missing_signal
+                    "SELECT profile_id,module_version,ok,operation_count,first_missing_signal,profile_identity,step,error
                      FROM ledger WHERE module_id=?1 ORDER BY recorded_at DESC,run_id DESC LIMIT 1",
                     [entry.module_id],
-                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
                 ).optional().map_err(database_error)?,
                 None => None,
             };
@@ -114,19 +137,26 @@ pub(crate) fn record(
                 && prior.1.as_deref() == entry.module_version
                 && prior.2 == Some(entry.ok)
                 && prior.3 == i64::try_from(entry.operation_count).ok()
-                && prior.4.as_deref() == Some(entry.first_missing_signal)
+                && prior.4.as_deref() == Some(first_missing_signal.as_str())
+                && prior.5.as_deref() == Some(profile.identity.as_str())
+                && prior.6.as_deref() == failed_step
+                && prior.7 == error
         });
         // A first all-current observation is not a deed. Recovery from a failed
         // outcome is a state transition, even when no software bytes moved.
         if !entry.changed && (same_state || (entry.ok && prior.is_none())) { continue; }
+        let receipt_ref = std::fs::canonicalize(entry.receipt_dir)
+            .map_err(|error| format!("ledger-receipt-reference-observe-failed: {error}"))?;
+        let receipt_ref = receipt_ref.to_str().ok_or("ledger-receipt-reference-not-utf8")?;
         let row = json!({
             "schema": ENTRY, "run_id": run_id, "module_id": entry.module_id,
             "profile_id": profile.id, "module_version": entry.module_version,
             "ok": entry.ok, "changed": entry.changed, "operation_count": entry.operation_count,
-            "first_missing_signal": entry.first_missing_signal,
+            "first_missing_signal": first_missing_signal,
             "recorded_at": crate::bands::propose_edits::iso8601_now(),
+            "receipt_ref": receipt_ref, "profile_identity": profile.identity,
+            "step": failed_step, "error": error,
         });
-        if let Some(seat) = &seats.entry { seat.validate(&row)?; }
         changes.push(row);
     }
     drop(observed);
@@ -140,20 +170,26 @@ pub(crate) fn record(
             newly_absent.push(id);
         }
     }
-    for row in changes {
+    for mut row in changes {
         transaction.execute("DELETE FROM ledger WHERE module_id=?1 AND run_id<>?2",
             params![row["module_id"].as_str(),row["run_id"].as_str()]).map_err(database_error)?;
-        transaction.execute(
-            "INSERT INTO ledger(run_id,module_id,profile_id,module_version,ok,changed,operation_count,first_missing_signal,recorded_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+        let sequence: i64 = transaction.query_row(
+            "INSERT INTO ledger(run_id,module_id,profile_id,module_version,ok,changed,operation_count,first_missing_signal,recorded_at,receipt_ref,profile_identity,step,error)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
              ON CONFLICT(run_id,module_id) DO UPDATE SET profile_id=excluded.profile_id,
                module_version=excluded.module_version,ok=excluded.ok,changed=excluded.changed,
                operation_count=excluded.operation_count,first_missing_signal=excluded.first_missing_signal,
-               recorded_at=excluded.recorded_at",
+               recorded_at=excluded.recorded_at,receipt_ref=excluded.receipt_ref,
+               profile_identity=excluded.profile_identity,step=excluded.step,error=excluded.error
+             RETURNING ledger_sequence",
             params![row["run_id"].as_str(),row["module_id"].as_str(),row["profile_id"].as_str(),
                 row["module_version"].as_str(),row["ok"].as_bool(),row["changed"].as_bool(),
-                row["operation_count"].as_i64(),row["first_missing_signal"].as_str(),row["recorded_at"].as_str()],
+                row["operation_count"].as_i64(),row["first_missing_signal"].as_str(),row["recorded_at"].as_str(),
+                row["receipt_ref"].as_str(),row["profile_identity"].as_str(),row["step"].as_str(),row["error"].as_str()],
+            |row| row.get(0),
         ).map_err(database_error)?;
+        row["ledger_sequence"] = json!(sequence);
+        if let Some(seat) = &seats.entry { seat.validate(&row)?; }
     }
     transaction.commit().map_err(database_error)?;
     if !newly_absent.is_empty() {
@@ -203,7 +239,7 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
     let mut entries = Vec::new();
     if let Some(connection) = connection.as_ref() {
         let mut query = connection.prepare(
-            "SELECT run_id,module_id,profile_id,module_version,ok,changed,operation_count,first_missing_signal,recorded_at
+            "SELECT run_id,module_id,profile_id,module_version,ok,changed,operation_count,first_missing_signal,recorded_at,receipt_ref,ledger_sequence,profile_identity,step,error
              FROM ledger WHERE (?1 IS NULL OR module_id=?1)
              ORDER BY recorded_at DESC,run_id DESC,module_id ASC LIMIT ?2 OFFSET ?3",
         ).map_err(database_error)?;
@@ -219,6 +255,11 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
                 "operation_count": row.get::<_,Option<i64>>(6).map_err(database_error)?,
                 "first_missing_signal": row.get::<_,Option<String>>(7).map_err(database_error)?,
                 "recorded_at": row.get::<_,Option<String>>(8).map_err(database_error)?,
+                "receipt_ref": row.get::<_,Option<String>>(9).map_err(database_error)?,
+                "ledger_sequence": row.get::<_,Option<i64>>(10).map_err(database_error)?,
+                "profile_identity": row.get::<_,Option<String>>(11).map_err(database_error)?,
+                "step": row.get::<_,Option<String>>(12).map_err(database_error)?,
+                "error": row.get::<_,Option<String>>(13).map_err(database_error)?,
             });
             if let Some(seat) = &seats.entry { seat.validate(&entry)?; }
             entries.push(json!({"ordinal": total-offset-entries.len() as u64,"entry": entry}));
