@@ -1325,49 +1325,10 @@ pub(crate) fn prepare_receipt_parent(parent: &Path) -> Result<(), String> {
     make_receipt_tree_readable(parent)
 }
 
-pub(crate) fn remove_artifact(path: &Path) -> Result<(), String> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("attest-artifact-remove-failed {}: {error}", path.display())),
-    }
-}
-
 pub(crate) fn copy_artifact(source: &Path, target: &Path) -> Result<(), String> {
     let parent = target.parent().ok_or_else(|| format!("artifact-copy-parent-missing {}", target.display()))?;
     prepare_receipt_parent(parent)?;
     fs::copy(source, target).map_err(|error| format!("artifact-copy-failed {} -> {}: {error}", source.display(), target.display()))?;
-    Ok(())
-}
-
-pub(crate) fn promote_current_link(
-    latest_path: &Path,
-    target: &Path,
-    error_prefix: &str,
-    reject_directory: bool,
-) -> Result<(), String> {
-    if latest_path.exists() {
-        if latest_path.is_dir() && !latest_path.is_symlink() {
-            if reject_directory {
-                return Err(format!(
-                    "{error_prefix}-still-directory {}",
-                    latest_path.display()
-                ));
-            }
-        } else {
-            fs::remove_file(latest_path).map_err(|e| e.to_string())?;
-        }
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(target, latest_path).map_err(|e| {
-        format!(
-            "{error_prefix}-symlink-failed {} -> {}: {e}",
-            target.display(),
-            latest_path.display()
-        )
-    })?;
-    #[cfg(not(unix))]
-    return Err(format!("{error_prefix}-symlink-unsupported"));
     Ok(())
 }
 

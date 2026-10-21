@@ -598,9 +598,7 @@ pub(crate) fn update_from_certificate(
         )?;
         return Err(reason);
     }
-    let receipt_dir = receipt_dir_arg(args).unwrap_or_else(|| {
-        PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
-    });
+    let receipt_dir = requested_receipt_dir;
     let module_root = default_module_root(&profile_path);
     let result = crate::atoms::r#do::transaction::rolling_update_from_certificate_with_context(
         &profile,

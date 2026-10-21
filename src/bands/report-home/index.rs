@@ -156,73 +156,78 @@ pub(crate) fn collect_package_pin_witnesses(
 }
 
 fn closing_module_steps(state: &RunState, receipt_dir: &Path) -> Vec<serde_json::Value> {
-    state
-        .module_states
+    state.module_states.iter()
+        .map(|(module_id, step)| closing_module_step(module_id, step, receipt_dir, &state.run_id))
+        .collect()
+}
+
+pub(crate) fn closing_module_step(
+    module_id: &str,
+    step: &ModuleExecution,
+    receipt_dir: &Path,
+    run_id: &str,
+) -> serde_json::Value {
+    let attempt = step
+        .placements
         .iter()
-        .map(|(module_id, step)| {
-            let attempt = step
-                .placements
-                .iter()
-                .map(|placement| {
-                    let mut value = placement.clone();
-                    if let Some(object) = value.as_object_mut() {
-                        object.insert("run_id".into(), json!(state.run_id));
-                        let step_id = object
-                            .get("step_id")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string);
-                        let result = step_id.as_deref().and_then(|id| {
-                            let path = receipt_dir.join("modules").join(module_id).join(format!("{id}.json"));
-                            std::fs::read(path)
-                                .ok()
-                                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                                .filter(|receipt| crate::receipts::is_current_run_receipt(receipt))
-                        });
-                        if let Some(result) = result {
-                            if let Some(result_object) = result.as_object() {
-                                for field in ["ok", "changed", "status", "first_missing_signal"] {
-                                    if !object.contains_key(field) {
-                                        if let Some(value) = result_object.get(field) {
-                                            object.insert(field.to_string(), value.clone());
-                                        }
-                                    }
-                                }
-                            }
-                            object.insert("result".into(), result);
-                        }
-                        let ok = object.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(step.ok);
-                        let changed = object.get("changed").and_then(serde_json::Value::as_bool).unwrap_or(step.changed);
-                        let status = object.get("status").cloned().unwrap_or_else(|| json!("unknown"));
-                        object.entry("outcome").or_insert_with(|| json!({"ok": ok, "changed": changed, "status": status}));
-                        let outcome_fields = object
-                            .get("outcome")
-                            .and_then(serde_json::Value::as_object)
-                            .map(|outcome| {
-                                ["ok", "changed", "status", "first_missing_signal"]
-                                    .into_iter()
-                                    .filter_map(|field| outcome.get(field).map(|value| (field, value.clone())))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        for (field, value) in outcome_fields {
+        .map(|placement| {
+            let mut value = placement.clone();
+            if let Some(object) = value.as_object_mut() {
+                object.insert("run_id".into(), json!(run_id));
+                let step_id = object
+                    .get("step_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let result = step_id.as_deref().and_then(|id| {
+                    let path = receipt_dir.join("modules").join(module_id).join(format!("{id}.json"));
+                    std::fs::read(path)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                        .filter(|receipt| crate::receipts::is_current_run_receipt(receipt))
+                });
+                if let Some(result) = result {
+                    if let Some(result_object) = result.as_object() {
+                        for field in ["ok", "changed", "status", "first_missing_signal"] {
                             if !object.contains_key(field) {
-                                object.insert(field.to_string(), value);
+                                if let Some(value) = result_object.get(field) {
+                                    object.insert(field.to_string(), value.clone());
+                                }
                             }
                         }
                     }
-                    value
-                })
-                .collect::<Vec<_>>();
-            json!({
-                "run_id": state.run_id,
-                "module": module_id,
-                "observed": {"ok": step.ok, "changed": step.changed, "first_missing_signal": step.first_missing_signal},
-                "could_change_to": serde_json::Value::Null,
-                "attempt": attempt,
-                "outcome": {"ok": step.ok, "changed": step.changed, "first_missing_signal": step.first_missing_signal},
-            })
+                    object.insert("result".into(), result);
+                }
+                let ok = object.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(step.ok);
+                let changed = object.get("changed").and_then(serde_json::Value::as_bool).unwrap_or(step.changed);
+                let status = object.get("status").cloned().unwrap_or_else(|| json!("unknown"));
+                object.entry("outcome").or_insert_with(|| json!({"ok": ok, "changed": changed, "status": status}));
+                let outcome_fields = object
+                    .get("outcome")
+                    .and_then(serde_json::Value::as_object)
+                    .map(|outcome| {
+                        ["ok", "changed", "status", "first_missing_signal"]
+                            .into_iter()
+                            .filter_map(|field| outcome.get(field).map(|value| (field, value.clone())))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                for (field, value) in outcome_fields {
+                    if !object.contains_key(field) {
+                        object.insert(field.to_string(), value);
+                    }
+                }
+            }
+            value
         })
-        .collect()
+        .collect::<Vec<_>>();
+    json!({
+        "run_id": run_id,
+        "module": module_id,
+        "observed": {"ok": step.ok, "changed": step.changed, "first_missing_signal": step.first_missing_signal},
+        "could_change_to": serde_json::Value::Null,
+        "attempt": attempt,
+        "outcome": {"ok": step.ok, "changed": step.changed, "first_missing_signal": step.first_missing_signal},
+    })
 }
 
 fn forward_module_outcome(

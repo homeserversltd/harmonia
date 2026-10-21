@@ -286,35 +286,6 @@ fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
     standalone_legacy.into_iter().chain(typed_records).collect()
 }
 
-pub(crate) fn write_engine_run_receipt_with_duration(
-    receipt_dir: &Path,
-    profile: &Profile,
-    apply: bool,
-    ok: bool,
-    changed: bool,
-    module_count: usize,
-    operation_count: usize,
-    first_missing_signal: &str,
-    module_root: &Path,
-    suite_ok: bool,
-    run_duration_ms: u128,
-) -> Result<(), String> {
-    write_engine_run_receipt_with_duration_and_steps(
-        receipt_dir,
-        profile,
-        apply,
-        ok,
-        changed,
-        module_count,
-        operation_count,
-        first_missing_signal,
-        module_root,
-        suite_ok,
-        run_duration_ms,
-        None,
-    )
-}
-
 pub(crate) fn write_engine_run_receipt_with_duration_and_steps(
     receipt_dir: &Path,
     profile: &Profile,

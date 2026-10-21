@@ -1822,22 +1822,6 @@ pub(crate) fn source_shelf_sweep_at(
             apply,
             SweepReceiptEvidence::unavailable(),
         )?;
-        let launcher_pass_prefix = format!(
-            "{}-launcher-pass",
-            request.receipt_name.trim_end_matches(".json")
-        );
-        for entry in fs::read_dir(receipt_dir).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with(&launcher_pass_prefix) && name.ends_with(".json") {
-                crate::atoms::attest::remove_artifact(&entry.path()).map_err(|error| {
-                    format!(
-                        "source-shelf-sweep-launcher-pass-receipt-cleanup-failed {}: {error}",
-                        entry.path().display()
-                    )
-                })?;
-            }
-        }
         sync_sweep_directory(receipt_dir)?;
         return Ok(outcome);
     }

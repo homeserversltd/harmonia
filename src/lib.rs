@@ -1199,7 +1199,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 mode.invocation(),
                 None,
             )?;
-            write_engine_run_receipt_with_duration(
+            let module_steps = [crate::bands::report_home::closing_module_step(
+                &module.id, &execution, &receipt_dir, &crate::receipts::run_id_from_stamp(),
+            )];
+            write_engine_run_receipt_with_duration_and_steps(
                 &receipt_dir,
                 &profile,
                 apply,
@@ -1211,6 +1214,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 &module_root,
                 execution.ok,
                 run_started.elapsed().as_millis(),
+                Some(&module_steps),
             )?;
             println!("schema=harmonia.local_ai_runtime.v1");
             hyalos::forward_receipt(
@@ -1273,7 +1277,10 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 mode.invocation(),
                 Some("homeconsole-sync"),
             )?;
-            write_engine_run_receipt_with_duration(
+            let module_steps = [crate::bands::report_home::closing_module_step(
+                &module.id, &execution, &receipt_dir, &crate::receipts::run_id_from_stamp(),
+            )];
+            write_engine_run_receipt_with_duration_and_steps(
                 &receipt_dir,
                 &profile,
                 apply,
@@ -1285,6 +1292,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 &module_root,
                 execution.ok,
                 run_started.elapsed().as_millis(),
+                Some(&module_steps),
             )?;
             println!("schema=harmonia.homeconsole_sync.v1");
             hyalos::forward_receipt(
