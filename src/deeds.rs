@@ -11,6 +11,10 @@ const LOG: &str = "/var/log/appliance/appliance.log";
 thread_local! {
     static OBSERVATION_ONLY: Cell<bool> = const { Cell::new(false) };
     static ACTIVE_CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) };
+    // One coded signal per surface in this CLI invocation, never a body/history.
+    static DEED_FAILURE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static LEDGER_FAILURE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SWEEP_FAILURE: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 struct Context {
@@ -58,6 +62,12 @@ impl Drop for ObservationGuard {
 }
 
 pub(crate) fn should_record(ok: bool, changed: bool) -> bool {
+    // Failures in a run are deeds of the serialized per-module material outcome,
+    // not of every atom/press. Standalone atoms still report directly.
+    if !ok && ACTIVE_CONTEXT.with(|active| active.borrow().as_ref()
+        .is_some_and(|value| value.run_id.is_some() && value.module_id.is_some())) {
+        return false;
+    }
     changed || (!ok && !OBSERVATION_ONLY.with(Cell::get))
 }
 
@@ -69,11 +79,59 @@ fn token(value: &str, limit: usize) -> String {
     }).collect()
 }
 
-pub(crate) fn record(
+pub(crate) fn coded_signal(error: &str) -> String {
+    token(error.split_whitespace().next().unwrap_or("reporting-unavailable").trim_end_matches(':'), 96)
+}
+
+pub(crate) fn reporting_failure(surface: &str, error: &str) {
+    let signal = coded_signal(error);
+    let save = |slot: &RefCell<Option<String>>| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() { *slot = Some(signal.clone()); }
+    };
+    match surface {
+        "profile_ledger" => LEDGER_FAILURE.with(save),
+        "receipt_sweep" => SWEEP_FAILURE.with(save),
+        _ => {}
+    }
+}
+
+pub(crate) fn annotate_reporting(receipt: &mut serde_json::Value) {
+    for (field, signal) in [
+        ("deed_log", DEED_FAILURE.with(|value| value.borrow().clone())),
+        ("profile_ledger", LEDGER_FAILURE.with(|value| value.borrow().clone())),
+        ("receipt_sweep", SWEEP_FAILURE.with(|value| value.borrow().clone())),
+    ] {
+        if let Some(signal) = signal {
+            if !receipt.get(field).is_some_and(serde_json::Value::is_object) {
+                receipt[field] = serde_json::json!({});
+            }
+            receipt[field]["ok"] = serde_json::json!(false);
+            receipt[field]["signal"] = serde_json::json!(signal);
+        }
+    }
+}
+
+fn append(line: &str) -> Result<(), String> {
+    fs::create_dir_all(Path::new(LOG).parent().unwrap())
+        .map_err(|_| "appliance-log-parent-failed")?;
+    let mut log = OpenOptions::new().create(true).append(true).mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(LOG)
+        .map_err(|_| "appliance-log-open-failed")?;
+    let metadata = log.metadata().map_err(|_| "appliance-log-stat-failed")?;
+    if !metadata.is_file() || metadata.nlink()!=1 {
+        return Err("appliance-log-not-regular".into());
+    }
+    log.write_all(line.as_bytes()).map_err(|_| "appliance-log-write-failed".into())
+}
+
+/// Only a pending handoff needs acknowledgement. Failure is not an action error.
+pub(crate) fn record_delivery(
     verb: &str, target: &str, ok: bool, changed: bool, duration_ms: Option<u128>,
     run_id: Option<&str>, module_id: Option<&str>, signal: Option<&str>, count: Option<u64>,
-) -> Result<(), String> {
-    if !should_record(ok, changed) { return Ok(()); }
+) -> bool {
+    let reporting_attempt = matches!(verb, "profile-ledger" | "proposal-rows" | "sweep-retired-receipts");
+    if !reporting_attempt && !should_record(ok, changed) { return true; }
     let context = ACTIVE_CONTEXT.with(|active| active.borrow().as_ref().map(|value| (
         value.started.elapsed().as_millis(), value.duration_scope, value.run_id.clone(), value.module_id.clone(),
     )));
@@ -92,15 +150,27 @@ pub(crate) fn record(
         token(signal.unwrap_or(if ok {"none"} else {"operation-failed"}),96),
         count.map(|value|value.to_string()).unwrap_or_else(||"none".into()),
     );
-    debug_assert!(line.len()<1024);
-    fs::create_dir_all(Path::new(LOG).parent().unwrap())
-        .map_err(|error|format!("appliance-log-parent-failed: {error}"))?;
-    let mut log = OpenOptions::new().create(true).append(true).mode(0o644)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(LOG)
-        .map_err(|error|format!("appliance-log-open-failed: {error}"))?;
-    let metadata = log.metadata().map_err(|error|error.to_string())?;
-    if !metadata.is_file() || metadata.nlink()!=1 {
-        return Err("appliance-log-not-regular".into());
+    debug_assert!(line.len()<850);
+    match append(&line) {
+        Ok(()) => true,
+        Err(signal) => {
+            DEED_FAILURE.with(|failure| {
+                let mut failure = failure.borrow_mut();
+                if failure.is_none() {
+                    *failure = Some(signal.clone());
+                    eprintln!("{} deed_recorded=false recording_signal={signal}", line.trim_end());
+                }
+            });
+            false
+        }
     }
-    log.write_all(line.as_bytes()).map_err(|error|format!("appliance-log-write-failed: {error}"))
+}
+
+/// Existing callers keep their Result interface, but a deed never fails them.
+pub(crate) fn record(
+    verb: &str, target: &str, ok: bool, changed: bool, duration_ms: Option<u128>,
+    run_id: Option<&str>, module_id: Option<&str>, signal: Option<&str>, count: Option<u64>,
+) -> Result<(), String> {
+    record_delivery(verb, target, ok, changed, duration_ms, run_id, module_id, signal, count);
+    Ok(())
 }

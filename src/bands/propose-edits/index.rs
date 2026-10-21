@@ -520,7 +520,12 @@ fn persist_feed_locked(
         &records,
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
     )?;
-    crate::ledger::sync_proposals(path, feed)?;
+    if let Err(error) = crate::ledger::sync_proposals(path, feed) {
+        let signal = crate::deeds::coded_signal(&error);
+        crate::deeds::reporting_failure("profile_ledger", &signal);
+        let _ = crate::deeds::record("proposal-rows", "harmonia-interactables", false, false,
+            None, None, None, Some(&signal), None);
+    }
     if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,None,None,None,None,Some(writes as u64))?; }
     Ok(writes)
 }

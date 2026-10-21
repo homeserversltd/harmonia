@@ -313,7 +313,7 @@ fn has_no_receipt_marker(directory: &Path) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn mountpoints_beneath(directory: &Path) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn mountpoints_beneath(directory: &Path) -> Result<Vec<PathBuf>, String> {
     use std::os::unix::ffi::OsStringExt;
     fn unescape_mountinfo(value: &[u8]) -> Vec<u8> {
         let mut decoded = Vec::with_capacity(value.len());
@@ -357,7 +357,7 @@ fn mountpoints_beneath(directory: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn mountpoints_beneath(_directory: &Path) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn mountpoints_beneath(_directory: &Path) -> Result<Vec<PathBuf>, String> {
     Err("receipt-mountpoint-check-unsupported".to_string())
 }
 
@@ -1229,6 +1229,17 @@ fn retained_root_paths(
         retained.insert(current_run_dir.to_path_buf());
     }
     retained.extend(candidates.iter().filter(|candidate| candidate.in_flight).map(|candidate| candidate.path.clone()));
+    // A completed quiet run may have no row or latest alias (parent lock held).
+    // Protect one current snapshot per family before the root-wide extra quota.
+    let mut newest_families = std::collections::BTreeSet::new();
+    for candidate in candidates.iter().rev().filter(|candidate| candidate.complete) {
+        let name = candidate.path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let family = name.split_once("-run-").map(|(stem, _)| stem)
+            .unwrap_or_else(|| candidate.profile_id.as_deref().unwrap_or("legacy-unclassified"));
+        if newest_families.insert(family.to_owned()) {
+            retained.insert(candidate.path.clone());
+        }
+    }
     let mut completed_slots = candidates
         .iter()
         .filter(|candidate| {

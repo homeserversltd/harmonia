@@ -36,9 +36,8 @@ impl Seat {
         Self::from_declaration(id, Self::load_declaration(id, base)?)
     }
 
-    /// An explicitly absent public seat selects the reader's primitive field
-    /// uses. Other transport failures are observations we could not establish;
-    /// a served foreign ID or missing frozen kernel still refuses.
+    /// Reporting must work without a running control plane. Only a served
+    /// declaration that actually names a foreign ID is a refusal.
     pub(crate) fn load_if_present(id: &'static str, base: &str) -> Result<Option<Self>, String> {
         let observed = super::read_only_command_with_timeout(
             "/usr/bin/curl",
@@ -48,20 +47,21 @@ impl Seat {
             Duration::from_secs(4),
         );
         if !observed.ok {
-            return Err(format!("schema-seat-unreachable {id}"));
+            return Ok(None);
         }
         let Some((body, status)) = observed.stdout.rsplit_once("harmonia-schema-http-status:") else {
-            return Err(format!("schema-seat-unreachable {id}: missing HTTP status"));
+            return Ok(None);
         };
         match status.trim() {
-            "404" => Ok(None),
             "200" => {
-                let raw = serde_json::from_str(body).map_err(|_| {
-                    format!("schema-seat-desync {id}: invalid seat JSON; reload through Make Modern")
-                })?;
-                Self::from_declaration(id, raw).map(Some)
+                let Ok(raw) = serde_json::from_str::<Value>(body) else { return Ok(None); };
+                match raw.get("schema").and_then(Value::as_str) {
+                    Some(declared) if declared != id => Err(format!("schema-seat-desync {id}: foreign schema {declared}; reload through Make Modern")),
+                    Some(_) => Ok(Some(Self { id, raw })),
+                    None => Ok(None),
+                }
             }
-            status => Err(format!("schema-seat-unreachable {id}: HTTP {status}")),
+            _ => Ok(None),
         }
     }
 
@@ -233,6 +233,13 @@ mod tests {
 }
 
 pub(crate) const INTERACTABLE_FEED: &str = "harmonia.config_proposals.feed.v1";
+pub(crate) fn feed_if_present() -> Result<&'static Option<Seat>, String> {
+    static FEED: OnceLock<Result<Option<Seat>, String>> = OnceLock::new();
+    FEED.get_or_init(|| match super::caduceus_door::base_url() {
+        Ok(base) => Seat::load_if_present(INTERACTABLE_FEED, base),
+        Err(_) => Ok(None),
+    }).as_ref().map_err(Clone::clone)
+}
 pub(crate) const RUYI_BUMP_RECEIPT: &str = "harmonia.interactables.ruyi_bump.receipt.v1";
 pub(crate) const DNS_RECORD_RECEIPT: &str = "harmonia.interactables.dns_record.receipt.v1";
 pub(crate) const HERMES_APPEARANCE_RECEIPT: &str = "harmonia.interactables.hermes_appearance.receipt.v1";

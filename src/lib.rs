@@ -374,7 +374,7 @@ pub fn invoke(args: Vec<String>) -> Result<(), String> {
             mode.invocation(),
         );
     }
-    crate::atoms::ask::mint_seats::emit_interactable_seat_signals();
+    // Each actual consumer loads its seat lazily. Quiet commands ask no doors.
     let invocation = invocation_face::mint(&args);
     run(args, invocation)
 }

@@ -8,6 +8,11 @@ use std::time::Duration;
 pub(crate) const DATABASE: &str = "/var/lib/harmonia/harmonia.sqlite3";
 const ENTRY: &str = "harmonia.ledger.entry.v1";
 const PAGE: &str = "caduceus.receipts.ledger.v1";
+const PROPOSALS_TABLE: &str = "CREATE TABLE IF NOT EXISTS proposals (
+    feed_id TEXT NOT NULL, id TEXT NOT NULL, module_id TEXT NOT NULL,
+    kind TEXT NOT NULL, target_path TEXT, reference_source_path TEXT,
+    live_sha TEXT, reference_sha TEXT, silenced INTEGER NOT NULL,
+    has_run INTEGER NOT NULL, PRIMARY KEY(feed_id,id));";
 
 fn database_error(error: rusqlite::Error) -> String {
     format!("harmonia-state-database-failed: {error}")
@@ -24,21 +29,43 @@ pub(crate) fn reader() -> Result<Option<Connection>, String> {
         DATABASE, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ).map_err(database_error)?;
     connection.busy_timeout(Duration::from_secs(5)).map_err(database_error)?;
+    // An incomplete store is absence, not a failed convergence run.
+    for query in [
+        "SELECT ledger_sequence,run_id,module_id,profile_id,module_version,ok,changed,operation_count,first_missing_signal,recorded_at,receipt_ref,profile_identity,step,error FROM ledger LIMIT 0",
+        "SELECT feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run FROM proposals LIMIT 0",
+        "SELECT id FROM migrations LIMIT 0", "SELECT id,count FROM deed_outbox LIMIT 0",
+    ] {
+        if connection.prepare(query).is_err() { return Ok(None); }
+    }
     Ok(Some(connection))
+}
+
+fn public_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| "harmonia-state-mode-observe-failed")?;
+    if metadata.file_type().is_symlink() { return Err("harmonia-state-symlink-refused".into()); }
+    if metadata.permissions().mode() & 0o7777 != mode {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .map_err(|_| "harmonia-state-public-mode-failed")?;
+    }
+    Ok(())
 }
 
 pub(crate) fn writer() -> Result<Connection, String> {
     let parent = Path::new(DATABASE).parent().unwrap();
     std::fs::create_dir_all(parent).map_err(|error| format!("harmonia-state-parent-failed: {error}"))?;
+    public_mode(parent, 0o755)?;
     match std::fs::symlink_metadata(DATABASE) {
         Ok(metadata) if !metadata.file_type().is_file() => return Err("harmonia-state-not-regular".into()),
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("harmonia-state-observe-failed: {error}")),
         _ => {}
     }
-    let connection = Connection::open(DATABASE).map_err(database_error)?;
+    let mut connection = Connection::open(DATABASE).map_err(database_error)?;
+    public_mode(Path::new(DATABASE), 0o644)?;
     connection.busy_timeout(Duration::from_secs(5)).map_err(database_error)?;
-    // SQLite owns its DELETE journal. IF NOT EXISTS does not dirty an existing schema.
-    connection.execute_batch(
+    // The entire schema becomes visible in one transaction.
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
+    transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS ledger (
             ledger_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL, module_id TEXT NOT NULL, profile_id TEXT,
@@ -49,15 +76,11 @@ pub(crate) fn writer() -> Result<Connection, String> {
          );
          CREATE INDEX IF NOT EXISTS ledger_module ON ledger(module_id, recorded_at DESC);
          CREATE INDEX IF NOT EXISTS ledger_receipt ON ledger(receipt_ref);
-         CREATE TABLE IF NOT EXISTS proposals (
-            feed_id TEXT NOT NULL, id TEXT NOT NULL, module_id TEXT NOT NULL,
-            kind TEXT NOT NULL, target_path TEXT, reference_source_path TEXT,
-            live_sha TEXT, reference_sha TEXT, silenced INTEGER NOT NULL,
-            has_run INTEGER NOT NULL, PRIMARY KEY(feed_id, id)
-         );
          CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY);
          CREATE TABLE IF NOT EXISTS deed_outbox (id TEXT PRIMARY KEY, count INTEGER NOT NULL);"
     ).map_err(database_error)?;
+    transaction.execute_batch(PROPOSALS_TABLE).map_err(database_error)?;
+    transaction.commit().map_err(database_error)?;
     Ok(connection)
 }
 
@@ -88,10 +111,10 @@ struct LedgerSeats {
 fn seats() -> Result<&'static LedgerSeats, String> {
     static SEATS: OnceLock<Result<LedgerSeats, String>> = OnceLock::new();
     SEATS.get_or_init(|| {
-        let base = crate::atoms::ask::caduceus_door::base_url()?;
+        let base = crate::atoms::ask::caduceus_door::base_url().ok();
         Ok(LedgerSeats {
-            entry: crate::atoms::ask::mint_seats::Seat::load_if_present(ENTRY, base)?,
-            page: crate::atoms::ask::mint_seats::Seat::load_if_present(PAGE, base)?,
+            entry: match base { Some(base) => crate::atoms::ask::mint_seats::Seat::load_if_present(ENTRY, base)?, None => None },
+            page: match base { Some(base) => crate::atoms::ask::mint_seats::Seat::load_if_present(PAGE, base)?, None => None },
         })
     }).as_ref().map_err(Clone::clone)
 }
@@ -115,6 +138,10 @@ fn unreported_absences(seats: &LedgerSeats, observed: Option<&Connection>) -> Re
 /// Failure state is not a transcript. Scrub a credential-bearing suffix rather
 /// than guessing where its value ends, then truncate only at a UTF-8 boundary.
 fn redacted_failure_text(value: &str) -> String {
+    bounded_redacted(value, 4096)
+}
+
+fn bounded_redacted(value: &str, limit: usize) -> String {
     let lower = value.to_ascii_lowercase();
     let sensitive = ["password", "passwd", "secret", "token", "authorization", "bearer ",
         "credential", "api_key", "apikey", "access_key", "private_key", "private key",
@@ -125,7 +152,7 @@ fn redacted_failure_text(value: &str) -> String {
         Some(index) => format!("{}[REDACTED]", &value[..index]),
         None => value.to_owned(),
     };
-    let mut end = redacted.len().min(4096);
+    let mut end = redacted.len().min(limit);
     while !redacted.is_char_boundary(end) { end -= 1; }
     redacted.truncate(end);
     redacted
@@ -136,32 +163,31 @@ fn redacted_failure_text(value: &str) -> String {
 pub(crate) fn record(
     profile: &crate::Profile, run_id: &str, entries: &[crate::receipts::ProfileLedgerEntry<'_>],
 ) -> Result<(), String> {
-    let seats = seats()?;
-    let observed = reader()?;
-    let absent = unreported_absences(seats, observed.as_ref())?;
+    if entries.is_empty() { return Ok(()); }
+    let mut connection = writer()?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
     let mut changes = Vec::new();
+    let profile_identity = bounded_redacted(&profile.identity, 96);
     for entry in entries {
         let first_missing_signal = redacted_failure_text(entry.first_missing_signal);
         let error = (!entry.ok).then(|| redacted_failure_text(entry.error.unwrap_or(entry.first_missing_signal)));
-        let failed_step = (!entry.ok).then_some(entry.step).flatten();
+        let failed_step = (!entry.ok).then_some(entry.step).flatten().map(|value| bounded_redacted(value, 128));
+        let module_version = entry.module_version.map(|value| bounded_redacted(value, 96));
         let prior: Option<(Option<String>, Option<String>, Option<bool>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>)> =
-            match observed.as_ref() {
-                Some(connection) => connection.query_row(
+            transaction.query_row(
                     "SELECT profile_id,module_version,ok,operation_count,first_missing_signal,profile_identity,step,error
-                     FROM ledger WHERE module_id=?1 ORDER BY recorded_at DESC,run_id DESC LIMIT 1",
+                     FROM ledger WHERE module_id=?1 ORDER BY ledger_sequence DESC LIMIT 1",
                     [entry.module_id],
                     |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
-                ).optional().map_err(database_error)?,
-                None => None,
-            };
+                ).optional().map_err(database_error)?;
         let same_state = prior.as_ref().is_some_and(|prior| {
             prior.0.as_deref() == Some(profile.id.as_str())
-                && prior.1.as_deref() == entry.module_version
+                && prior.1 == module_version
                 && prior.2 == Some(entry.ok)
                 && prior.3 == i64::try_from(entry.operation_count).ok()
                 && prior.4.as_deref() == Some(first_missing_signal.as_str())
-                && prior.5.as_deref() == Some(profile.identity.as_str())
-                && prior.6.as_deref() == failed_step
+                && prior.5.as_deref() == Some(profile_identity.as_str())
+                && prior.6 == failed_step
                 && prior.7 == error
         });
         // A first all-current observation is not a deed. Recovery from a failed
@@ -172,20 +198,21 @@ pub(crate) fn record(
         let receipt_ref = receipt_ref.to_str().ok_or("ledger-receipt-reference-not-utf8")?;
         let row = json!({
             "schema": ENTRY, "run_id": run_id, "module_id": entry.module_id,
-            "profile_id": profile.id, "module_version": entry.module_version,
+            "profile_id": profile.id, "module_version": module_version,
             "ok": entry.ok, "changed": entry.changed, "operation_count": entry.operation_count,
             "first_missing_signal": first_missing_signal,
             "recorded_at": crate::bands::propose_edits::iso8601_now(),
-            "receipt_ref": receipt_ref, "profile_identity": profile.identity,
+            "receipt_ref": receipt_ref, "profile_identity": profile_identity,
             "step": failed_step, "error": error,
         });
         changes.push(row);
     }
-    drop(observed);
-    if changes.is_empty() && absent.is_empty() { return Ok(()); }
-    let mut connection = writer()?;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
+    // Equality and timestamps above are serialized; quiet presses ask no door.
+    if changes.is_empty() { return Ok(()); }
+    let seats = seats()?;
+    let absent = unreported_absences(seats, Some(&transaction))?;
     let mut newly_absent = Vec::new();
+    let mut outcome_deeds = Vec::new();
     for id in absent {
         if transaction.execute("INSERT OR IGNORE INTO migrations(id) VALUES(?1)",
             [format!("schema-seat-absent:{id}")]).map_err(database_error)? > 0 {
@@ -211,12 +238,20 @@ pub(crate) fn record(
             |row| row.get(0),
         ).map_err(database_error)?;
         row["ledger_sequence"] = json!(sequence);
-        if let Some(seat) = &seats.entry { seat.validate(&row)?; }
+        if let Some(seat) = &seats.entry { seat.validate_ruyi(&row)?; }
+        if row["ok"] == false || row["changed"] == false {
+            outcome_deeds.push((row["module_id"].as_str().unwrap_or_default().to_owned(),
+                row["ok"].as_bool().unwrap_or(false), row["first_missing_signal"].as_str().unwrap_or("module-failed").to_owned()));
+        }
     }
     transaction.commit().map_err(database_error)?;
+    for (module, ok, signal) in outcome_deeds {
+        let _ = crate::deeds::record("module-outcome", &module, ok, true, None,
+            Some(run_id), Some(&module), Some(&signal), None);
+    }
     if !newly_absent.is_empty() {
-        crate::deeds::record("schema-seat-absent", &newly_absent.join(":"), true, true,
-            None, Some(run_id), None, Some("primitive-field-presence"), Some(newly_absent.len() as u64))?;
+        let _ = crate::deeds::record("schema-seat-absent", &newly_absent.join(":"), true, true,
+            None, Some(run_id), None, Some("primitive-field-presence"), Some(newly_absent.len() as u64));
     }
     Ok(())
 }
@@ -283,7 +318,7 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
                 "step": row.get::<_,Option<String>>(12).map_err(database_error)?,
                 "error": row.get::<_,Option<String>>(13).map_err(database_error)?,
             });
-            if let Some(seat) = &seats.entry { seat.validate(&entry)?; }
+            if let Some(seat) = &seats.entry { seat.validate_ruyi(&entry)?; }
             entries.push(json!({"ordinal": total-offset-entries.len() as u64,"entry": entry}));
         }
     }
@@ -291,7 +326,7 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         "page":page,"perPage":per_page,"totalEntries":total,"totalPages":total_pages,
         "entries":entries,"ok":true,
         "firstMissingSignal":if total==0 {"caduceus-ledger-empty"} else {"none"}});
-    if let Some(seat) = &seats.page { seat.validate(&page)?; }
+    if let Some(seat) = &seats.page { seat.validate_ruyi(&page)?; }
     println!("{}", serde_json::to_string(&page).map_err(|error| error.to_string())?);
     Ok(())
 }
@@ -300,16 +335,25 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
 /// track only open identities and state; no diff, command payload or receipt is
 /// copied into the database. Its loaded public feed seat governs this projection.
 pub(crate) fn sync_proposals(path: &Path, feed: &crate::interactables::InteractablesFeed) -> Result<(), String> {
-    let public_seat = crate::atoms::ask::mint_seats::interactables_at_start().feed.as_ref()
-        .map_err(Clone::clone)?;
-    public_seat.validate(&serde_json::to_value(feed).map_err(|error| error.to_string())?)?;
     let feed_id = path.to_string_lossy();
     let observed = reader()?;
     if observed.is_none() && feed.interactables.is_empty() { return Ok(()); }
+    if let Some(connection) = observed.as_ref() {
+        if proposal_rows_match(connection, &feed_id, feed)? { return Ok(()); }
+    }
+    drop(observed);
+    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
+        seat.validate_ruyi(&serde_json::to_value(feed).map_err(|error| error.to_string())?)?;
+    }
     let mut connection = writer()?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
-    for item in feed.interactables.iter().filter(|item| !item.has_run) {
-        transaction.execute(
+    project_proposal_rows(&transaction, &feed_id, feed)?;
+    transaction.commit().map_err(database_error)
+}
+
+fn project_proposal_rows(connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed) -> Result<(), String> {
+    for item in &feed.interactables {
+        connection.execute(
             "INSERT INTO proposals(feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
              ON CONFLICT(feed_id,id) DO UPDATE SET module_id=excluded.module_id,kind=excluded.kind,
@@ -322,43 +366,59 @@ pub(crate) fn sync_proposals(path: &Path, feed: &crate::interactables::Interacta
                 item.reference_source_path.as_ref().map(|p|p.to_string_lossy()),item.live_sha,item.reference_sha,item.silenced,item.has_run],
         ).map_err(database_error)?;
     }
-    // Stream stale keys; never replay the store or save the public feed as a blob.
-    let stale = {
-        let mut query = transaction.prepare("SELECT id FROM proposals WHERE feed_id=?1").map_err(database_error)?;
-        let rows = query.query_map([feed_id.as_ref()], |row|row.get::<_,String>(0)).map_err(database_error)?;
-        let mut stale = Vec::new();
-        for id in rows {
-            let id = id.map_err(database_error)?;
-            if !feed.interactables.iter().any(|item|item.id==id && !item.has_run) { stale.push(id); }
+    // Keyset walk: no whole-store load or body replay, even during repair.
+    let mut after: Option<String> = None;
+    loop {
+        let next: Option<String> = connection.query_row(
+            "SELECT id FROM proposals WHERE feed_id=?1 AND (?2 IS NULL OR id>?2) ORDER BY id LIMIT 1",
+            params![feed_id,after], |row| row.get(0)).optional().map_err(database_error)?;
+        let Some(id) = next else { break; };
+        if !feed.interactables.iter().any(|item| item.id==id) {
+            connection.execute("DELETE FROM proposals WHERE feed_id=?1 AND id=?2", params![feed_id,id]).map_err(database_error)?;
         }
-        stale
-    };
-    for id in stale {
-        transaction.execute("DELETE FROM proposals WHERE feed_id=?1 AND id=?2", params![feed_id,id]).map_err(database_error)?;
+        after = Some(id);
     }
-    transaction.execute("INSERT OR IGNORE INTO migrations(id) VALUES(?1)",
-        [format!("proposals-enrolled:{feed_id}")]).map_err(database_error)?;
-    transaction.commit().map_err(database_error)
+    Ok(())
+}
+
+fn proposal_rows_match(connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed) -> Result<bool, String> {
+    let count: u64 = connection.query_row("SELECT count(*) FROM proposals WHERE feed_id=?1", [feed_id], |row| row.get(0)).map_err(database_error)?;
+    if count != feed.interactables.len() as u64 { return Ok(false); }
+    for item in &feed.interactables {
+        let same: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1 AND id=?2
+             AND (module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run) IS (?3,?4,?5,?6,?7,?8,?9,?10))",
+            params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
+                item.reference_source_path.as_ref().map(|p|p.to_string_lossy()),item.live_sha,item.reference_sha,item.silenced,item.has_run],
+            |row| row.get(0)).map_err(database_error)?;
+        if !same { return Ok(false); }
+    }
+    Ok(true)
 }
 
 pub(crate) fn filter_open_proposals(path: &Path, feed: &mut crate::interactables::InteractablesFeed) -> Result<(), String> {
-    let Some(connection) = reader()? else { return Ok(()); };
-    let feed_id = path.to_string_lossy();
-    // Until a legacy feed first changes, its declarations remain readable.
-    let enrolled: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM migrations WHERE id=?1) OR EXISTS(SELECT 1 FROM proposals WHERE feed_id=?2)",
-        params![format!("proposals-enrolled:{feed_id}"),feed_id.as_ref()], |row|row.get(0)).map_err(database_error)?;
-    if !enrolled { return Ok(()); }
-    let mut query = connection.prepare("SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1 AND id=?2)").map_err(database_error)?;
-    let mut kept = Vec::new();
-    for item in feed.interactables.drain(..) {
-        if item.has_run { continue; }
-        let open: bool = query.query_row(params![feed_id,item.id],|row|row.get(0)).map_err(database_error)?;
-        if !open {
-            return Err(format!("harmonia-proposals-state-desync {}: retry the owning proposal write", item.id));
-        }
-        kept.push(item);
+    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
+        seat.validate_ruyi(&serde_json::to_value(&*feed).map_err(|error| error.to_string())?)?;
     }
-    feed.interactables = kept;
+    let feed_id = path.to_string_lossy();
+    let observed = reader().ok().flatten();
+    let connection = match observed {
+        Some(connection) if proposal_rows_match(&connection, &feed_id, feed).unwrap_or(false) => connection,
+        _ => {
+            // A read must not repair disk or log itself. Rebuild the keyed reply
+            // view from the feed; the next producer repairs the persistent rows.
+            let connection = Connection::open_in_memory().map_err(database_error)?;
+            connection.execute_batch(PROPOSALS_TABLE).map_err(database_error)?;
+            project_proposal_rows(&connection, &feed_id, feed)?;
+            connection
+        }
+    };
+    for item in &mut feed.interactables {
+        let (silenced, has_run) = connection.query_row(
+            "SELECT silenced,has_run FROM proposals WHERE feed_id=?1 AND id=?2",
+            params![feed_id,item.id], |row| Ok((row.get::<_,bool>(0)?,row.get::<_,bool>(1)?))).map_err(database_error)?;
+        item.silenced = silenced;
+        item.has_run = has_run;
+    }
     Ok(())
 }

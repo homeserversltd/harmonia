@@ -326,7 +326,6 @@ pub(crate) fn run_profile_engine_with_projection(
     materialize_on_stage: bool,
 ) -> Result<(), String> {
     let _observation_guard = crate::deeds::ObservationGuard::enter(!mode.is_software_apply());
-    crate::retired_receipt_streams::run()?;
     crate::receipts::clear_config_state_receipts(receipt_dir)?;
     let mut active_profile = profile.clone();
     let mut active_projection = projection.clone();
@@ -351,6 +350,14 @@ pub(crate) fn run_profile_engine_with_projection(
         &fallback_run_id,
     );
     let _deed_context = crate::deeds::ContextGuard::enter(Some(&run_id), None, "run-elapsed");
+    if mode.is_software_apply() {
+        if let Err(error) = crate::retired_receipt_streams::run() {
+            let signal = crate::deeds::coded_signal(&error);
+            crate::deeds::reporting_failure("receipt_sweep", &signal);
+            let _ = crate::deeds::record("sweep-retired-receipts", "/var/lib/harmonia/receipts",
+                false, false, None, Some(&run_id), None, Some(&signal), None);
+        }
+    }
     let mut state = crate::bands::report_home::RunState {
         run_id: run_id.clone(),
         apply,

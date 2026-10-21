@@ -389,19 +389,9 @@ pub(crate) fn load_feed_raw(path: &Path) -> Result<InteractablesFeed, String> {
                     feed.schema
                 ));
             }
-            if let Ok(seat) = &crate::atoms::ask::mint_seats::interactables_at_start().feed {
-                let mut compatible = raw;
-                if let Some(rows) = compatible
-                    .get_mut("interactables")
-                    .and_then(serde_json::Value::as_array_mut)
-                {
-                    rows.retain(|row| {
-                        row.get("kind").and_then(serde_json::Value::as_str)
-                            != Some("engine-replacement")
-                    });
-                }
-                seat.validate_compatible(&compatible, &[LEGACY_FEED_SCHEMA])?;
-            }
+            // The feed's own identity was checked above. Public-seat validation
+            // belongs to its changing producer / explicit list, not every quiet
+            // internal count/load on a convergence press.
             Ok(InteractablesFeed {
                 schema: FEED_SCHEMA.to_string(),
                 ..feed

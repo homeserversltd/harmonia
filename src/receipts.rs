@@ -95,8 +95,16 @@ pub(crate) fn write_profile_ledger_run(
     _receipt_dir: &Path, _latest_path: Option<&Path>, profile: &Profile,
     run_id: &str, entries: &[ProfileLedgerEntry<'_>], _retention: usize,
 ) -> Result<ProfileLedgerWriteReport, String> {
-    crate::ledger::record(profile, run_id, entries)?;
-    Ok(ProfileLedgerWriteReport::default())
+    match crate::ledger::record(profile, run_id, entries) {
+        Ok(()) => Ok(ProfileLedgerWriteReport::default()),
+        Err(error) => {
+            let signal = crate::deeds::coded_signal(&error);
+            crate::deeds::reporting_failure("profile_ledger", &signal);
+            let _ = crate::deeds::record("profile-ledger", crate::ledger::DATABASE, false, false,
+                None, Some(run_id), None, Some(&signal), None);
+            Ok(ProfileLedgerWriteReport { unparsable_lines: 0, read_warnings: vec![signal] })
+        }
+    }
 }
 
 pub(crate) fn reconcile_profile_ledger_family(
@@ -131,6 +139,7 @@ fn update_run_receipt_projection(
         .as_object_mut()
         .ok_or_else(|| format!("run-receipt-projection-not-object {}", path.display()))?;
     object.insert(field.to_owned(), projection);
+    crate::deeds::annotate_reporting(&mut receipt);
     write_json(&path, &receipt)
 }
 
@@ -143,6 +152,8 @@ pub(crate) fn record_profile_ledger_projection(
         receipt_dir,
         "profile_ledger",
         json!({
+            "ok": true,
+            "signal": null,
             "retention": retention,
             "unparsable_lines": report.unparsable_lines,
             "read_warnings": report.read_warnings,
@@ -167,17 +178,18 @@ pub(crate) fn record_receipt_cleanup(
         "retained_run_ids": report.retained_run_ids,
         "prune_warnings": report.warnings,
     });
-    update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup.clone())?;
+
     // An unavailable cleanup observation remains in the returned run receipt;
     // without an attempted deletion it is not a failed mutation deed.
     if report.deletion_attempts == 0
         && report.deleted_directories == 0 && report.deleted_files == 0 {
-        return Ok(());
+        return update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup);
     }
-    crate::deeds::record("receipt-cleanup", "harmonia-receipts", report.warnings.is_empty(),
+    let _ = crate::deeds::record("receipt-cleanup", "harmonia-receipts", report.warnings.is_empty(),
         report.deleted_directories > 0 || report.deleted_files > 0, None,
         None,None, if report.warnings.is_empty() {None} else {Some("receipt-cleanup-failed")},
-        Some((report.deleted_directories+report.deleted_files) as u64))
+        Some((report.deleted_directories+report.deleted_files) as u64));
+    update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup)
 }
 
 pub(crate) fn write_tool_receipt(
@@ -414,6 +426,7 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
     if let Some(excluded_module_ids) = crate::bands::stage_profile::profile_excludes(module_root)? {
         receipt["excluded_module_ids"] = json!(excluded_module_ids);
     }
+    crate::deeds::annotate_reporting(&mut receipt);
     write_json(&receipt_dir.join("run.json"), &receipt)
 }
 
