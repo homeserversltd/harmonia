@@ -977,11 +977,13 @@ pub(crate) fn execute_manifest_band(
             result.placements.push(serde_json::json!({"step_id":format!("{}#precondition", step.step_id),"tool":step.tool,"permutation":step.permutation,"band":"ProposeEdits","status":if probe.ok {"completed"} else {"blocked"},"ok":probe.ok,"changed":probe.changed,"skipped":probe.skipped,"message":probe.message,"command":probe.command,"module":manifest.id,"precondition_for":step.step_id}));
             if !probe.ok {
                 result.ok = false;
+                // Output is untrusted, potentially multiline and credential-bearing.
+                // The module crossing needs the coded outcome, not a transcript.
                 let detail = probe
                     .command
                     .as_ref()
-                    .map(|r| format!("exit_code={} stderr={}", r.code, r.stderr))
-                    .unwrap_or_else(|| probe.message.clone());
+                    .map(|r| format!("exit_code={}", r.code))
+                    .unwrap_or_else(|| "command-precondition-failed".to_string());
                 let signal = format!(
                     "step_id={} state=blocked probe_error={detail}",
                     step.step_id

@@ -55,7 +55,8 @@ pub(crate) fn writer() -> Result<Connection, String> {
             live_sha TEXT, reference_sha TEXT, silenced INTEGER NOT NULL,
             has_run INTEGER NOT NULL, PRIMARY KEY(feed_id, id)
          );
-         CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY);"
+         CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY);
+         CREATE TABLE IF NOT EXISTS deed_outbox (id TEXT PRIMARY KEY, count INTEGER NOT NULL);"
     ).map_err(database_error)?;
     Ok(connection)
 }
@@ -117,7 +118,8 @@ fn redacted_failure_text(value: &str) -> String {
     let lower = value.to_ascii_lowercase();
     let sensitive = ["password", "passwd", "secret", "token", "authorization", "bearer ",
         "credential", "api_key", "apikey", "access_key", "private_key", "private key",
-        "connection_string", "pin=", "pin:", "\"pin\"", "://", "-----begin", "sk-", "ghp_", "glpat-", "eyj"]
+        "connection_string", "pin=", "pin:", "\"pin\"", "://", "-----begin", "sk-", "ghp_", "glpat-", "eyj",
+        "stderr=", "stdout=", "\n", "\r"]
         .iter().filter_map(|marker| lower.find(marker)).min();
     let mut redacted = match sensitive {
         Some(index) => format!("{}[REDACTED]", &value[..index]),
