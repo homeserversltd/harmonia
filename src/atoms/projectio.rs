@@ -198,6 +198,38 @@ fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
     }
 }
 
+fn same_preimage_metadata(current: &fs::Metadata, expected: &fs::Metadata) -> bool {
+    current.file_type().is_file()
+        && file_identity(current) == file_identity(expected)
+        && current.len() == expected.len()
+        && current.mode() == expected.mode()
+        && current.uid() == expected.uid()
+        && current.gid() == expected.gid()
+        && current.mtime() == expected.mtime()
+        && current.mtime_nsec() == expected.mtime_nsec()
+        && current.ctime() == expected.ctime()
+        && current.ctime_nsec() == expected.ctime_nsec()
+}
+
+fn verify_preimage(target: &Path, bytes: &[u8], metadata: &fs::Metadata) -> Result<(), String> {
+    let stale = || format!("projectio-target-preimage-changed {}", target.display());
+    let mut file = OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(target).map_err(|error| io_error("preimage-open", target, error))?;
+    let before = file.metadata().map_err(|error| io_error("preimage-stat", target, error))?;
+    if !same_preimage_metadata(&before, metadata) { return Err(stale()); }
+    let mut observed = Vec::new();
+    (&mut file).take((bytes.len() as u64).saturating_add(1)).read_to_end(&mut observed)
+        .map_err(|error| io_error("preimage-read", target, error))?;
+    let after = file.metadata().map_err(|error| io_error("preimage-recheck", target, error))?;
+    let named = fs::symlink_metadata(target)
+        .map_err(|error| io_error("preimage-path-recheck", target, error))?;
+    if observed != bytes || !same_preimage_metadata(&after, metadata)
+        || !same_preimage_metadata(&named, metadata)
+    { return Err(stale()); }
+    Ok(())
+}
+
 struct StrikeAttempt {
     result: Result<Receipt, String>,
     target_identity: Option<FileIdentity>,
@@ -208,6 +240,7 @@ struct StrikeAttempt {
 fn strike_with_tracking(
     request: Request<'_>,
     expected_target_identity: Option<FileIdentity>,
+    expected_preimage: Option<(&[u8], &fs::Metadata)>,
 ) -> StrikeAttempt {
     let Request {
         target,
@@ -254,7 +287,12 @@ fn strike_with_tracking(
     let mut target_replaced = false;
     let mut backup_created = false;
     let result = (|| {
-        let before_bytes = fs::read(target).map_err(|e| io_error("target-read", target, e))?;
+        let before_bytes = if let Some((bytes, metadata)) = expected_preimage {
+            verify_preimage(target, bytes, metadata)?;
+            bytes.to_vec()
+        } else {
+            fs::read(target).map_err(|e| io_error("target-read", target, e))?
+        };
         let backup_parent = backup_path
             .parent()
             .ok_or_else(|| format!("projectio-backup-parent-missing {}", backup_path.display()))?;
@@ -309,6 +347,9 @@ fn strike_with_tracking(
             {
                 return Err(format!("projectio-target-identity-changed {}", target.display()));
             }
+            if let Some((bytes, metadata)) = expected_preimage {
+                verify_preimage(target, bytes, metadata)?;
+            }
             fs::rename(&temp_path, target).map_err(|e| io_error("rename", target, e))?;
             target_replaced = true;
             target_identity = fs::symlink_metadata(target)
@@ -361,7 +402,15 @@ fn strike_with_tracking(
 }
 
 pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
-    strike_with_tracking(request, None).result
+    strike_with_tracking(request, None, None).result
+}
+
+/// Keep a caller's read/modify/write bound to its observed preimage inside the
+/// primitive, including the final recheck after backup and temporary preparation.
+pub(crate) fn strike_if_current(
+    request: Request<'_>, bytes: &[u8], metadata: &fs::Metadata,
+) -> Result<Receipt, String> {
+    strike_with_tracking(request, Some(file_identity(metadata)), Some((bytes, metadata))).result
 }
 
 fn stat_at_nofollow(directory: &File, name: &std::ffi::CString) -> Result<libc::stat, std::io::Error> {
@@ -863,7 +912,7 @@ pub(crate) fn write_engine_state(
         gid: metadata.gid(),
         backup_path: &backup,
         witness: OwnerAcceptance(()),
-    }, Some(original_identity));
+    }, Some(original_identity), None);
     match attempt.result {
         Ok(receipt) => {
             remove_engine_state_backup(&backup)?;
