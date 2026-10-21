@@ -685,11 +685,11 @@ pub(crate) fn write_run_receipt(
 
 pub(crate) struct EventSink;
 
-pub(crate) fn event(_events: &mut EventSink, event: &str, ok: bool, _message: &str) -> Result<(), String> {
-    // Successful engine, plan and band observations are not changes. Actual
-    // movement is attested by its atom; failed execution names only its signal.
-    if ok { return Ok(()); }
-    crate::deeds::record(event,"harmonia-update",false,false,0,None,None,Some(event),None)
+pub(crate) fn event(_events: &mut EventSink, _event: &str, _ok: bool, _message: &str) -> Result<(), String> {
+    // These are walk/plan/observation summaries. The native run receipt carries
+    // failures; actual mutation attempts are recorded by their owning atom or
+    // transaction, once, rather than again at every summary layer.
+    Ok(())
 }
 
 pub(crate) fn write_plan_receipts(

@@ -285,6 +285,15 @@ fn compose_feed(
                             .entry(key.clone())
                             .or_insert(value.clone());
                     }
+                    let mut stable = replacement.clone();
+                    stable.created_at = current.created_at.clone();
+                    stable.refreshed_at = current.refreshed_at.clone();
+                    stable.available_at = current.available_at.clone();
+                    if serde_json::to_value(&stable).is_ok_and(|candidate| {
+                        serde_json::to_value(&*current).is_ok_and(|prior| candidate == prior)
+                    }) {
+                        replacement = stable;
+                    }
                     *current = replacement;
                 } else {
                     feed.interactables.push(entry.clone());
@@ -529,11 +538,10 @@ pub(crate) fn prune_stale_interactables(
 pub(crate) fn prune_stale_interactables_at_path(
     path: &Path,
     profile: &Profile,
-    events: &mut crate::receipts::EventSink,
+    _events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     let mut feed = interactables::load_feed_raw(path)?;
     let active_modules = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
-    let mut removed = Vec::new();
     let mut removed_ids = BTreeSet::new();
 
     for entry in feed.interactables.drain(..) {
@@ -557,18 +565,11 @@ pub(crate) fn prune_stale_interactables_at_path(
         } else {
             None
         };
-        if let Some(reason) = reason {
+        if reason.is_some() {
             removed_ids.insert(entry.id.clone());
-            removed.push(serde_json::json!({
-                "schema": "harmonia.interactables.prune.v1",
-                "id": entry.id,
-                "module_id": entry.module_id,
-                "target_path": entry.target_path,
-                "reason": reason,
-            }));
         }
     }
-    if removed.is_empty() {
+    if removed_ids.is_empty() {
         return Ok(());
     }
     persist_feed_with_intent(
@@ -578,9 +579,6 @@ pub(crate) fn prune_stale_interactables_at_path(
             receipts: Vec::new(),
         },
     )?;
-    for receipt in removed {
-        crate::deeds::record("withdraw-proposal", receipt["id"].as_str().unwrap_or("none"),true,true,0,None,receipt["module_id"].as_str(),None,None)?;
-    }
     Ok(())
 }
 

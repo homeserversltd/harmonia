@@ -3,8 +3,31 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, MetadataExt};
 use std::path::Path;
+use std::cell::Cell;
 
 const LOG: &str = "/var/log/appliance/appliance.log";
+
+thread_local! {
+    static OBSERVATION_ONLY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Report-only failures are failed observations, not failed mutation attempts.
+/// The native receipts still carry them; no deed or forwarding is manufactured.
+pub(crate) struct ObservationGuard(bool);
+
+impl ObservationGuard {
+    pub(crate) fn enter(observation_only: bool) -> Self {
+        Self(OBSERVATION_ONLY.with(|active| active.replace(observation_only)))
+    }
+}
+
+impl Drop for ObservationGuard {
+    fn drop(&mut self) { OBSERVATION_ONLY.with(|active| active.set(self.0)); }
+}
+
+pub(crate) fn should_record(ok: bool, changed: bool) -> bool {
+    changed || (!ok && !OBSERVATION_ONLY.with(Cell::get))
+}
 
 fn token(value: &str, limit: usize) -> String {
     value.chars().take(limit).map(|character| {
@@ -18,7 +41,7 @@ pub(crate) fn record(
     verb: &str, target: &str, ok: bool, changed: bool, duration_ms: u128,
     run_id: Option<&str>, module_id: Option<&str>, signal: Option<&str>, count: Option<u64>,
 ) -> Result<(), String> {
-    if ok && !changed { return Ok(()); }
+    if !should_record(ok, changed) { return Ok(()); }
     let line = format!(
         "who=harmonia verb={} target={} outcome={} duration_ms={} run_id={} module_id={} signal={} count={}\n",
         token(verb,64), token(target,192), if ok {"changed"} else {"failed"}, duration_ms,

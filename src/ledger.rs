@@ -245,7 +245,7 @@ pub(crate) fn sync_proposals(path: &Path, feed: &crate::interactables::Interacta
     if observed.is_none() && feed.interactables.is_empty() { return Ok(()); }
     let mut connection = writer()?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
-    for item in &feed.interactables {
+    for item in feed.interactables.iter().filter(|item| !item.has_run) {
         transaction.execute(
             "INSERT INTO proposals(feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
@@ -273,6 +273,8 @@ pub(crate) fn sync_proposals(path: &Path, feed: &crate::interactables::Interacta
     for id in stale {
         transaction.execute("DELETE FROM proposals WHERE feed_id=?1 AND id=?2", params![feed_id,id]).map_err(database_error)?;
     }
+    transaction.execute("INSERT OR IGNORE INTO migrations(id) VALUES(?1)",
+        [format!("proposals-enrolled:{feed_id}")]).map_err(database_error)?;
     transaction.commit().map_err(database_error)
 }
 
@@ -280,14 +282,19 @@ pub(crate) fn filter_open_proposals(path: &Path, feed: &mut crate::interactables
     let Some(connection) = reader()? else { return Ok(()); };
     let feed_id = path.to_string_lossy();
     // Until a legacy feed first changes, its declarations remain readable.
-    let enrolled: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1)",
-        [feed_id.as_ref()], |row|row.get(0)).map_err(database_error)?;
+    let enrolled: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE id=?1) OR EXISTS(SELECT 1 FROM proposals WHERE feed_id=?2)",
+        params![format!("proposals-enrolled:{feed_id}"),feed_id.as_ref()], |row|row.get(0)).map_err(database_error)?;
     if !enrolled { return Ok(()); }
     let mut query = connection.prepare("SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1 AND id=?2)").map_err(database_error)?;
     let mut kept = Vec::new();
     for item in feed.interactables.drain(..) {
+        if item.has_run { continue; }
         let open: bool = query.query_row(params![feed_id,item.id],|row|row.get(0)).map_err(database_error)?;
-        if open { kept.push(item); }
+        if !open {
+            return Err(format!("harmonia-proposals-state-desync {}: retry the owning proposal write", item.id));
+        }
+        kept.push(item);
     }
     feed.interactables = kept;
     Ok(())

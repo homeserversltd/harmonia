@@ -1531,7 +1531,7 @@ fn redact_receipt(receipt: &Receipt, secrets: &[String]) -> Receipt {
 pub(crate) fn attest(
     _log: &Path, receipt: &Receipt, declared_secrets: &[String], changed: bool,
 ) -> Result<(), String> {
-    if receipt.ok && !changed { return Ok(()); }
+    if !crate::deeds::should_record(receipt.ok, changed) { return Ok(()); }
     let redacted = redact_receipt(receipt, declared_secrets);
     crate::deeds::record(&redacted.atom,"harmonia",redacted.ok,changed,0,None,None,
         if redacted.ok {None} else {Some("atom-failed")},None)?;
@@ -1556,7 +1556,7 @@ pub(crate) fn attest_config_plane(
     let witness_value = serde_json::to_value(&redacted_witness)
         .map_err(|error| format!("config-plane-witness-serialize: {error}"))?;
     crate::receipts::retain_config_witness(&redacted_witness)?;
-    if redacted.ok && !changed {return Ok(());}
+    if !crate::deeds::should_record(redacted.ok, changed) {return Ok(());}
     crate::deeds::record(&redacted.atom,&redacted_witness.path,redacted.ok,changed,0,None,
         Some(&redacted_witness.module_id),if redacted.ok {None} else {Some("managed-file-failed")},None)?;
 

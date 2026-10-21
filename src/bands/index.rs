@@ -325,6 +325,7 @@ pub(crate) fn run_profile_engine_with_projection(
     requested_latest_alias: Option<&Path>,
     materialize_on_stage: bool,
 ) -> Result<(), String> {
+    let _observation_guard = crate::deeds::ObservationGuard::enter(!mode.is_software_apply());
     crate::retired_receipt_streams::run()?;
     crate::receipts::clear_config_state_receipts(receipt_dir)?;
     let mut active_profile = profile.clone();
