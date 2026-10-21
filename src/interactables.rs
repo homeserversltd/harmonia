@@ -419,7 +419,12 @@ pub(crate) fn load_feed_raw(path: &Path) -> Result<InteractablesFeed, String> {
 
 pub(crate) fn pending_config_proposal_count() -> usize {
     load_feed(&feed_path())
-        .map(|feed| feed.interactables.len())
+        .map(|feed| {
+            feed.interactables
+                .iter()
+                .filter(|item| !json_key::is_satisfied(item))
+                .count()
+        })
         .unwrap_or(0)
 }
 
@@ -454,6 +459,7 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
         .interactables
         .iter()
         .filter(|item| item.silenced == silenced)
+        .filter(|item| !json_key::is_satisfied(item))
         .cloned()
         .collect();
     if args.iter().any(|arg| arg == "--json") {

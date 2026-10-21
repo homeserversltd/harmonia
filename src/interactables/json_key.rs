@@ -311,6 +311,25 @@ fn proposal_id(target: &Path, key: &str) -> String {
     format!("json-key-{}", digest(identity.to_string().as_bytes()))
 }
 
+// Presentation is a query. An externally satisfied proposal stays unwritten
+// until an explicit owner act; list/count must not offer a needless change.
+pub(crate) fn is_satisfied(item: &Interactable) -> bool {
+    let Some(raw_marker) = item.extra.get(MARKER) else {
+        return false;
+    };
+    let Ok(marker) = serde_json::from_value::<Marker>(raw_marker.clone()) else {
+        return false;
+    };
+    let Some(target) = item.target_path.as_deref() else {
+        return false;
+    };
+    item.kind == "hard-stamp"
+        && item.id == proposal_id(target, &marker.key)
+        && observe(target).is_ok_and(|(document, _)| {
+            KeyState::of(document.object.get(&marker.key)) == marker.after
+        })
+}
+
 fn merge_marker(old: Option<&Value>, new: &Value) -> Value {
     if let Value::Object(fields) = new {
         let mut result = old.and_then(Value::as_object).cloned().unwrap_or_default();
@@ -338,21 +357,8 @@ pub(crate) fn propose(
     let (document, _) = observe(target)?;
     let before = KeyState::of(document.object.get(key));
     let after = KeyState::of(step.args.get("value"));
-    let id = proposal_id(target, key);
-    let path = super::feed_path();
-    let feed = super::load_feed(&path)?;
-    let prior = feed.interactables.iter().find(|item| item.id == id);
     let current = document.object.get(key) == step.args.get("value");
     if current {
-        if prior.is_some() {
-            persist_feed_with_intent(
-                &path,
-                FeedPersistenceIntent::Remove {
-                    ids: [id].into_iter().collect(),
-                    receipts: Vec::new(),
-                },
-            )?;
-        }
         return Ok(crate::OperationOutcome {
             ok: true,
             changed: false,
@@ -361,6 +367,10 @@ pub(crate) fn propose(
             command: None,
         });
     }
+    let id = proposal_id(target, key);
+    let path = super::feed_path();
+    let feed = super::load_feed(&path)?;
+    let prior = feed.interactables.iter().find(|item| item.id == id);
     // Check the candidate now, but never write it on the update path.
     document.edit(key, step.args.get("value"))?;
     let manifest_path = manifest.base_dir.join("manifest.json");
@@ -504,7 +514,6 @@ pub(crate) fn run(
         return Err("json-key-proposal-preimage-stale".into());
     }
     let mut backup_path = None;
-    let mut after = before.clone();
     if changed {
         let bytes = document.edit(&marker.key, step.args.get("value"))?;
         let (reread, current_metadata) = read_regular(target, "json-key-target")?;
@@ -553,12 +562,36 @@ pub(crate) fn run(
         )?;
         // Do not serialize Projectio::Receipt: it contains struck_bytes.
         backup_path = Some(struck.backup_path);
-        let (readback, _) = observe(target)?;
-        after = KeyState::of(readback.object.get(&marker.key));
-        if after != marker.after {
-            return Err("json-key-readback-mismatch".into());
-        }
     }
+    let (readback, _) = observe(target)?;
+    let after = KeyState::of(readback.object.get(&marker.key));
+    if after != marker.after {
+        return Err("json-key-readback-mismatch".into());
+    }
+    let before_other: BTreeMap<_, _> = document
+        .object
+        .iter()
+        .filter(|(name, _)| name.as_str() != marker.key)
+        .map(|(name, value)| (name.clone(), KeyState::of(Some(value))))
+        .collect();
+    let after_other: BTreeMap<_, _> = readback
+        .object
+        .iter()
+        .filter(|(name, _)| name.as_str() != marker.key)
+        .map(|(name, value)| (name.clone(), KeyState::of(Some(value))))
+        .collect();
+    if before_other != after_other {
+        return Err("json-key-unowned-values-readback-mismatch".into());
+    }
+    let untouched_key_digests: BTreeMap<_, _> = before_other
+        .iter()
+        .map(|(name, state)| {
+            (
+                name.clone(),
+                json!({"before":state,"after":after_other.get(name),"unchanged":true}),
+            )
+        })
+        .collect();
     persist_feed_with_intent(
         path,
         FeedPersistenceIntent::Remove {
@@ -574,6 +607,7 @@ pub(crate) fn run(
         "target":target,"key":marker.key,"before":before,"after":after,
         "changed":changed,"has_run":true,"formatting_preserved":formatting_preserved,
         "untouched_values_preserved":true,"key_order_preserved":true,
+        "untouched_key_digests":untouched_key_digests,
         "formatting_scope":"outside-owned-value","backup_path":backup_path,
         "mode":metadata.mode() & 0o7777,"uid":metadata.uid(),"gid":metadata.gid(),
         "first_missing_signal":"none"})
