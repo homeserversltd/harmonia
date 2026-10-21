@@ -24,7 +24,7 @@ pub(crate) fn execute_validated_step(
             execution.outcome
         }),
         "metadata" => files_metadata_step(step, module_dir, software_authorization, invocation),
-        "validated-symlink" => validated_symlink_step(step, module_dir, false, invocation),
+        "validated-symlink" => validated_symlink_step(step, module_dir, apply, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, apply, invocation),
         "validated-file-symlink" => {
             validated_file_symlink_step(step, manifest, module_dir, false, invocation)
