@@ -538,15 +538,19 @@ pub(crate) fn run(
                 .unwrap_or("target")
         ));
         // The sole mutation route: an explicit owner run, never update --apply.
-        let struck = crate::atoms::projectio::strike(crate::atoms::projectio::Request {
-            target,
-            desired_bytes: &bytes,
-            mode: metadata.mode() & 0o7777,
-            uid: metadata.uid(),
-            gid: metadata.gid(),
-            backup_path: &backup,
-            witness: crate::atoms::projectio::owner_acceptance(super::operator_hand()),
-        })?;
+        let struck = crate::atoms::projectio::strike_if_current(
+            crate::atoms::projectio::Request {
+                target,
+                desired_bytes: &bytes,
+                mode: metadata.mode() & 0o7777,
+                uid: metadata.uid(),
+                gid: metadata.gid(),
+                backup_path: &backup,
+                witness: crate::atoms::projectio::owner_acceptance(super::operator_hand()),
+            },
+            &document.bytes,
+            &metadata,
+        )?;
         // Do not serialize Projectio::Receipt: it contains struck_bytes.
         backup_path = Some(struck.backup_path);
         let (readback, _) = observe(target)?;
