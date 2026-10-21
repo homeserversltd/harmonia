@@ -11,7 +11,6 @@
     "target_dir": "/home/owner",
     "expected_files": [
       ".config/kde-mimeapps.list",
-      ".config/kdeglobals",
       ".config/mimeapps.list",
       ".config/xdg-desktop-portal/hyprland-portals.conf",
       ".config/xdg-desktop-portal/sway-portals.conf",
@@ -33,7 +32,6 @@
         "target_root": "$constants.target_dir",
         "files": [
           ".config/kde-mimeapps.list",
-          ".config/kdeglobals",
           ".config/mimeapps.list",
           ".local/share/applications/mimeapps.list",
           ".local/share/applications/org.kde.kate.desktop"

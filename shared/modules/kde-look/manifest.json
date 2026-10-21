@@ -1,15 +1,16 @@
 {
   "schema": "harmonia.module.ladder.v1",
-  "id": "kate",
-  "title": "Editing tools",
-  "summary": "Adds editor preferences plus formatting, search, and run actions.",
+  "id": "kde-look",
+  "title": "KDE look",
+  "summary": "Keeps KDE application appearance and preferences in one shared module.",
   "category": "interactable",
   "version": "1.0.0",
-  "description": "TV Kate configuration and external tools are converged from this module into the owner home.",
+  "description": "Shared KDE application look and preference files are presented from this module for operator disposition.",
   "optional": false,
   "constants": {
     "target_dir": "/home/owner",
     "expected_files": [
+      ".config/dolphinrc",
       ".config/kate-externaltoolspluginrc",
       ".config/kate/externaltools/Clang%20Format%20Full%20File.ini",
       ".config/kate/externaltools/Clang%20Format%20Selected%20Text.ini",
@@ -29,12 +30,14 @@
       ".config/kate/externaltools/git%20blame.ini",
       ".config/kate/externaltools/git-cola.ini",
       ".config/kate/externaltools/gitk.ini",
-      ".config/katepartrc",
-      ".config/katevirc"
+      ".config/katerc",
+      ".config/katevirc",
+      ".config/kdeglobals",
+      ".config/konsolerc"
     ],
     "phase": 5,
-    "receipt_schema": "harmonia.tv.kate.v1",
-    "meaning": "TV Kate configuration and external tools are converged from this module into the owner home."
+    "receipt_schema": "harmonia.kde_look.v1",
+    "meaning": "KDE application appearance and preferences stay together in one shared module."
   },
   "files_root": "files_root",
   "ladder": [
@@ -46,6 +49,7 @@
         "source_root": "files_root",
         "target_root": "$constants.target_dir",
         "files": [
+          ".config/dolphinrc",
           ".config/kate-externaltoolspluginrc",
           ".config/kate/externaltools/Clang%20Format%20Full%20File.ini",
           ".config/kate/externaltools/Clang%20Format%20Selected%20Text.ini",
@@ -65,13 +69,15 @@
           ".config/kate/externaltools/git%20blame.ini",
           ".config/kate/externaltools/git-cola.ini",
           ".config/kate/externaltools/gitk.ini",
-          ".config/katepartrc",
-          ".config/katevirc"
+          ".config/katerc",
+          ".config/katevirc",
+          ".config/kdeglobals",
+          ".config/konsolerc"
         ],
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-kate-files"
+        "receipt_name": "kde-look-files"
       }
     }
   ]
