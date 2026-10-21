@@ -4,18 +4,21 @@
   "title": "Website access",
   "summary": "Keeps the server's website routing and secure connections configured.",
   "category": "interactable",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration.",
   "constants": {
     "sites": [
       "homeserver-calibre-web",
+      "homeserver-element",
       "homeserver-filebrowser",
       "homeserver-forgejo",
       "homeserver-jellyfin",
       "homeserver-main",
+      "homeserver-matrix",
       "homeserver-mkdocs",
       "homeserver-navidrome",
       "homeserver-piwigo",
+      "homeserver-searxng",
       "homeserver-transmission",
       "homeserver-vaultwarden",
       "homeserver-yarr"
@@ -64,6 +67,22 @@
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
         "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-element",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-element",
+        "category": "known-good",
+        "target": "/etc/nginx/sites-enabled/homeserver-element",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30,
+        "reload_program": "/usr/sbin/nginx",
+        "reload_args": ["-s", "reload"]
       },
       "on_failure": "stop"
     },
@@ -124,6 +143,22 @@
       "on_failure": "stop"
     },
     {
+      "step_id": "enable-homeserver-matrix",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-matrix",
+        "category": "known-good",
+        "target": "/etc/nginx/sites-enabled/homeserver-matrix",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30,
+        "reload_program": "/usr/sbin/nginx",
+        "reload_args": ["-s", "reload"]
+      },
+      "on_failure": "stop"
+    },
+    {
       "step_id": "enable-homeserver-mkdocs",
       "tool": "files",
       "permutation": "validated-symlink",
@@ -162,6 +197,22 @@
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
         "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "enable-homeserver-searxng",
+      "tool": "files",
+      "permutation": "validated-symlink",
+      "args": {
+        "source": "/etc/nginx/sites-available/homeserver-searxng",
+        "category": "known-good",
+        "target": "/etc/nginx/sites-enabled/homeserver-searxng",
+        "validator_program": "/usr/sbin/nginx",
+        "validator_args": ["-t"],
+        "timeout_secs": 30,
+        "reload_program": "/usr/sbin/nginx",
+        "reload_args": ["-s", "reload"]
       },
       "on_failure": "stop"
     },
