@@ -714,6 +714,7 @@ pub(crate) fn execute_validated_step_with_source(
     if let Some(blocker) = structural_file_blocker(step, manifest) {
         return Err(blocker);
     }
+    let _deed_context = crate::deeds::ContextGuard::enter(None, Some(&manifest.id), "step-elapsed");
     // Apply is a SoftwarePlane capability. Configuration and identity steps
     // remain report-only; only these explicit software permutations receive it.
     let software_apply = software_authorization.is_some()

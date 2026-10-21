@@ -68,7 +68,7 @@ pub(crate) fn run() -> Result<(), String> {
         "SELECT count FROM deed_outbox WHERE id=?1", [MIGRATION], |row|row.get(0),
     ).optional().map_err(|error|error.to_string())?;
     if let Some(count) = pending {
-        crate::deeds::record("sweep-retired-receipts",ROOT,true,true,start.elapsed().as_millis(),None,None,None,Some(count))?;
+        crate::deeds::record("sweep-retired-receipts",ROOT,true,true,Some(start.elapsed().as_millis()),None,None,None,Some(count))?;
     }
     transaction.execute("INSERT INTO migrations(id) VALUES(?1)",[MIGRATION]).map_err(|error|error.to_string())?;
     transaction.execute("DELETE FROM deed_outbox WHERE id=?1",[MIGRATION]).map_err(|error|error.to_string())?;

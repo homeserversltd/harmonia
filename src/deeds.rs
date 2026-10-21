@@ -3,12 +3,44 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, MetadataExt};
 use std::path::Path;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 const LOG: &str = "/var/log/appliance/appliance.log";
 
 thread_local! {
     static OBSERVATION_ONLY: Cell<bool> = const { Cell::new(false) };
+    static ACTIVE_CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) };
+}
+
+struct Context {
+    run_id: Option<String>,
+    module_id: Option<String>,
+    started: Instant,
+    duration_scope: &'static str,
+}
+
+/// Invocation-local identities and elapsed time, released on every return.
+/// A step may nest under its run; no receipt body or history is retained.
+pub(crate) struct ContextGuard(Option<Context>);
+
+impl ContextGuard {
+    pub(crate) fn enter(run_id: Option<&str>, module_id: Option<&str>, duration_scope: &'static str) -> Self {
+        ACTIVE_CONTEXT.with(|active| {
+            let mut active = active.borrow_mut();
+            let context = Context {
+                run_id: run_id.map(str::to_owned).or_else(|| active.as_ref().and_then(|value| value.run_id.clone())),
+                module_id: module_id.map(str::to_owned).or_else(|| active.as_ref().and_then(|value| value.module_id.clone())),
+                started: Instant::now(),
+                duration_scope,
+            };
+            Self(active.replace(context))
+        })
+    }
+}
+
+impl Drop for ContextGuard {
+    fn drop(&mut self) { ACTIVE_CONTEXT.with(|active| { active.replace(self.0.take()); }); }
 }
 
 /// Report-only failures are failed observations, not failed mutation attempts.
@@ -38,13 +70,24 @@ fn token(value: &str, limit: usize) -> String {
 }
 
 pub(crate) fn record(
-    verb: &str, target: &str, ok: bool, changed: bool, duration_ms: u128,
+    verb: &str, target: &str, ok: bool, changed: bool, duration_ms: Option<u128>,
     run_id: Option<&str>, module_id: Option<&str>, signal: Option<&str>, count: Option<u64>,
 ) -> Result<(), String> {
     if !should_record(ok, changed) { return Ok(()); }
+    let context = ACTIVE_CONTEXT.with(|active| active.borrow().as_ref().map(|value| (
+        value.started.elapsed().as_millis(), value.duration_scope, value.run_id.clone(), value.module_id.clone(),
+    )));
+    let (duration, scope) = match (duration_ms, context.as_ref()) {
+        (Some(value), _) => (Some(value), "operation"),
+        (None, Some(context)) => (Some(context.0), context.1),
+        (None, None) => (None, "unmeasured"),
+    };
+    let run_id = run_id.or_else(|| context.as_ref().and_then(|value| value.2.as_deref()));
+    let module_id = module_id.or_else(|| context.as_ref().and_then(|value| value.3.as_deref()));
     let line = format!(
-        "who=harmonia verb={} target={} outcome={} duration_ms={} run_id={} module_id={} signal={} count={}\n",
-        token(verb,64), token(target,192), if ok {"changed"} else {"failed"}, duration_ms,
+        "who=harmonia verb={} target={} outcome={} duration_ms={} duration_scope={} run_id={} module_id={} signal={} count={}\n",
+        token(verb,64), token(target,192), if ok {"changed"} else {"failed"},
+        duration.map(|value| value.to_string()).unwrap_or_else(|| "none".into()), scope,
         token(run_id.unwrap_or("none"),80), token(module_id.unwrap_or("none"),96),
         token(signal.unwrap_or(if ok {"none"} else {"operation-failed"}),96),
         count.map(|value|value.to_string()).unwrap_or_else(||"none".into()),

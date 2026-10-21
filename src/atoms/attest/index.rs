@@ -1528,13 +1528,25 @@ fn redact_receipt(receipt: &Receipt, secrets: &[String]) -> Receipt {
     };
     redacted
 }
+fn failure_signal(receipt: &Receipt) -> Option<String> {
+    if receipt.ok { return None; }
+    Some(match &receipt.drift {
+        super::Drift::Command { actual_code: Some(code), .. } => format!("command-exit-code-{code}"),
+        super::Drift::Http { actual_status: Some(status), .. } => format!("http-status-{status}"),
+        super::Drift::Unit { .. } => "unit-not-converged".into(),
+        super::Drift::File { .. } => "file-not-converged".into(),
+        _ => format!("{}-failed", receipt.atom),
+    })
+}
+
 pub(crate) fn attest(
     _log: &Path, receipt: &Receipt, declared_secrets: &[String], changed: bool,
 ) -> Result<(), String> {
     if !crate::deeds::should_record(receipt.ok, changed) { return Ok(()); }
     let redacted = redact_receipt(receipt, declared_secrets);
-    crate::deeds::record(&redacted.atom,"harmonia",redacted.ok,changed,0,None,None,
-        if redacted.ok {None} else {Some("atom-failed")},None)?;
+    let signal = failure_signal(&redacted);
+    crate::deeds::record(&redacted.atom,"harmonia",redacted.ok,changed,None,None,None,
+        signal.as_deref(),None)?;
     hyalos::forward_receipt("harmonia.atom", &redacted.message,
         Some(serde_json::json!({"atom":redacted.atom,"drift":redacted.drift})),Some(redacted.ok),None);
     Ok(())
@@ -1557,8 +1569,9 @@ pub(crate) fn attest_config_plane(
         .map_err(|error| format!("config-plane-witness-serialize: {error}"))?;
     crate::receipts::retain_config_witness(&redacted_witness)?;
     if !crate::deeds::should_record(redacted.ok, changed) {return Ok(());}
-    crate::deeds::record(&redacted.atom,&redacted_witness.path,redacted.ok,changed,0,None,
-        Some(&redacted_witness.module_id),if redacted.ok {None} else {Some("managed-file-failed")},None)?;
+    let signal = failure_signal(&redacted);
+    crate::deeds::record(&redacted.atom,&redacted_witness.path,redacted.ok,changed,None,None,
+        Some(&redacted_witness.module_id),signal.as_deref(),None)?;
 
     let mut attributes = serde_json::json!({
         "atom": redacted.atom,

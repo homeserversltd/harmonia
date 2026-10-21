@@ -216,7 +216,7 @@ pub(crate) fn record(
     transaction.commit().map_err(database_error)?;
     if !newly_absent.is_empty() {
         crate::deeds::record("schema-seat-absent", &newly_absent.join(":"), true, true,
-            0, Some(run_id), None, Some("primitive-field-presence"), Some(newly_absent.len() as u64))?;
+            None, Some(run_id), None, Some("primitive-field-presence"), Some(newly_absent.len() as u64))?;
     }
     Ok(())
 }

@@ -175,7 +175,7 @@ pub(crate) fn record_receipt_cleanup(
         return Ok(());
     }
     crate::deeds::record("receipt-cleanup", "harmonia-receipts", report.warnings.is_empty(),
-        report.deleted_directories > 0 || report.deleted_files > 0, 0,
+        report.deleted_directories > 0 || report.deleted_files > 0, None,
         None,None, if report.warnings.is_empty() {None} else {Some("receipt-cleanup-failed")},
         Some((report.deleted_directories+report.deleted_files) as u64))
 }

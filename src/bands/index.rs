@@ -350,6 +350,7 @@ pub(crate) fn run_profile_engine_with_projection(
         &fallback_stem,
         &fallback_run_id,
     );
+    let _deed_context = crate::deeds::ContextGuard::enter(Some(&run_id), None, "run-elapsed");
     let mut state = crate::bands::report_home::RunState {
         run_id: run_id.clone(),
         apply,

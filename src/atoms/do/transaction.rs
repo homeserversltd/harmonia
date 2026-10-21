@@ -1327,7 +1327,7 @@ fn write_transaction_failure_run_receipt(
         run["error"] = serde_json::Value::String(error_text.to_string());
         write_json(&receipt_dir.join("run.json"), &run)?;
     }
-    crate::deeds::record("transaction",&profile.id,false,changed,run_started.elapsed().as_millis(),None,None,Some("transaction-failed"),None)?;
+    crate::deeds::record("transaction",&profile.id,false,changed,Some(run_started.elapsed().as_millis()),None,None,Some("transaction-failed"),None)?;
     println!("schema=harmonia.run_profile.v1");
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
     crate::bands::report_home::emit_transaction_failure(profile, run_started, failures, Some(&signal));

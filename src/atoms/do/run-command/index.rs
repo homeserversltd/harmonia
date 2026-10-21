@@ -101,7 +101,7 @@ pub(crate) fn command_with_timeout_attested(
     let receipt = Receipt {
         atom: "run-command".into(),
         ok: outcome.ok,
-        drift: Drift::Current,
+        drift: Drift::Command { expected_code: 0, actual_code: outcome.code },
         // Never place command output, argv, or environment in the shared
         // attestation log; these can carry credentials or private data.
         message: format!("bounded command action completed={}", outcome.ok),

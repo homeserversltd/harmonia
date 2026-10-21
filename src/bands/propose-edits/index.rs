@@ -521,7 +521,7 @@ fn persist_feed_locked(
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
     )?;
     crate::ledger::sync_proposals(path, feed)?;
-    if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,0,None,None,None,Some(writes as u64))?; }
+    if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,None,None,None,None,Some(writes as u64))?; }
     Ok(writes)
 }
 
