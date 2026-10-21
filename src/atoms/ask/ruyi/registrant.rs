@@ -6,6 +6,81 @@ use std::sync::OnceLock;
 pub(crate) const PERSPECTIVE: &str = "harmonia.ruyi-perspective.v1";
 const REGISTER: &str = "harmonia.ruyi-register.v1";
 
+/// One event's declaration snapshot. Unknown entry fields remain additive.
+struct DeclaredServices {
+    entries: Vec<Value>,
+    first_invalid: Option<String>,
+}
+
+fn service_token(value: &Value) -> bool {
+    value.as_str().is_some_and(|token| {
+        token.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            && token.split('-').all(|part| {
+                !part.is_empty()
+                    && part.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            })
+    })
+}
+
+impl DeclaredServices {
+    fn read() -> Self {
+        let mut declared = Self { entries: Vec::new(), first_invalid: None };
+        let raw = match crate::bands::stage_profile::read_device_ruyi_services() {
+            Ok(None) => return declared,
+            Ok(Some(raw)) => raw,
+            Err(_) => {
+                declared.first_invalid = Some("services".into());
+                return declared;
+            }
+        };
+        let Some(entries) = raw.as_array() else {
+            declared.first_invalid = Some("services".into());
+            return declared;
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            let valid = entry.is_object()
+                && service_token(&entry["kind"])
+                && service_token(&entry["protocol"])
+                && entry["port"].as_u64().is_some_and(|port| (1..=65535).contains(&port))
+                && entry["path"].as_str().is_some_and(|path| Path::new(path).is_absolute())
+                && entry.get("model").is_none_or(|model| model.is_null() || model.is_string());
+            if !valid {
+                declared.first_invalid.get_or_insert_with(|| format!("services[{index}]"));
+                continue;
+            }
+            let mut entry = entry.clone();
+            if entry.get("model").is_none() {
+                entry["model"] = Value::Null;
+            }
+            declared.entries.push(entry);
+        }
+        declared
+    }
+
+    fn apply_to(&self, row: &mut Value) {
+        if let Some(row) = row.as_object_mut() {
+            if self.entries.is_empty() {
+                row.remove("services");
+            } else {
+                row.insert("services".into(), Value::Array(self.entries.clone()));
+            }
+        }
+    }
+
+    fn save_receipt(&self, dir: &Path, mut value: Value) -> Result<Value, String> {
+        if let Some(first_invalid) = &self.first_invalid {
+            let signal = value["first_missing_signal"].as_str().unwrap_or("none");
+            value["first_missing_signal"] = json!(if signal == "none" {
+                "ruyi-service-declaration-invalid".to_owned()
+            } else {
+                format!("{signal}; ruyi-service-declaration-invalid")
+            });
+            value["service_declaration_first_invalid"] = json!(first_invalid);
+        }
+        save_receipt(dir, value)
+    }
+}
+
 struct Seats {
     perspective: Result<crate::atoms::ask::mint_seats::Seat, String>,
     register: Result<crate::atoms::ask::mint_seats::Seat, String>,
@@ -237,6 +312,7 @@ fn seed_perspective_for_with_harmonia_sha(
     };
     validate_row(&row)?;
     let mut self_row = serde_json::to_value(row).map_err(|error| error.to_string())?;
+    DeclaredServices::read().apply_to(&mut self_row);
     self_row["fire_seal"] = crate::atoms::ask::collective_stamp::current_with_fire_seal()
         .fire_seal
         .as_ref()
@@ -487,7 +563,7 @@ pub(crate) fn save_identity_absent(dir: &Path, event: &str, detail: &str) -> Res
         result["staff_start_wait_ms"] = json!(0);
     }
     result["detail"] = json!(detail);
-    save_receipt(dir, result)
+    DeclaredServices::read().save_receipt(dir, result)
 }
 
 pub(crate) fn save_registration_failure(dir: &Path, detail: &str) -> Result<Value, String> {
@@ -499,7 +575,7 @@ pub(crate) fn save_registration_failure(dir: &Path, detail: &str) -> Result<Valu
     );
     result["event"] = json!("new-artifact");
     result["detail"] = json!(detail);
-    save_receipt(dir, result)
+    DeclaredServices::read().save_receipt(dir, result)
 }
 
 /// Reuse the committed mint and its raw evidence; do not resolve any member again.
@@ -511,6 +587,7 @@ pub(crate) fn register_promoted(
     identity: &LocalIdentity,
     dir: &Path,
 ) -> Result<Value, String> {
+    let services = DeclaredServices::read();
     match persist_seed_if_absent(
         identity.clone(),
         profile.clone(),
@@ -523,14 +600,14 @@ pub(crate) fn register_promoted(
     ) {
         Ok(_) => {}
         Err(signal) => {
-            return save_receipt(
+            return services.save_receipt(
                 dir,
                 receipt("pre-declaration", Value::Null, Vec::new(), &signal),
             );
         }
     };
     let Some(port) = port() else {
-        return save_receipt(
+        return services.save_receipt(
             dir,
             receipt(
                 "pre-declaration",
@@ -548,7 +625,7 @@ pub(crate) fn register_promoted(
         .and_then(Value::as_str)
         == Some("beam-lock-absent");
     if profile.id.is_empty() || lock_absent {
-        return save_receipt(
+        return services.save_receipt(
             dir,
             receipt(
                 "pre-declaration",
@@ -625,9 +702,9 @@ pub(crate) fn register_promoted(
         }
     }
     prior["self"] = row.clone();
-    let result = exchange(profile, row, prior, seats, port, "new-artifact", dir)?;
+    let result = exchange(profile, row, prior, seats, port, "new-artifact", dir, &services)?;
     amend_update_set_held_back_by(dir, &result["held_back_by"])?;
-    save_receipt(dir, result)
+    services.save_receipt(dir, result)
 }
 
 fn declaration_signal(row: &Value) -> Option<&'static str> {
@@ -1226,7 +1303,11 @@ fn exchange(
     port: u16,
     event: &str,
     dir: &Path,
+    services: &DeclaredServices,
 ) -> Result<Value, String> {
+    // Both event paths replace the current announcement, including clearing an
+    // old services key. A beam failure must not preserve a stale declaration.
+    services.apply_to(&mut row);
     let signal = match seats.signal() {
         Ok(signal) => signal,
         Err(error) => return Ok(receipt("refused", row, Vec::new(), &error)),
@@ -1484,6 +1565,7 @@ fn accumulate(
 
 /// StaffStart uses the existing self envelope; it never applies or moves a rung.
 pub(crate) fn announce() -> Result<Value, String> {
+    let services = DeclaredServices::read();
     #[cfg(any(test, feature = "test-facade"))]
     let receipt_root = std::env::var_os("HARMONIA_RECEIPTS_ROOT")
         .map(PathBuf::from)
@@ -1512,7 +1594,7 @@ pub(crate) fn announce() -> Result<Value, String> {
             result["event"] = json!("staff-start");
             result["staff_start_wait_ms"] = json!(0);
             result["detail"] = json!(error);
-            return save_receipt(&dir, result);
+            return services.save_receipt(&dir, result);
         }
     };
     let Some(port) = port() else {
@@ -1524,7 +1606,7 @@ pub(crate) fn announce() -> Result<Value, String> {
         );
         result["event"] = json!("staff-start");
         result["staff_start_wait_ms"] = json!(0);
-        return save_receipt(&dir, result);
+        return services.save_receipt(&dir, result);
     };
     match fs::metadata(crate::device_profile::device_profile_certificate_path()) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1536,7 +1618,7 @@ pub(crate) fn announce() -> Result<Value, String> {
             );
             result["event"] = json!("staff-start");
             result["staff_start_wait_ms"] = json!(0);
-            return save_receipt(&dir, result);
+            return services.save_receipt(&dir, result);
         }
         Err(error) => return Err(format!("ruyi-profile-read-failed: {error}")),
         Ok(_) => {}
@@ -1554,7 +1636,7 @@ pub(crate) fn announce() -> Result<Value, String> {
                     );
                     result["event"] = json!("staff-start");
                     result["staff_start_wait_ms"] = json!(wait_ms);
-                    return save_receipt(&dir, result);
+                    return services.save_receipt(&dir, result);
                 }
                 Err(error) => return Err(format!("ruyi-state-read-failed: {error}")),
                 Ok(_) => {}
@@ -1569,7 +1651,7 @@ pub(crate) fn announce() -> Result<Value, String> {
             let mut result = receipt("pre-declaration", Value::Null, Vec::new(), &signal);
             result["event"] = json!("staff-start");
             result["staff_start_wait_ms"] = json!(wait_ms);
-            return save_receipt(&dir, result);
+            return services.save_receipt(&dir, result);
         }
     }
     // Exhaustion is an unavailable seat observation, not another load timeout.
@@ -1585,15 +1667,15 @@ pub(crate) fn announce() -> Result<Value, String> {
         );
         result["event"] = json!("staff-start");
         result["staff_start_wait_ms"] = json!(wait_ms);
-        return save_receipt(&dir, result);
+        return services.save_receipt(&dir, result);
     };
     let row = refresh_self_row_from_local_beam(row, &profile, HARMONIA_BUILD_SHA);
     prior["self"] = row.clone();
-    let mut result = exchange(&profile, row, prior, seats, port, "staff-start", &dir)?;
+    let mut result = exchange(&profile, row, prior, seats, port, "staff-start", &dir, &services)?;
     result["event"] = json!("staff-start");
     result["staff_start_wait_ms"] = json!(wait_ms);
     amend_update_set_held_back_by(&dir, &result["held_back_by"])?;
-    save_receipt(&dir, result)
+    services.save_receipt(&dir, result)
 }
 
 #[cfg(test)]

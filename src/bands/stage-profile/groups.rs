@@ -278,6 +278,13 @@ pub(crate) fn read_device_caduceus_bind() -> Result<Option<String>, String> {
     )
 }
 
+/// Leave service-entry interpretation to the Ruyi registrant; malformed
+/// declarations must not become an engine configuration refusal.
+pub(crate) fn read_device_ruyi_services() -> Result<Option<serde_json::Value>, String> {
+    Ok(read_device_config_at(&appliance_config_path())?
+        .and_then(|config| config.get("services").cloned()))
+}
+
 pub(crate) fn read_device_syzygy_declaration() -> Result<Option<SyzygyDeclaration>, String> {
     Ok(read_device_module_policy()?.syzygy_declaration)
 }
