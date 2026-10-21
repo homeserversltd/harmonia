@@ -70,16 +70,6 @@ use sha2::{Digest, Sha256};
 static JSON_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PROPOSAL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug)]
-struct StalePreimage {
-    path: std::path::PathBuf,
-    bytes: Vec<u8>,
-    mode: u32,
-    uid: u32,
-    gid: u32,
-}
-
-
 /// Attestation-owned no-follow read handle for source observation.
 #[cfg(unix)]
 pub(crate) fn open_nofollow_read(path: &Path) -> Result<File, String> {
@@ -1054,42 +1044,6 @@ fn verify_proposal_owner(path: &Path, policy: ProposalOwnerPolicy) -> Result<(),
     Ok(())
 }
 
-fn capture_stale_preimage(
-    path: &Path,
-    policy: ProposalOwnerPolicy,
-) -> Result<StalePreimage, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if !metadata.file_type().is_file() {
-        return Err(format!("proposal-projection-collision {}", path.display()));
-    }
-    verify_proposal_owner(path, policy)?;
-    if metadata.permissions().mode() & 0o7777 != 0o644 {
-        return Err(format!(
-            "proposal-projection-mode-mismatch {}",
-            path.display()
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        return Ok(StalePreimage {
-            path: path.to_path_buf(),
-            bytes: fs::read(path).map_err(|e| e.to_string())?,
-            mode: metadata.mode() & 0o7777,
-            uid: metadata.uid(),
-            gid: metadata.gid(),
-        });
-    }
-    #[cfg(not(unix))]
-    Ok(StalePreimage {
-        path: path.to_path_buf(),
-        bytes: fs::read(path).map_err(|e| e.to_string())?,
-        mode: 0o644,
-        uid: 0,
-        gid: 0,
-    })
-}
-
 fn write_proposal_bytes(
     path: &Path,
     bytes: &[u8],
@@ -1242,94 +1196,18 @@ pub(crate) fn refresh_proposal_projection_locked(
         }
     }
     prepare_receipt_parent(&proposal_root)?;
-    let live = records
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut stale = Vec::new();
-    for path in fs::read_dir(&proposal_root)
-        .map_err(|error| error.to_string())?
-        .map(|entry| {
-            entry
-                .map(|entry| entry.path())
-                .map_err(|error| error.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?
-    {
-        let Some(metadata) = proposal_target_kind(&path)? else {
-            continue;
-        };
-        let name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        if name.starts_with("config-proposal-") && name.ends_with(".json") && !live.contains(name) {
-            if !metadata.file_type().is_file() {
-                return Err(format!("proposal-projection-collision {}", path.display()));
-            }
-            verify_proposal_owner(&path, policy)?;
-            #[cfg(unix)]
-            if metadata.permissions().mode() & 0o7777 != 0o644 {
-                return Err(format!(
-                    "proposal-projection-mode-mismatch {}",
-                    path.display()
-                ));
-            }
-            stale.push(capture_stale_preimage(&path, policy)?);
-        }
-    }
     let mut writes = write_proposal_bytes(feed_path, feed_bytes, policy)? as usize;
     for (name, bytes) in records {
         writes += write_proposal_bytes(&proposal_root.join(name), bytes, policy)? as usize;
     }
-    let mut removed: Vec<&StalePreimage> = Vec::new();
-    for preimage in &stale {
-        if let Err(error) = fs::remove_file(&preimage.path) {
-            let mut message = format!(
-                "proposal-stale-remove-failed {}: {error}",
-                preimage.path.display()
-            );
-            for prior in removed.iter().rev() {
-                if let Err(restore) = restore_stale_preimage(prior) {
-                    message.push_str(&format!(
-                        "; proposal-stale-restore-failed {}: {restore}",
-                        prior.path.display()
-                    ));
-                }
-            }
-            return Err(message);
-        }
-        removed.push(preimage);
-        writes += 1;
-    }
     Ok(writes)
-}
-
-#[cfg(unix)]
-fn restore_stale_preimage(preimage: &StalePreimage) -> Result<(), String> {
-    use std::os::unix::fs::{chown, PermissionsExt};
-    let parent = preimage
-        .path
-        .parent()
-        .ok_or_else(|| "proposal-stale-restore-parent-missing".to_string())?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&preimage.path)
-        .map_err(|e| e.to_string())?;
-    file.write_all(&preimage.bytes).map_err(|e| e.to_string())?;
-    file.set_permissions(fs::Permissions::from_mode(preimage.mode))
-        .map_err(|e| e.to_string())?;
-    chown(&preimage.path, Some(preimage.uid), Some(preimage.gid)).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    drop(file);
-    File::open(parent)
-        .and_then(|d| d.sync_all())
-        .map_err(|e| e.to_string())
 }
 
 /// Atomically converge a receipt file to exact bytes, without touching an equal file.
 pub(crate) fn write_receipt_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<bool, String> {
+    if let Some(parent) = path.parent() {
+        convergence_receipts::migrate_latest_receipt_ancestor(parent)?;
+    }
     let target = match fs::symlink_metadata(path) {
         Ok(metadata) => Some(metadata),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -1412,6 +1290,14 @@ pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String
 }
 
 pub(crate) fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+    let mut stamped;
+    let value = if let Some(run_id) = crate::receipts::receipt_run_id(path) {
+        stamped = value.clone();
+        if let Some(object) = stamped.as_object_mut() {
+            object.insert("run_id".into(), serde_json::json!(run_id));
+        }
+        &stamped
+    } else { value };
     let mut bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| format!("receipt-serialize-failed {}: {error}", path.display()))?;
     bytes.push(b'\n');
@@ -1433,6 +1319,7 @@ fn verify_receipt_owner(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn prepare_receipt_parent(parent: &Path) -> Result<(), String> {
+    convergence_receipts::migrate_latest_receipt_ancestor(parent)?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("receipt-parent-create-failed {}: {error}", parent.display()))?;
     make_receipt_tree_readable(parent)

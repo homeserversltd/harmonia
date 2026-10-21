@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 thread_local! {
     static ACTIVE_RUN_ID: RefCell<Option<String>> = const { RefCell::new(None) };
+    static ACTIVE_RECEIPT_DIRECTORY: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 pub(crate) struct RunIdGuard(Option<String>);
@@ -44,26 +45,41 @@ pub(crate) fn run_id_from_stamp() -> String {
     format!("run-{nanos}")
 }
 
-pub(crate) fn run_id_from_effective_receipt_directory(
-    effective_receipt_dir: &Path,
-    requested_latest_alias: Option<&Path>,
-    fallback_stem: &str,
-    fallback_run_id: &str,
-) -> String {
-    let Some(stem) = requested_latest_alias.and_then(|latest_alias| {
-        crate::atoms::attest::convergence_receipts::latest_receipt_stem(
-            latest_alias,
-            fallback_stem,
-        )
-    }) else {
-        return fallback_run_id.to_owned();
-    };
-    effective_receipt_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix(&format!("{stem}-")))
-        .map(str::to_owned)
-        .unwrap_or_else(|| fallback_run_id.to_owned())
+pub(crate) struct ReceiptScopeGuard(Option<PathBuf>);
+
+impl ReceiptScopeGuard {
+    pub(crate) fn enter(path: &Path) -> Self {
+        let path = absolute_receipt_path(path);
+        Self(ACTIVE_RECEIPT_DIRECTORY.with(|active| active.replace(Some(path))))
+    }
+}
+
+impl Drop for ReceiptScopeGuard {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        ACTIVE_RECEIPT_DIRECTORY.with(|active| { active.replace(previous); });
+    }
+}
+
+fn absolute_receipt_path(path: &Path) -> PathBuf {
+    if path.is_absolute() { path.to_path_buf() }
+    else { std::env::current_dir().unwrap_or_default().join(path) }
+}
+
+/// Only receipt files receive the press identity; appliance settings and other
+/// JSON documents using the same atomic writer retain their original shape.
+pub(crate) fn receipt_run_id(path: &Path) -> Option<String> {
+    let path = absolute_receipt_path(path);
+    let in_receipts = path.starts_with("/var/lib/harmonia/receipts")
+        || ACTIVE_RECEIPT_DIRECTORY.with(|active| active.borrow().as_ref().is_some_and(|root| path.starts_with(root)));
+    if !in_receipts { return None; }
+    ACTIVE_RUN_ID.with(|active| active.borrow().clone())
+}
+
+pub(crate) fn is_current_run_receipt(receipt: &serde_json::Value) -> bool {
+    ACTIVE_RUN_ID.with(|active| active.borrow().as_ref().is_none_or(|run_id| {
+        receipt.get("run_id").and_then(serde_json::Value::as_str) == Some(run_id.as_str())
+    }))
 }
 
 pub(crate) fn receipt_root_for(receipt_dir: &Path) -> PathBuf {
@@ -93,7 +109,7 @@ pub(crate) struct ProfileLedgerWriteReport {
 
 pub(crate) fn write_profile_ledger_run(
     _receipt_dir: &Path, _latest_path: Option<&Path>, profile: &Profile,
-    run_id: &str, entries: &[ProfileLedgerEntry<'_>], _retention: usize,
+    run_id: &str, entries: &[ProfileLedgerEntry<'_>],
 ) -> Result<ProfileLedgerWriteReport, String> {
     match crate::ledger::record(profile, run_id, entries) {
         Ok(()) => Ok(ProfileLedgerWriteReport::default()),
@@ -105,14 +121,6 @@ pub(crate) fn write_profile_ledger_run(
             Ok(ProfileLedgerWriteReport { unparsable_lines: 0, read_warnings: vec![signal] })
         }
     }
-}
-
-pub(crate) fn reconcile_profile_ledger_family(
-    _effective_receipt_dir: &Path, _latest_path: &Path, _profile: &Profile,
-    _retention: usize, _stem: &str,
-) -> Result<Vec<String>, String> {
-    // Ledger retention is performed by key in the same transaction as a change.
-    Ok(Vec::new())
 }
 
 fn update_run_receipt_projection(
@@ -145,7 +153,6 @@ fn update_run_receipt_projection(
 
 pub(crate) fn record_profile_ledger_projection(
     receipt_dir: &Path,
-    retention: usize,
     report: &ProfileLedgerWriteReport,
 ) -> Result<(), String> {
     update_run_receipt_projection(
@@ -154,42 +161,10 @@ pub(crate) fn record_profile_ledger_projection(
         json!({
             "ok": true,
             "signal": null,
-            "retention": retention,
             "unparsable_lines": report.unparsable_lines,
             "read_warnings": report.read_warnings,
         }),
     )
-}
-
-pub(crate) fn record_receipt_cleanup(
-    receipt_dir: &Path,
-    report: &mut crate::atoms::attest::convergence_receipts::ReceiptPruneReport,
-) -> Result<(), String> {
-    if let Err(error) = crate::bands::propose_edits::sweep_config_state_receipts() {
-        report.warnings.push(format!("config-state-sweep-failed: {error}"));
-    }
-    report.summarize_warnings();
-    let cleanup = json!({
-        "deletion_attempts": report.deletion_attempts,
-        "deletion_attempt_cap": null,
-        "deleted_directories": report.deleted_directories,
-        "deleted_files": report.deleted_files,
-        "capped": false,
-        "retained_run_ids": report.retained_run_ids,
-        "prune_warnings": report.warnings,
-    });
-
-    // An unavailable cleanup observation remains in the returned run receipt;
-    // without an attempted deletion it is not a failed mutation deed.
-    if report.deletion_attempts == 0
-        && report.deleted_directories == 0 && report.deleted_files == 0 {
-        return update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup);
-    }
-    let _ = crate::deeds::record("receipt-cleanup", "harmonia-receipts", report.warnings.is_empty(),
-        report.deleted_directories > 0 || report.deleted_files > 0, None,
-        None,None, if report.warnings.is_empty() {None} else {Some("receipt-cleanup-failed")},
-        Some((report.deleted_directories+report.deleted_files) as u64));
-    update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup)
 }
 
 pub(crate) fn write_tool_receipt(
@@ -262,6 +237,7 @@ fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
             {
                 return None;
             }
+            if !is_current_run_receipt(&value) { return None; }
             let record = serde_json::from_value::<ConfigSurfaceReceipt>(value.clone()).ok()?;
             // Keep legacy fields and any additive sidecar fields verbatim.
             Some((record.id, record.target, value))
@@ -389,6 +365,7 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
 ) -> Result<(), String> {
     let mut receipt = json!({
             "schema": "harmonia.run_profile.v1",
+            "run_id": run_id_from_stamp(),
             "ok": ok,
             "changed": changed,
             "mutation": apply,
@@ -405,7 +382,7 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
             "selected_profile": profile.id,
             "suite_ok": suite_ok,
             // Additive closing surface: older readers may ignore this field.
-            "steps": module_steps.map_or_else(|| serde_json::Value::Null, |steps| json!(steps)),
+            "steps": module_steps.map_or_else(|| json!([]), |steps| json!(steps)),
             "module_artifact_debt": module_artifact_debt.unwrap_or(&[]),
         });
     if let Some(engine_debt) = engine_debt {

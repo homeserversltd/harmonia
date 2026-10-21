@@ -86,7 +86,6 @@ pub(crate) struct DeferredRunSummary {
     pub operation_count: usize,
     pub duration_ms: u128,
     pub module_steps: Vec<serde_json::Value>,
-    pub receipt_retention: usize,
     pub ledger_unparsable_lines: usize,
     pub ledger_read_warnings: Vec<String>,
 }
@@ -108,7 +107,6 @@ pub(crate) struct RunState {
     pub transaction_state: serde_json::Value,
     pub settlement: Option<SettlementOutcome>,
     pub defer_terminal: bool,
-    pub receipt_retention: usize,
     pub requested_latest_alias: Option<PathBuf>,
 }
 
@@ -144,6 +142,7 @@ pub(crate) fn collect_package_pin_witnesses(
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
         };
+        if !crate::receipts::is_current_run_receipt(&value) { continue; }
         if let Some(items) = value.get("exclusion_set").and_then(|v| v.as_array()) {
             for item in items {
                 if let Some(name) = item.as_str() {
@@ -167,6 +166,7 @@ fn closing_module_steps(state: &RunState, receipt_dir: &Path) -> Vec<serde_json:
                 .map(|placement| {
                     let mut value = placement.clone();
                     if let Some(object) = value.as_object_mut() {
+                        object.insert("run_id".into(), json!(state.run_id));
                         let step_id = object
                             .get("step_id")
                             .and_then(serde_json::Value::as_str)
@@ -176,6 +176,7 @@ fn closing_module_steps(state: &RunState, receipt_dir: &Path) -> Vec<serde_json:
                             std::fs::read(path)
                                 .ok()
                                 .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                                .filter(|receipt| crate::receipts::is_current_run_receipt(receipt))
                         });
                         if let Some(result) = result {
                             if let Some(result_object) = result.as_object() {
@@ -213,6 +214,7 @@ fn closing_module_steps(state: &RunState, receipt_dir: &Path) -> Vec<serde_json:
                 })
                 .collect::<Vec<_>>();
             json!({
+                "run_id": state.run_id,
                 "module": module_id,
                 "observed": {"ok": step.ok, "changed": step.changed, "first_missing_signal": step.first_missing_signal},
                 "could_change_to": serde_json::Value::Null,
@@ -557,7 +559,6 @@ pub(crate) fn settle(
         profile,
         &state.run_id,
         &ledger_entries,
-        state.receipt_retention,
     )?;
     let (package_pin_witnesses, package_pin_exclusion_set) =
         collect_package_pin_witnesses(receipt_dir);
@@ -594,7 +595,6 @@ pub(crate) fn settle(
             operation_count: state.operation_count,
             duration_ms: state.run_started.elapsed().as_millis(),
             module_steps,
-            receipt_retention: state.receipt_retention,
             ledger_unparsable_lines: ledger_report.unparsable_lines,
             ledger_read_warnings: ledger_report.read_warnings,
         });
@@ -622,7 +622,6 @@ pub(crate) fn settle(
     )?;
     if let Err(error) = crate::receipts::record_profile_ledger_projection(
         receipt_dir,
-        state.receipt_retention,
         &ledger_report,
     ) {
         eprintln!("profile-ledger-projection-warning: {error}");
@@ -712,7 +711,6 @@ pub(crate) fn finalize_deferred_terminal(
     )?;
     if let Err(error) = crate::receipts::record_profile_ledger_projection(
         receipt_dir,
-        summary.receipt_retention,
         &crate::receipts::ProfileLedgerWriteReport {
             unparsable_lines: summary.ledger_unparsable_lines,
             read_warnings: summary.ledger_read_warnings,

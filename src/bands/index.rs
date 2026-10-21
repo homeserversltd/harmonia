@@ -264,14 +264,23 @@ pub(crate) fn run_profile_engine(
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode,
-    receipt_retention: usize,
 ) -> Result<(), String> {
+    let run_id = run_id_from_stamp();
+    let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
+    let receipt_dir = if receipt_dir.is_absolute() { receipt_dir.to_path_buf() }
+        else { std::env::current_dir().map_err(|error| error.to_string())?.join(receipt_dir) };
+    let parent = receipt_dir.parent().ok_or("receipt-dir-parentless-path")?;
+    crate::atoms::attest::prepare_receipt_parent(parent)?;
+    let parent_lock = crate::atoms::attest::convergence_receipts::lock_receipt_parent_exclusive(&receipt_dir, "receipt-start")?;
+    let effective = crate::atoms::attest::convergence_receipts::materialize_latest_receipt_dir(&receipt_dir, &run_id, "run-profile", "receipt-start")?;
+    drop(parent_lock);
+    let _receipt_run_lock = crate::atoms::attest::convergence_receipts::lock_receipt_directory(&effective)?;
+    let _receipt_scope = crate::receipts::ReceiptScopeGuard::enter(&effective);
     run_profile_engine_with_preflight(
         profile,
         module_root,
-        receipt_dir,
+        &effective,
         mode,
-        receipt_retention,
         None,
         false,
         None,
@@ -284,7 +293,6 @@ pub(crate) fn run_profile_engine_with_preflight(
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
-    receipt_retention: usize,
     requested_latest_alias: Option<&Path>,
     skip_preflight: bool,
     completed_preflight: Option<ModuleExecution>,
@@ -304,7 +312,6 @@ pub(crate) fn run_profile_engine_with_preflight(
         &projection,
         None,
         None,
-        receipt_retention,
         requested_latest_alias,
         false,
     )
@@ -321,7 +328,6 @@ pub(crate) fn run_profile_engine_with_projection(
     projection: &ProfileProjection,
     context: Option<&crate::RunContext>,
     carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
-    receipt_retention: usize,
     requested_latest_alias: Option<&Path>,
     materialize_on_stage: bool,
 ) -> Result<(), String> {
@@ -341,23 +347,10 @@ pub(crate) fn run_profile_engine_with_projection(
         true,
         &format!("profile {}", active_profile.id),
     )?;
-    let fallback_run_id = run_id_from_stamp();
-    let fallback_stem = format!("{}-update", active_profile.id);
-    let run_id = crate::receipts::run_id_from_effective_receipt_directory(
-        receipt_dir,
-        requested_latest_alias,
-        &fallback_stem,
-        &fallback_run_id,
-    );
+    let run_id = context.map(|context| context.run_id.clone()).unwrap_or_else(run_id_from_stamp);
+    let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
+    let _receipt_scope = crate::receipts::ReceiptScopeGuard::enter(receipt_dir);
     let _deed_context = crate::deeds::ContextGuard::enter(Some(&run_id), None, "run-elapsed");
-    if mode.is_software_apply() {
-        if let Err(error) = crate::retired_receipt_streams::run() {
-            let signal = crate::deeds::coded_signal(&error);
-            crate::deeds::reporting_failure("receipt_sweep", &signal);
-            let _ = crate::deeds::record("sweep-retired-receipts", "/var/lib/harmonia/receipts",
-                false, false, None, Some(&run_id), None, Some(&signal), None);
-        }
-    }
     let mut state = crate::bands::report_home::RunState {
         run_id: run_id.clone(),
         apply,
@@ -375,7 +368,6 @@ pub(crate) fn run_profile_engine_with_projection(
         transaction_state: serde_json::Value::Null,
         settlement: None,
         defer_terminal: materialize_on_stage,
-        receipt_retention,
         requested_latest_alias: requested_latest_alias.map(Path::to_path_buf),
     };
     let mut halted_modules: BTreeSet<String> = BTreeSet::new();
@@ -838,7 +830,6 @@ pub(crate) fn run_profile_engine_with_projection(
                         transaction_state: serde_json::Value::Null,
                         settlement: None,
                         defer_terminal: false,
-                        receipt_retention,
                         requested_latest_alias: None,
                     },
                 );

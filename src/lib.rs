@@ -278,8 +278,6 @@ mod module_dispatch;
 mod receipts;
 mod ledger;
 mod deeds;
-#[path = "../migrations/retired-receipt-streams.rs"]
-mod retired_receipt_streams;
 mod subscription;
 
 pub(crate) use atoms::attest::convergence_receipts::*;
@@ -528,6 +526,9 @@ fn write_cli_run_refusal(
 }
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
+    let run_id = crate::receipts::run_id_from_stamp();
+    let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
+    let _receipt_scope = receipt_dir_arg(&args).map(|path| crate::receipts::ReceiptScopeGuard::enter(&path));
     match args.first().map(String::as_str) {
         Some("ledger") => ledger::command(&args[1..]),
         Some("interactable") | Some("config-proposal") => {
@@ -1017,13 +1018,6 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 apply,
                 invocation.key(),
             );
-            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
-                &receipt_dir,
-                fallback_stem,
-                mode.is_software_apply(),
-                Some(&profile.id),
-                device_profile::run_identity_source(),
-            )?;
             let profile_requires_categories = std::fs::read_to_string(path)
                 .ok()
                 .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
@@ -1049,13 +1043,13 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             }
             crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
             if profile.id == "homeserver" && profile.identity == "homeserver" {
-                homeserver_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
+                homeserver_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
-                homeconsole_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
+                homeconsole_update(&profile, &module_root, &receipt_dir, mode)
             } else if is_tv_update_profile(&profile) {
-                tv_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
+                tv_update(&profile, &module_root, &receipt_dir, mode)
             } else {
-                run_profile_engine(&profile, &module_root, &receipt_dir, mode, receipt_retention)
+                run_profile_engine(&profile, &module_root, &receipt_dir, mode)
             }
         }
         Some("capsule") => {
@@ -1140,15 +1134,8 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("homeserver")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
-                &receipt_dir,
-                "homeserver-update",
-                mode.is_software_apply(),
-                Some(&profile.id),
-                device_profile::run_identity_source(),
-            )?;
             crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
-            homeserver_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
+            homeserver_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("homeconsole-update") => {
             let path = args
@@ -1163,14 +1150,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
-                &receipt_dir,
-                "homeconsole-update",
-                mode.is_software_apply(),
-                Some(&profile.id),
-                device_profile::run_identity_source(),
-            )?;
-            homeconsole_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
+            homeconsole_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("tv-update") => {
             let path = args
@@ -1184,14 +1164,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
-            let receipt_retention = device_profile::validate_receipt_retention_or_refuse(
-                &receipt_dir,
-                "tv-update",
-                mode.is_software_apply(),
-                Some(&profile.id),
-                device_profile::run_identity_source(),
-            )?;
-            tv_update(&profile, &module_root, &receipt_dir, mode, receipt_retention)
+            tv_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("update-module") => update_module_command(&args, invocation.key()),
         Some("homeconsole-local-ai-update") => {

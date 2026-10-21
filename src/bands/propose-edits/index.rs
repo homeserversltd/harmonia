@@ -12,7 +12,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::cell::RefCell;
 use std::fs;
-use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -29,85 +28,6 @@ pub(crate) fn reset_config_state_recognitions() {
 
 fn remember_config_state_recognition(id: &str) {
     CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| { ids.borrow_mut().insert(id.to_owned()); });
-}
-
-pub(crate) fn sweep_config_state_receipts() -> Result<bool, String> {
-    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
-    let parent = path.parent().ok_or_else(|| "config-state-parent-missing".to_string())?;
-    match fs::symlink_metadata(parent) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("config-state-parent-observe-failed {}: {error}", parent.display())),
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() => {
-            return Err(format!("config-state-parent-not-real-directory {}", parent.display()));
-        }
-        Ok(_) => {}
-    }
-    let parent = crate::atoms::attest::convergence_receipts::validate_cleanup_root(parent)?;
-    crate::atoms::attest::with_proposal_projection_lock(&path, || {
-        let live_ids = interactables::load_feed(&path)?
-            .interactables
-            .into_iter()
-            .map(|item| item.id)
-            .filter(|id| is_config_proposal_id(id))
-            .filter_map(|id| id.strip_prefix("config-proposal-").map(str::to_owned))
-            .collect::<BTreeSet<_>>();
-        let mut keep = live_ids;
-        CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| {
-            keep.extend(ids.borrow().iter().filter_map(|id| {
-                is_config_proposal_id(id).then(|| id.strip_prefix("config-proposal-").unwrap().to_owned())
-            }));
-        });
-        let entries = match fs::read_dir(&parent) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(format!("config-state-sweep-read-failed {}: {error}", parent.display())),
-        };
-        let mut removed = false;
-        for entry in entries {
-            let entry = entry.map_err(|error| format!("config-state-sweep-entry-failed: {error}"))?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            let Some(key) = name.strip_prefix("config-state-").and_then(|name| name.strip_suffix(".json")) else { continue };
-            if key.is_empty() || key.contains('/') || keep.contains(key) { continue; }
-            if !entry.file_type().map_err(|error| format!("config-state-sweep-type-failed {}: {error}", entry.path().display()))?.is_file() {
-                continue;
-            }
-            fs::remove_file(entry.path()).map_err(|error| format!("config-state-sweep-remove-failed {}: {error}", entry.path().display()))?;
-            removed = true;
-        }
-        if let Some(source_root) = proposal_sources_root(&parent, false)? {
-            let entries = fs::read_dir(&source_root)
-                .map_err(|error| format!("config-proposal-source-sweep-read-failed {}: {error}", source_root.display()))?;
-            let mut source_removed = false;
-            for entry in entries {
-                let entry = entry.map_err(|error| format!("config-proposal-source-sweep-entry-failed {}: {error}", source_root.display()))?;
-                let name = entry.file_name();
-                let Some(name) = name.to_str() else { continue };
-                let Some(id) = name.strip_suffix(".source").filter(|id| is_config_proposal_id(id)) else { continue };
-                let file_type = entry.file_type().map_err(|error| format!("config-proposal-source-sweep-type-failed {}: {error}", entry.path().display()))?;
-                if file_type.is_symlink() {
-                    continue;
-                }
-                if !file_type.is_file() {
-                    return Err(format!("config-proposal-source-sweep-collision {}", entry.path().display()));
-                }
-                if keep.contains(id.strip_prefix("config-proposal-").unwrap()) {
-                    continue;
-                }
-                fs::remove_file(entry.path()).map_err(|error| format!("config-proposal-source-sweep-remove-failed {}: {error}", entry.path().display()))?;
-                source_removed = true;
-            }
-            if source_removed {
-                File::open(&source_root)
-                    .and_then(|directory| directory.sync_all())
-                    .map_err(|error| format!("config-proposal-source-sweep-sync-failed {}: {error}", source_root.display()))?;
-                removed = true;
-            }
-        }
-        Ok(removed)
-    })
 }
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
@@ -186,7 +106,7 @@ fn proposal_sources_root(parent: &Path, create: bool) -> Result<Option<PathBuf>,
             .map_err(|error| format!("config-proposal-source-cwd-failed: {error}"))?
             .join(parent)
     };
-    let parent = crate::atoms::attest::convergence_receipts::validate_cleanup_root(&absolute_parent)?;
+    let parent = crate::atoms::attest::convergence_receipts::validate_receipt_directory_root(&absolute_parent)?;
     let root = parent.join("proposal-sources");
     match fs::symlink_metadata(&root) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
@@ -199,7 +119,7 @@ fn proposal_sources_root(parent: &Path, create: bool) -> Result<Option<PathBuf>,
         }
         Ok(_) => {}
     }
-    let root = crate::atoms::attest::convergence_receipts::validate_cleanup_root(&root)?;
+    let root = crate::atoms::attest::convergence_receipts::validate_receipt_directory_root(&root)?;
     if root.parent() != Some(parent.as_path()) {
         return Err(format!("config-proposal-source-root-not-direct-child {}", root.display()));
     }

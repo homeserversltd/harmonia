@@ -65,28 +65,6 @@ pub(crate) fn read_device_update_cadence() -> Result<DeviceUpdateCadence, String
     read_device_update_cadence_at(&appliance_config_path())
 }
 
-/// Return the configured receipt run window. Missing configuration keeps the
-/// single-current-run default; only a positive JSON integer is accepted.
-pub(crate) fn read_device_receipt_retention() -> Result<usize, String> {
-    let Some(config) = read_device_config_at(&appliance_config_path())? else {
-        return Ok(1);
-    };
-    let Some(value) = config
-        .get("harmonia")
-        .and_then(|harmonia| harmonia.get("receipt_retention"))
-    else {
-        return Ok(1);
-    };
-    let retention = value
-        .as_u64()
-        .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value >= 1)
-        .ok_or_else(|| {
-            "invalid-config-key harmonia.receipt_retention: expected integer >= 1".to_string()
-        })?;
-    Ok(retention)
-}
-
 fn read_device_update_cadence_at(path: &Path) -> Result<DeviceUpdateCadence, String> {
     let Some(config) = read_device_config_at(path)? else {
         return Ok(DeviceUpdateCadence {

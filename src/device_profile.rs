@@ -104,34 +104,6 @@ pub(crate) fn persist_fixed_refusal(
     }
 }
 
-pub(crate) fn validate_receipt_retention_or_refuse(
-    receipt_dir: &Path,
-    fallback_stem: &str,
-    apply: bool,
-    profile_id: Option<&str>,
-    identity_source: &str,
-) -> Result<usize, String> {
-    match crate::bands::stage_profile::groups::read_device_receipt_retention() {
-        Ok(retention) => Ok(retention),
-        Err(reason) => {
-            let receipt = json!({
-                "schema": "harmonia.run_profile.v1", "ok": false, "changed": false,
-                "mutation": apply, "mode": "refused", "profile_id": profile_id,
-                "identity": serde_json::Value::Null, "identity_source": identity_source,
-                "first_missing_signal": reason,
-            });
-            persist_fixed_refusal(
-                receipt_dir,
-                fallback_stem,
-                &receipt,
-                &reason,
-                "update-config-refusal-receipt-failed",
-            )?;
-            Err(reason)
-        }
-    }
-}
-
 fn write_profile_update_refusal(
     receipt_dir: &Path,
     profile: &Profile,
@@ -584,23 +556,6 @@ pub(crate) fn update_from_certificate(
             return Err(reason);
         }
     };
-    let receipt_retention = match crate::bands::stage_profile::groups::read_device_receipt_retention() {
-        Ok(retention) => retention,
-        Err(reason) => {
-            write_early_refusal(
-                json!({
-                    "schema": "harmonia.run_profile.v1", "ok": false, "changed": false,
-                    "mutation": mode.is_software_apply(), "mode": "refused",
-                    "profile_id": serde_json::Value::Null, "identity": serde_json::Value::Null,
-                    "identity_source": "certificate", "first_missing_signal": reason,
-                }),
-                &reason,
-                "update-config-refusal-receipt-failed",
-                false,
-            )?;
-            return Err(reason);
-        }
-    };
     let certificate_path = device_profile_certificate_path();
     let (profile, profile_path) = match resolve_certificate_profile() {
         Ok(resolved) => resolved,
@@ -647,33 +602,13 @@ pub(crate) fn update_from_certificate(
         PathBuf::from("/var/lib/harmonia/receipts").join(format!("{}-update-latest", profile.id))
     });
     let module_root = default_module_root(&profile_path);
-    let applied = mode.is_software_apply();
-    let refusal_stem = crate::atoms::attest::convergence_receipts::latest_receipt_stem(
-        &requested_receipt_dir,
-        "update",
-    );
-    let refusal_has_parent = requested_receipt_dir
-        .parent()
-        .is_some_and(|parent| !parent.as_os_str().is_empty());
     let result = crate::atoms::r#do::transaction::rolling_update_from_certificate_with_context(
         &profile,
         &module_root,
         &receipt_dir,
         mode,
         context,
-        receipt_retention,
     );
-    if applied && refusal_has_parent && result.is_ok() {
-        if let Some(stem) = refusal_stem {
-            if let Err(error) = crate::atoms::attest::convergence_receipts::clear_fixed_refusal_after_green(
-                &requested_receipt_dir,
-                &receipt_dir,
-                &stem,
-            ) {
-                eprintln!("receipt-refusal-clear-warning: {error}");
-            }
-        }
-    }
     result
 }
 
@@ -682,7 +617,6 @@ pub(crate) fn homeconsole_update(
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
-    receipt_retention: usize,
 ) -> Result<(), String> {
     if profile.id != "homeconsole" || profile.identity != "homeconsole" {
         let reason = format!(
@@ -706,7 +640,6 @@ pub(crate) fn homeconsole_update(
         mode,
         None,
         suite_debt,
-        receipt_retention,
         homeconsole_update_lock_path(),
         materialize_homeconsole_receipt_dir,
         try_acquire_homeconsole_update_lock,
@@ -739,7 +672,6 @@ pub(crate) fn homeserver_update(
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
-    receipt_retention: usize,
 ) -> Result<(), String> {
     if profile.id != "homeserver" || profile.identity != "homeserver" {
         let reason = format!(
@@ -763,7 +695,6 @@ pub(crate) fn homeserver_update(
         mode,
         None,
         suite_debt,
-        receipt_retention,
         homeserver_update_lock_path(),
         materialize_homeserver_receipt_dir,
         try_acquire_homeserver_update_lock,
@@ -779,7 +710,6 @@ pub(crate) fn tv_update(
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
-    receipt_retention: usize,
 ) -> Result<(), String> {
     if !is_tv_update_profile(profile) {
         let reason = format!(
@@ -803,7 +733,6 @@ pub(crate) fn tv_update(
         mode,
         None,
         suite_debt,
-        receipt_retention,
         tv_update_lock_path(),
         materialize_tv_receipt_dir,
         try_acquire_tv_update_lock,

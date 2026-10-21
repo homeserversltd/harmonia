@@ -70,7 +70,10 @@ pub(crate) fn collect_exhaustion_receipts(receipt_dir: &Path) -> Result<Vec<Valu
                         path.display()
                     )
                 })?;
-                receipts.push(read_exhaustion_receipt(parent)?);
+                let Some(value) = crate::atoms::attest::convergence_receipts::read_regular_json(&path)? else { continue; };
+                if crate::receipts::is_current_run_receipt(&value) {
+                    receipts.push(read_exhaustion_receipt(parent)?);
+                }
             }
         }
     }
