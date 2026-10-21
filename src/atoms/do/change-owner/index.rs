@@ -177,7 +177,7 @@ pub(crate) fn reconcile(
                 drift: Drift::Current,
                 message: format!("path={} metadata-failure={evidence}", plan.path.display()),
             };
-            crate::atoms::attest::attest(receipt_log, &receipt, &[])?;
+            crate::atoms::attest::attest(receipt_log, &receipt, &[], changed_value.as_bool().unwrap_or(false))?;
             return Ok(json!({
                 "atom":"change-owner", "ok":false,
                 "observed_state":observed_state,
@@ -245,7 +245,7 @@ pub(crate) fn reconcile(
             diff_decision, movement, changed, final_uid, final_gid, blocker
         ),
     };
-    crate::atoms::attest::attest(receipt_log, &receipt, &[])?;
+    crate::atoms::attest::attest(receipt_log, &receipt, &[], changed.unwrap_or(false))?;
     Ok(json!({
         "atom":"change-owner", "ok":ok, "changed":changed,
         "observed_state":observed_state,

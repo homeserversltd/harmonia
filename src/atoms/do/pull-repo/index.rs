@@ -1549,8 +1549,7 @@ pub(crate) fn attest_source(log: &std::path::Path, value: &SourceOutcome) -> Res
             },
             message: format!("authoritative receipt=pull-repo.json; changed={}", value.changed),
         },
-        &[],
-    )
+        &[], value.changed)
 }
 
 }

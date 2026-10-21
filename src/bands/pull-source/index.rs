@@ -1944,7 +1944,7 @@ pub(crate) fn execute_manifest_modules(
     changed: &mut bool,
     ok: &mut bool,
     first_missing_signal: &mut String,
-    events: &mut File,
+    events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     for module_id in &profile.modules {
         if disabled_modules.contains(module_id) || halted.contains(module_id) {
@@ -2157,7 +2157,7 @@ pub(crate) fn execute_routine_child(
                         &receipt_dir.join(format!("{name}.json")),
                         &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":outcome.ok,"changed":outcome.changed,"skipped":!apply,"promotion":outcome.receipt.promotion}),
                     )?;
-                    crate::pull_repo::attest_source(&receipt_dir.join("pull-repo.attest.jsonl"), &outcome)?;
+                    crate::pull_repo::attest_source(&receipt_dir.join("pull-repo"), &outcome)?;
                     return Ok((result, outputs));
                 }
                 let resolution = resolve_source(
@@ -2246,7 +2246,7 @@ pub(crate) fn execute_routine_child(
                 &receipt_dir.join(format!("{name}.json")),
                 &serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":o.ok,"changed":o.changed,"skipped":!apply,"promotion":o.receipt.promotion}),
             )?;
-            crate::pull_repo::attest_source(&receipt_dir.join("pull-repo.attest.jsonl"), &o)?;
+            crate::pull_repo::attest_source(&receipt_dir.join("pull-repo"), &o)?;
             Ok((result, out))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),

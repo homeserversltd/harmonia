@@ -1335,60 +1335,9 @@ fn lock_and_remove_ledger(root: &Path, ledger: &Path) -> Result<bool, String> {
 }
 
 fn prune_receipt_ledgers(
-    root: &Path,
-    current_ledger: Option<&Path>,
-    active_profiles: &std::collections::BTreeSet<String>,
-    report: &mut ReceiptPruneReport,
-) -> Result<bool, String> {
-    let current_name = current_ledger.filter(|path| direct_root_child(root, path)).and_then(|path| path.file_name()).and_then(|name| name.to_str()).map(str::to_owned);
-    let mut changed = false;
-    let entries = std::fs::read_dir(root).map_err(|error| format!("receipt-root-read-failed {}: {error}", root.display()))?;
-    let mut names = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("receipt-root-entry-read-failed: {error}"))?;
-        if let Some(name) = entry.file_name().to_str().map(str::to_owned) { names.push(name); }
-    }
-    names.sort();
-    for name in &names {
-        if !name.ends_with(".jsonl") || current_name.as_deref() == Some(name.as_str()) { continue; }
-        let profile = name.strip_suffix("-ledger.jsonl");
-        if profile.is_some_and(|profile| active_profiles.contains(profile)) || active_profiles.contains("*") { continue; }
-        let path = root.join(name);
-        match lock_and_remove_ledger(root, &path) {
-            Ok(true) => { report.deleted_files += 1; changed = true; }
-            Ok(false) => report.warnings.push(format!("receipt-ledger-active-preserved {name}")),
-            Err(error) => report.warnings.push(error),
-        }
-    }
-    for name in names {
-        let Some(ledger_name) = name.strip_prefix('.').and_then(|name| name.strip_suffix(".lock")) else { continue };
-        if !ledger_name.ends_with(".jsonl") || current_name.as_deref() == Some(ledger_name) { continue; }
-        let profile = ledger_name.strip_suffix("-ledger.jsonl");
-        if profile.is_some_and(|profile| active_profiles.contains(profile)) || active_profiles.contains("*") { continue; }
-        let ledger = root.join(ledger_name);
-        match std::fs::symlink_metadata(&ledger) {
-            Ok(_) => continue,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                report.warnings.push(format!("receipt-ledger-observe-failed {}: {error}", ledger.display()));
-                continue;
-            }
-        }
-        let lock_path = root.join(&name);
-        match lock_and_remove_ledger(root, &ledger) {
-            Ok(true) => {
-                match std::fs::remove_file(&lock_path) {
-                    Ok(()) => { report.deleted_files += 1; changed = true; }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => report.warnings.push(format!("receipt-ledger-lock-remove-failed {}: {error}", lock_path.display())),
-                }
-            }
-            Ok(false) => report.warnings.push(format!("receipt-ledger-lock-active-preserved {name}")),
-            Err(error) => report.warnings.push(error),
-        }
-    }
-    Ok(changed)
-}
+    _root: &Path, _current_ledger: Option<&Path>, _active_profiles: &std::collections::BTreeSet<String>,
+    _report: &mut ReceiptPruneReport,
+) -> Result<bool, String> { Ok(false) }
 
 fn unlink_obsolete_latest_aliases(
     root: &Path,
@@ -1774,7 +1723,7 @@ pub(crate) fn write_convergence_skipped_receipt(
             "suite_ok": true,
         }),
     )?;
-    let mut events = crate::atoms::attest::create_receipt_file(&receipt_dir.join("events.jsonl"))?;
+    let mut events = crate::receipts::EventSink;
     event(
         &mut events,
         "convergence-skipped",

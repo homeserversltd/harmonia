@@ -27,6 +27,5 @@ pub(crate) fn attest(log: &Path, ok: bool, changed: bool, message: &str) -> Resu
             },
             message: format!("changed={changed}; {message}"),
         },
-        &[],
-    )
+        &[], changed)
 }

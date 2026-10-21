@@ -18,7 +18,7 @@ pub(crate) fn report_failure(
     };
     let first_missing_signal = format!("first_missing_signal=aur-{operation}-failed:{error}");
     crate::atoms::attest::attest(
-        &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+        &receipt_dir.join(format!("{receipt_name}")),
         &crate::atoms::Receipt {
             atom: "ratchet-aur-package".into(),
             ok: false,
@@ -30,6 +30,5 @@ pub(crate) fn report_failure(
                 "operation={operation} package={package} observed={observed} desired={desired} diff=unavailable:failed-observation movement=not-attempted {first_missing_signal}"
             ),
         },
-        &[],
-    )
+        &[], false)
 }

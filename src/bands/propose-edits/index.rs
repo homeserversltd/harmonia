@@ -511,17 +511,14 @@ fn persist_feed_locked(
         &records,
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
     )?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    crate::atoms::attest::convergence_receipts::remove_exact_root_file(
-        parent,
-        "proposals.attest.jsonl",
-    )?;
+    crate::ledger::sync_proposals(path, feed)?;
+    if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,0,None,None,None,Some(writes as u64))?; }
     Ok(writes)
 }
 
 pub(crate) fn prune_stale_interactables(
     profile: &Profile,
-    events: &mut File,
+    events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
         .map(PathBuf::from)
@@ -532,7 +529,7 @@ pub(crate) fn prune_stale_interactables(
 pub(crate) fn prune_stale_interactables_at_path(
     path: &Path,
     profile: &Profile,
-    events: &mut File,
+    events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     let mut feed = interactables::load_feed_raw(path)?;
     let active_modules = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
@@ -582,7 +579,7 @@ pub(crate) fn prune_stale_interactables_at_path(
         },
     )?;
     for receipt in removed {
-        crate::atoms::attest::append_jsonl_to(events, &receipt)?;
+        crate::deeds::record("withdraw-proposal", receipt["id"].as_str().unwrap_or("none"),true,true,0,None,receipt["module_id"].as_str(),None,None)?;
     }
     Ok(())
 }
@@ -1098,7 +1095,7 @@ pub(crate) fn execute_manifest_modules(
     changed: &mut bool,
     ok: &mut bool,
     first_missing_signal: &mut String,
-    events: &mut File,
+    events: &mut crate::receipts::EventSink,
     active_lane: Option<&str>,
 ) -> Result<(), String> {
     for module_id in &profile.modules {

@@ -52,6 +52,5 @@ pub(crate) fn report(
                 "first_missing_signal": first_missing,
             }).to_string(),
         },
-        &[],
-    )
+        &[], receipt.get("changed").and_then(serde_json::Value::as_bool).unwrap_or(false))
 }

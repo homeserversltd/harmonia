@@ -14,7 +14,7 @@ pub(crate) fn receipt(
         &json!({"schema":"harmonia.venv.converge.v1","ok":true,"apply":apply,"changed":changed,"venv":request.venv,"source_root":request.source_root,"dependency_files":observation.dependency_files,"dependency_sha256":observation.dependency_sha256,"previous_dependency_sha256":observation.previous_dependency_sha256,"diff_decision":if observation.different(){"different"}else{"empty"},"movement":movement,"first_missing_signal":"none"}),
     )?;
     atoms::attest::attest(
-        &request.receipt_dir.join("harmonia-atoms.log"),
+        &request.receipt_dir.join("harmonia"),
         &atoms::Receipt {
             atom: "build-venv".into(),
             ok: true,
@@ -28,6 +28,5 @@ pub(crate) fn receipt(
                     .unwrap_or("null")
             ),
         },
-        &[],
-    )
+        &[], changed)
 }

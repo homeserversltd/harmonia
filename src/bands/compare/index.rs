@@ -184,7 +184,7 @@ pub(crate) fn execute_manifest_modules(
     changed: &mut bool,
     ok: &mut bool,
     first_missing_signal: &mut String,
-    events: &mut File,
+    events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     let door_url = crate::atoms::ask::beam::door_url();
     let mut beam = match door_url.as_deref() {

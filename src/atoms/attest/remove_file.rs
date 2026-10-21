@@ -24,7 +24,7 @@ pub(crate) fn write_existing(
     receipt: Receipt,
 ) -> Result<(), String> {
     crate::atoms::attest::write_json_atomic(receipt_path, value)?;
-    crate::atoms::attest::attest(atom_log, &receipt, &[])
+    crate::atoms::attest::attest(atom_log, &receipt, &[], value.get("changed").and_then(Value::as_bool).unwrap_or(false))
 }
 
 pub(crate) fn attest(
@@ -36,13 +36,12 @@ pub(crate) fn attest(
     let value = serde_json::json!({"schema":"harmonia.fs.remove_file.v1","ok":outcome.ok,"observation":observation.projection,"outcome":outcome.projection});
     crate::atoms::attest::write_json_atomic(&receipt_dir.join(file_name), &value)?;
     crate::atoms::attest::attest(
-        &receipt_dir.join("harmonia-atoms.log"),
+        &receipt_dir.join("harmonia"),
         &Receipt {
             atom: "remove-file".into(),
             ok: outcome.ok,
             drift: crate::atoms::Drift::Current,
             message: outcome.message.clone(),
         },
-        &[],
-    )
+        &[], outcome.projection.get("changed").and_then(Value::as_bool).unwrap_or(false))
 }

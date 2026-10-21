@@ -456,14 +456,7 @@ fn cleanup_receipt_state_directories(state_root: &Path, report: &mut crate::atom
             Err(error) => report.warnings.push(error),
         }
     }
-    match crate::atoms::attest::convergence_receipts::remove_exact_root_file(state_root, "proposals.attest.jsonl") {
-        Ok(true) => {
-            report.deletion_attempts += 1;
-            report.deleted_files += 1;
-        }
-        Ok(false) => {}
-        Err(error) => report.warnings.push(error),
-    }
+    // Legacy stream cleanup belongs exclusively to the one-time migration.
 }
 
 pub(crate) fn rolling_update_run(
@@ -560,12 +553,11 @@ pub(crate) fn rolling_update_run(
         &effective_receipt_dir.join(".harmonia-in-flight.json"),
         &in_flight_marker,
     )?;
-    let current_ledger = crate::receipts::profile_ledger_path(receipt_dir, profile);
     let mut start_prune_report = crate::atoms::attest::convergence_receipts::prune_receipt_root_locked(
         receipt_dir,
         receipt_retention,
         Some(&effective_receipt_dir),
-        Some(&current_ledger),
+        None,
     );
     if start_prune_report.pruning_confined {
         if let Some(state_root) = receipt_parent.parent().filter(|parent| !parent.as_os_str().is_empty()) {
@@ -1180,7 +1172,7 @@ pub(crate) fn rolling_update_run(
                     stem,
                     receipt_retention,
                     &effective_receipt_dir,
-                    &current_ledger,
+                    Path::new(crate::ledger::DATABASE),
                 );
                 end_report.deletion_attempts += report.deletion_attempts;
                 end_report.deleted_directories += report.deleted_directories;
@@ -1336,18 +1328,7 @@ fn write_transaction_failure_run_receipt(
         run["error"] = serde_json::Value::String(error_text.to_string());
         write_json(&receipt_dir.join("run.json"), &run)?;
     }
-    crate::atoms::attest::append_jsonl(
-        &receipt_dir.join("events.jsonl"),
-        &serde_json::json!({
-            "event": "transaction-failed",
-            "ok": false,
-            "first_missing_signal": signal,
-            "changed": changed,
-            "operation_count": operation_count,
-            "message": error.unwrap_or(fallback_signal),
-            "error": error.unwrap_or(fallback_signal),
-        }),
-    )?;
+    crate::deeds::record("transaction",&profile.id,false,changed,run_started.elapsed().as_millis(),None,None,Some("transaction-failed"),None)?;
     println!("schema=harmonia.run_profile.v1");
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
     crate::bands::report_home::emit_transaction_failure(profile, run_started, failures, Some(&signal));

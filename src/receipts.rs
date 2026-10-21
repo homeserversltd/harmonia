@@ -1,9 +1,9 @@
 use crate::*;
 use serde_json::json;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader};
+use std::collections::BTreeMap;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -73,10 +73,6 @@ pub(crate) fn receipt_root_for(receipt_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| receipt_dir.to_path_buf())
 }
 
-pub(crate) fn profile_ledger_path(receipt_dir: &Path, profile: &Profile) -> PathBuf {
-    receipt_root_for(receipt_dir).join(format!("{}-ledger.jsonl", profile.id))
-}
-
 pub(crate) struct ProfileLedgerEntry<'a> {
     pub module_id: &'a str,
     pub ok: bool,
@@ -87,411 +83,26 @@ pub(crate) struct ProfileLedgerEntry<'a> {
     pub module_version: Option<&'a str>,
 }
 
-fn lock_profile_ledger(path: &Path) -> Result<File, String> {
-    #[cfg(unix)]
-    use std::os::fd::AsRawFd;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("profile-ledger-name-invalid {}", path.display()))?;
-    let lock_path = parent.join(format!(".{name}.lock"));
-    let mut options = OpenOptions::new();
-    options.create(true).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let lock = options.open(&lock_path).map_err(|error| {
-        format!(
-            "profile-ledger-lock-open-failed {}: {error}",
-            lock_path.display()
-        )
-    })?;
-    #[cfg(unix)]
-    {
-        let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
-        if result != 0 {
-            return Err(format!(
-                "profile-ledger-lock-failed {}: {}",
-                lock_path.display(),
-                io::Error::last_os_error()
-            ));
-        }
-    }
-    Ok(lock)
-}
-
-fn ledger_run_key(value: &serde_json::Value, index: usize) -> String {
-    value
-        .get("run_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("legacy-row-{index}"))
-}
-
-struct ProfileLedgerRead {
-    runs: VecDeque<(String, Vec<serde_json::Value>)>,
-    max_sequence: u64,
-    seen_run_ids: BTreeSet<String>,
-    unparsable_lines: usize,
-    read_warnings: Vec<String>,
-}
-
-fn read_profile_ledger_runs(
-    path: &Path,
-    retention: usize,
-    selected_run_ids: Option<&BTreeSet<String>>,
-) -> Result<ProfileLedgerRead, String> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => Some(metadata),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(format!("profile-ledger-read-failed {}: {error}", path.display())),
-    };
-    let Some(metadata) = metadata else {
-        return Ok(ProfileLedgerRead {
-            runs: VecDeque::new(),
-            max_sequence: 0,
-            seen_run_ids: BTreeSet::new(),
-            unparsable_lines: 0,
-            read_warnings: Vec::new(),
-        });
-    };
-    if !metadata.file_type().is_file() {
-        return Err(format!("profile-ledger-collision {}", path.display()));
-    }
-    #[cfg(unix)]
-    let opened = {
-        use std::os::unix::fs::OpenOptionsExt;
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)
-    };
-    #[cfg(not(unix))]
-    let opened = File::open(path);
-    #[cfg(unix)]
-    let metadata_matches = {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let expected_owner = (unsafe { libc::geteuid() }, unsafe { libc::getegid() });
-        (metadata.uid(), metadata.gid()) == expected_owner
-            && metadata.permissions().mode() & 0o7777 == 0o644
-    };
-    #[cfg(not(unix))]
-    let metadata_matches = true;
-    let file = match opened {
-        Ok(file) => file,
-        Err(error)
-            if error.kind() == io::ErrorKind::PermissionDenied && !metadata_matches =>
-        {
-            return Ok(ProfileLedgerRead {
-                runs: VecDeque::new(),
-                max_sequence: 0,
-                seen_run_ids: BTreeSet::new(),
-                unparsable_lines: 0,
-                read_warnings: vec!["profile-ledger-unreadable-metadata-mismatch".to_string()],
-            });
-        }
-        Err(error) => {
-            return Err(format!(
-                "profile-ledger-read-failed {}: {error}",
-                path.display()
-            ))
-        }
-    };
-    let mut reader = BufReader::new(file);
-    let mut line = Vec::new();
-    let mut line_number = 0usize;
-    let mut runs = VecDeque::new();
-    let mut previous_key: Option<String> = None;
-    let mut max_sequence = 0u64;
-    let mut seen_run_ids = BTreeSet::new();
-    let mut unparsable_lines = 0usize;
-    loop {
-        line.clear();
-        if reader
-            .read_until(b'\n', &mut line)
-            .map_err(|error| format!("profile-ledger-read-failed {}: {error}", path.display()))?
-            == 0
-        {
-            break;
-        }
-        line_number += 1;
-        if line.last() == Some(&b'\n') {
-            line.pop();
-        }
-        if line.is_empty() {
-            continue;
-        }
-        let value = match serde_json::from_slice::<serde_json::Value>(&line) {
-            Ok(value) => value,
-            Err(_) => {
-                unparsable_lines += 1;
-                continue;
-            }
-        };
-        let key = ledger_run_key(&value, line_number - 1);
-        seen_run_ids.insert(key.clone());
-        if let Some(sequence) = value.get("sequence").and_then(serde_json::Value::as_u64) {
-            max_sequence = max_sequence.max(sequence);
-        }
-        if previous_key.as_deref() != Some(key.as_str()) {
-            previous_key = Some(key.clone());
-            let retain_run = selected_run_ids
-                .map(|selected| selected.contains(&key))
-                .unwrap_or(retention > 0);
-            if retain_run {
-                runs.push_back((key.clone(), Vec::new()));
-                while selected_run_ids.is_none() && runs.len() > retention {
-                    runs.pop_front();
-                }
-            }
-        }
-        let retain_run = selected_run_ids
-            .map(|selected| selected.contains(&key))
-            .unwrap_or(retention > 0);
-        if retain_run {
-            if let Some((existing_key, rows)) = runs.back_mut() {
-                if existing_key == &key {
-                    rows.push(value);
-                }
-            }
-        }
-    }
-    Ok(ProfileLedgerRead {
-        runs,
-        max_sequence,
-        seen_run_ids,
-        unparsable_lines,
-        read_warnings: Vec::new(),
-    })
-}
-
-fn serialize_profile_ledger_runs(
-    runs: VecDeque<(String, Vec<serde_json::Value>)>,
-) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    for (_, run) in runs {
-        for value in run {
-            serde_json::to_writer(&mut bytes, &value)
-                .map_err(|error| format!("profile-ledger-serialize-failed: {error}"))?;
-            bytes.push(b'\n');
-        }
-    }
-    Ok(bytes)
-}
-
-fn receipt_family_stem(receipt_dir: &Path, run_id: &str) -> Option<String> {
-    let name = receipt_dir.file_name()?.to_str()?;
-    let suffix = format!("-{run_id}");
-    let stem = name.strip_suffix(&suffix)?;
-    (!stem.is_empty()
-        && crate::atoms::attest::convergence_receipts::parse_family_run(name, stem).is_some())
-    .then(|| stem.to_owned())
-}
-
-
-fn profile_ledger_row(
-    profile: &Profile,
-    run_id: &str,
-    sequence: u64,
-    stamped_at_unix_ms: u128,
-    entry: &ProfileLedgerEntry<'_>,
-) -> serde_json::Value {
-    json!({
-        "schema": "harmonia.profile_ledger.entry.v1",
-        "ledger": "profile-module-ledger",
-        "sequence": sequence,
-        "stamped_at_unix_ms": stamped_at_unix_ms,
-        "run_id": run_id,
-        "profile_id": profile.id,
-        "identity": profile.identity,
-        "module_id": entry.module_id,
-        "ok": entry.ok,
-        "changed": entry.changed,
-        "operation_count": entry.operation_count,
-        "first_missing_signal": entry.first_missing_signal,
-        "receipt_dir": entry.receipt_dir,
-        "module_version": entry.module_version,
-    })
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ProfileLedgerWriteReport {
     pub(crate) unparsable_lines: usize,
     pub(crate) read_warnings: Vec<String>,
 }
 
-fn fresh_profile_ledger_rows(
-    profile: &Profile,
-    run_id: &str,
-    entries: &[ProfileLedgerEntry<'_>],
-    max_sequence: &mut u64,
-) -> Result<Vec<serde_json::Value>, String> {
-    let stamped_at_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    entries
-        .iter()
-        .map(|entry| {
-            *max_sequence = max_sequence
-                .checked_add(1)
-                .ok_or_else(|| "profile-ledger-sequence-exhausted".to_string())?;
-            Ok(profile_ledger_row(
-                profile,
-                run_id,
-                *max_sequence,
-                stamped_at_unix_ms,
-                entry,
-            ))
-        })
-        .collect()
-}
-
-fn write_direct_profile_ledger_run(
-    path: &Path,
-    profile: &Profile,
-    run_id: &str,
-    entries: &[ProfileLedgerEntry<'_>],
-    retention: usize,
-) -> Result<ProfileLedgerWriteReport, String> {
-    let mut ledger = read_profile_ledger_runs(path, retention, None)?;
-    if !entries.is_empty() && retention > 0 && !ledger.seen_run_ids.contains(run_id) {
-        let current = fresh_profile_ledger_rows(
-            profile,
-            run_id,
-            entries,
-            &mut ledger.max_sequence,
-        )?;
-        ledger.runs.push_back((run_id.to_owned(), current));
-        while ledger.runs.len() > retention {
-            ledger.runs.pop_front();
-        }
-    }
-    let bytes = serialize_profile_ledger_runs(ledger.runs)?;
-    crate::atoms::attest::write_profile_ledger_bytes_atomic(path, &bytes)?;
-    Ok(ProfileLedgerWriteReport {
-        unparsable_lines: ledger.unparsable_lines,
-        read_warnings: ledger.read_warnings,
-    })
-}
-
-fn write_family_profile_ledger_run(
-    path: &Path,
-    latest_path: &Path,
-    profile: &Profile,
-    run_id: &str,
-    entries: &[ProfileLedgerEntry<'_>],
-    retention: usize,
-    stem: &str,
-) -> Result<ProfileLedgerWriteReport, String> {
-    let (mut ordered_run_ids, mut selection_warnings) =
-        crate::atoms::attest::convergence_receipts::retained_receipt_run_ids(
-            latest_path,
-            stem,
-            retention,
-            Some(run_id),
-        )?;
-    if !ordered_run_ids.iter().any(|candidate| candidate == run_id) {
-        selection_warnings.push(format!("profile-ledger-current-run-unobserved {run_id}"));
-        ordered_run_ids.push(run_id.to_owned());
-    }
-    let selected_run_ids = ordered_run_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let mut ledger = read_profile_ledger_runs(path, retention, Some(&selected_run_ids))?;
-    let mut ledger_rows = BTreeMap::<String, Vec<serde_json::Value>>::new();
-    for (existing_run_id, rows) in ledger.runs.drain(..) {
-        ledger_rows.entry(existing_run_id).or_default().extend(rows);
-    }
-    if retention > 0 && !entries.is_empty() && !ledger.seen_run_ids.contains(run_id) {
-        let current = fresh_profile_ledger_rows(
-            profile,
-            run_id,
-            entries,
-            &mut ledger.max_sequence,
-        )?;
-        ledger_rows.insert(run_id.to_owned(), current);
-    }
-    let retained_runs = ordered_run_ids
-        .into_iter()
-        .filter_map(|retained_run_id| {
-            ledger_rows
-                .remove(&retained_run_id)
-                .map(|rows| (retained_run_id, rows))
-        })
-        .collect();
-    let bytes = serialize_profile_ledger_runs(retained_runs)?;
-    crate::atoms::attest::write_profile_ledger_bytes_atomic(path, &bytes)?;
-    Ok(ProfileLedgerWriteReport {
-        unparsable_lines: ledger.unparsable_lines,
-        read_warnings: ledger.read_warnings.into_iter().chain(selection_warnings).collect(),
-    })
-}
-
-/// Keep a bounded atomic snapshot of recent profile-ledger runs.
 pub(crate) fn write_profile_ledger_run(
-    receipt_dir: &Path,
-    latest_path: Option<&Path>,
-    profile: &Profile,
-    run_id: &str,
-    entries: &[ProfileLedgerEntry<'_>],
-    retention: usize,
+    _receipt_dir: &Path, _latest_path: Option<&Path>, profile: &Profile,
+    run_id: &str, entries: &[ProfileLedgerEntry<'_>], _retention: usize,
 ) -> Result<ProfileLedgerWriteReport, String> {
-    let path = profile_ledger_path(receipt_dir, profile);
-    let _ledger_lock = lock_profile_ledger(&path)?;
-    if let Some(stem) = receipt_family_stem(receipt_dir, run_id) {
-        return write_family_profile_ledger_run(
-            &path,
-            latest_path.unwrap_or(receipt_dir),
-            profile,
-            run_id,
-            entries,
-            retention,
-            &stem,
-        );
-    }
-    write_direct_profile_ledger_run(&path, profile, run_id, entries, retention)
+    crate::ledger::record(profile, run_id, entries)?;
+    Ok(ProfileLedgerWriteReport::default())
 }
 
-/// After latest promotion/pruning, drop ledger rows whose receipt directories
-/// are no longer retained, using the same run-set selector as pruning.
 pub(crate) fn reconcile_profile_ledger_family(
-    effective_receipt_dir: &Path,
-    latest_path: &Path,
-    profile: &Profile,
-    retention: usize,
-    stem: &str,
+    _effective_receipt_dir: &Path, _latest_path: &Path, _profile: &Profile,
+    _retention: usize, _stem: &str,
 ) -> Result<Vec<String>, String> {
-    let path = profile_ledger_path(effective_receipt_dir, profile);
-    let _ledger_lock = lock_profile_ledger(&path)?;
-    let (ordered_run_ids, mut warnings) =
-        crate::atoms::attest::convergence_receipts::retained_receipt_run_ids(
-            latest_path,
-            stem,
-            retention,
-            None,
-        )?;
-    let selected_run_ids = ordered_run_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let ledger = read_profile_ledger_runs(&path, retention, Some(&selected_run_ids))?;
-    let mut rows_by_run = BTreeMap::<String, Vec<serde_json::Value>>::new();
-    for (run_id, rows) in ledger.runs {
-        rows_by_run.entry(run_id).or_default().extend(rows);
-    }
-    let retained_runs = ordered_run_ids
-        .into_iter()
-        .filter_map(|run_id| rows_by_run.remove(&run_id).map(|rows| (run_id, rows)))
-        .collect();
-    let bytes = serialize_profile_ledger_runs(retained_runs)?;
-    warnings.extend(ledger.read_warnings);
-    if ledger.unparsable_lines > 0 {
-        warnings.push(format!("profile-ledger-unparsable-lines={}", ledger.unparsable_lines));
-    }
-    crate::atoms::attest::write_profile_ledger_bytes_atomic(&path, &bytes)?;
-    Ok(warnings)
+    // Ledger retention is performed by key in the same transaction as a change.
+    Ok(Vec::new())
 }
 
 fn update_run_receipt_projection(
@@ -555,15 +166,10 @@ pub(crate) fn record_receipt_cleanup(
         "prune_warnings": report.warnings,
     });
     update_run_receipt_projection(receipt_dir, "receipt_cleanup", cleanup.clone())?;
-    crate::atoms::attest::append_jsonl(
-        &receipt_dir.join("events.jsonl"),
-        &json!({
-            "event": "receipt-cleanup",
-            "ok": report.warnings.is_empty(),
-            "changed": report.deleted_directories > 0 || report.deleted_files > 0,
-            "receipt_cleanup": cleanup,
-        }),
-    )
+    crate::deeds::record("receipt-cleanup", "harmonia-receipts", report.warnings.is_empty(),
+        report.deleted_directories > 0 || report.deleted_files > 0, 0,
+        None,None, if report.warnings.is_empty() {None} else {Some("receipt-cleanup-failed")},
+        Some((report.deleted_directories+report.deleted_files) as u64))
 }
 
 pub(crate) fn write_tool_receipt(
@@ -593,152 +199,24 @@ pub(crate) fn write_tool_receipt(
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ConfigSurfaceReceipt { config_state: String, score: f64, reference_id: String, id: String, target: String }
 
-pub(crate) fn clear_config_state_receipts(receipt_dir: &Path) -> Result<(), String> {
+thread_local! {
+    // Single-invocation evidence, consumed by the reply's run projection.
+    static CONFIG_WITNESSES: RefCell<BTreeMap<(String,String,String,String),serde_json::Value>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+pub(crate) fn clear_config_state_receipts(_receipt_dir: &Path) -> Result<(), String> {
     crate::bands::propose_edits::reset_config_state_recognitions();
-    clear_config_plane_witness_receipts(receipt_dir)
-}
-
-const CONFIG_PLANE_WITNESS_MAX_DEPTH: usize = 8;
-const CONFIG_PLANE_WITNESS_LOG: &str = "config-plane-witnesses.jsonl";
-
-fn sorted_directory_entries(directory: &Path) -> io::Result<Vec<fs::DirEntry>> {
-    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    Ok(entries)
-}
-
-fn is_direct_directory(path: &Path) -> Result<bool, String> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.file_type().is_dir()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-fn clear_config_plane_witnesses_under(directory: &Path, depth: usize) -> Result<(), String> {
-    if !is_direct_directory(directory)? {
-        return Ok(());
-    }
-    let entries = match sorted_directory_entries(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
-    for entry in entries {
-        let path = entry.path();
-        if entry.file_name().to_str() == Some(CONFIG_PLANE_WITNESS_LOG) {
-            // symlink_metadata and file_type do not follow a log symlink.
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.file_type().is_file() => {
-                    fs::remove_file(path).map_err(|error| error.to_string())?;
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.to_string()),
-            }
-        } else if depth < CONFIG_PLANE_WITNESS_MAX_DEPTH
-            && entry
-                .file_type()
-                .map_err(|error| error.to_string())?
-                .is_dir()
-        {
-            clear_config_plane_witnesses_under(&path, depth + 1)?;
-        }
-    }
+    CONFIG_WITNESSES.with(|state|state.borrow_mut().clear());
     Ok(())
 }
 
-fn clear_config_plane_witness_receipts(receipt_dir: &Path) -> Result<(), String> {
-    if !is_direct_directory(receipt_dir)? {
-        return Ok(());
-    }
-    let modules_dir = receipt_dir.join("modules");
-    if !is_direct_directory(&modules_dir)? {
-        return Ok(());
-    }
-    for module in sorted_directory_entries(&modules_dir).map_err(|error| error.to_string())? {
-        if module
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-        {
-            clear_config_plane_witnesses_under(&module.path(), 0)?;
-        }
-    }
+pub(crate) fn retain_config_witness(witness: &crate::atoms::attest::ConfigPlaneWitness) -> Result<(), String> {
+    let value=serde_json::to_value(witness).map_err(|error|error.to_string())?;
+    CONFIG_WITNESSES.with(|state| {
+        state.borrow_mut().entry((witness.module_id.clone(),witness.path.clone(),value["category"].as_str().unwrap_or_default().to_owned(),value["disposition"].as_str().unwrap_or_default().to_owned()))
+            .or_insert(value);
+    });
     Ok(())
-}
-
-fn collect_config_plane_witnesses_under(
-    directory: &Path,
-    depth: usize,
-    seen: &mut std::collections::BTreeSet<(String, String, String, String)>,
-    typed: &mut Vec<(String, String, String, String, serde_json::Value)>,
-) {
-    if !is_direct_directory(directory).is_ok_and(|is_directory| is_directory) {
-        return;
-    }
-    let witness_log = directory.join(CONFIG_PLANE_WITNESS_LOG);
-    if fs::symlink_metadata(&witness_log)
-        .is_ok_and(|metadata| metadata.file_type().is_file())
-    {
-        if let Ok(contents) = fs::read_to_string(witness_log) {
-            for line in contents.lines() {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                if value.get("schema").and_then(serde_json::Value::as_str)
-                    != Some(crate::atoms::attest::CONFIG_PLANE_WITNESS_SCHEMA)
-                    || serde_json::from_value::<crate::atoms::attest::ConfigPlaneWitness>(
-                        value.clone(),
-                    )
-                    .is_err()
-                {
-                    continue;
-                }
-                let Some(module_id) = value.get("module_id").and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                let Some(path) = value.get("path").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                let Some(category) = value.get("category").and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                let Some(disposition) = value
-                    .get("disposition")
-                    .and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                let key = (
-                    module_id.to_string(),
-                    path.to_string(),
-                    category.to_string(),
-                    disposition.to_string(),
-                );
-                if seen.insert(key.clone()) {
-                    typed.push((key.0, key.1, key.2, key.3, value));
-                }
-            }
-        }
-    }
-
-    if depth >= CONFIG_PLANE_WITNESS_MAX_DEPTH {
-        return;
-    }
-    let Ok(entries) = sorted_directory_entries(directory) else {
-        return;
-    };
-    for entry in entries {
-        if entry
-            .file_type()
-            .is_ok_and(|file_type| file_type.is_dir())
-        {
-            collect_config_plane_witnesses_under(&entry.path(), depth + 1, seen, typed);
-        }
-    }
 }
 
 fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
@@ -775,34 +253,9 @@ fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
             .then_with(|| a.2.to_string().cmp(&b.2.to_string()))
     });
 
-    let mut typed = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let modules_dir = receipt_dir.join("modules");
-    if is_direct_directory(receipt_dir).is_ok_and(|is_directory| is_directory)
-        && is_direct_directory(&modules_dir).is_ok_and(|is_directory| is_directory)
-    {
-        if let Ok(modules) = sorted_directory_entries(&modules_dir) {
-            for module in modules {
-                if module
-                    .file_type()
-                    .is_ok_and(|file_type| file_type.is_dir())
-                {
-                    collect_config_plane_witnesses_under(
-                        &module.path(),
-                        0,
-                        &mut seen,
-                        &mut typed,
-                    );
-                }
-            }
-        }
-    }
-    typed.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-            .then_with(|| a.3.cmp(&b.3))
-    });
+    let typed = CONFIG_WITNESSES.with(|state| std::mem::take(&mut *state.borrow_mut()))
+        .into_iter().map(|((module,path,category,disposition),value)|(module,path,category,disposition,value))
+        .collect::<Vec<_>>();
 
     let typed_targets = typed
         .iter()
@@ -1230,113 +683,13 @@ pub(crate) fn write_run_receipt(
     )
 }
 
-pub(crate) fn event(events: &mut File, event: &str, ok: bool, message: &str) -> Result<(), String> {
-    crate::atoms::attest::append_jsonl_to(
-        events,
-        &json!({"event": event, "ok": ok, "message": message}),
-    )
-}
+pub(crate) struct EventSink;
 
-fn planned_routine_child_args(
-    child: &crate::tools::routine::ProjectedRoutineChild,
-) -> serde_json::Value {
-    use serde_json::{Map, Value};
-
-    let mut planned = Map::new();
-    let copy_fields = |output: &mut Map<String, Value>, fields: &[&str]| {
-        for field in fields {
-            if let Some(value) = child.args.get(*field) {
-                output.insert((*field).to_string(), value.clone());
-            }
-        }
-    };
-    match child.tool.as_str() {
-        "pull-repo" => copy_fields(&mut planned, &["component", "path"]),
-        "fetch-artifact" => copy_fields(
-            &mut planned,
-            &[
-                "component",
-                "release_repo",
-                "artifact_name",
-                "asset_name",
-                "profile_axis",
-                "profile_source",
-            ],
-        ),
-        "check-health" => {
-            if let Some(url) = child.args.get("url").and_then(Value::as_str) {
-                planned.insert(
-                    "url".into(),
-                    Value::String(url.split(['?', '#']).next().unwrap_or(url).to_string()),
-                );
-            }
-        }
-        "files" => {
-            let file_fields = [
-                "path",
-                "operation",
-                "mode",
-                "owner",
-                "group",
-                "uid",
-                "gid",
-                "xattrs",
-                "no_follow",
-                "collision_policy",
-                "rollback_policy",
-            ];
-            let files = child
-                .args
-                .get("files")
-                .and_then(Value::as_array)
-                .map(|files| {
-                    files
-                        .iter()
-                        .map(|file| {
-                            let mut declaration = Map::new();
-                            for field in file_fields {
-                                if let Some(value) = file.get(field) {
-                                    declaration.insert(field.into(), value.clone());
-                                }
-                            }
-                            Value::Object(declaration)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            planned.insert("files".into(), Value::Array(files));
-            let profile_sources = child
-                .args
-                .get("profile_sources")
-                .and_then(Value::as_object)
-                .map(|sources| {
-                    sources
-                        .iter()
-                        .map(|(key, source)| {
-                            let mut descriptor = Map::new();
-                            for field in ["source", "path", "mode"] {
-                                if let Some(value) = source.get(field) {
-                                    descriptor.insert(field.into(), value.clone());
-                                }
-                            }
-                            if let Some(append) = source.get("append").and_then(Value::as_str) {
-                                descriptor.insert("append_present".into(), Value::Bool(!append.is_empty()));
-                                descriptor.insert("append_bytes".into(), Value::from(append.len()));
-                            }
-                            (key.clone(), Value::Object(descriptor))
-                        })
-                        .collect::<Map<String, Value>>()
-                })
-                .unwrap_or_default();
-            planned.insert("profile_sources".into(), Value::Object(profile_sources));
-        }
-        "place-file" => copy_fields(
-            &mut planned,
-            &["path", "mode", "owner", "group", "uid", "gid", "operation"],
-        ),
-        _ => {}
-    }
-    Value::Object(planned)
+pub(crate) fn event(_events: &mut EventSink, event: &str, ok: bool, _message: &str) -> Result<(), String> {
+    // Successful engine, plan and band observations are not changes. Actual
+    // movement is attested by its atom; failed execution names only its signal.
+    if ok { return Ok(()); }
+    crate::deeds::record(event,"harmonia-update",false,false,0,None,None,Some(event),None)
 }
 
 pub(crate) fn write_plan_receipts(
@@ -1358,21 +711,12 @@ pub(crate) fn write_plan_receipts(
     } else {
         None
     };
-    let mut events = Vec::new();
     let mut ok = true;
     let mut first_missing_signal = "none".to_string();
-    crate::atoms::attest::append_jsonl_to(
-        &mut events,
-        &json!({"event":"plan-start","profile":profile.id,"ok":true}),
-    )
-    .map_err(io::Error::other)?;
+
     if profile.modules.is_empty() {
         ok = false;
         first_missing_signal = "profile-modules-empty".to_string();
-        crate::atoms::attest::append_jsonl_to(
-            &mut events,
-            &json!({"event":"profile-modules","ok":false,"message":"profile module spine is empty"}),
-        ).map_err(io::Error::other)?;
     }
     for module in &profile.modules {
         let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, module)
@@ -1414,54 +758,10 @@ pub(crate) fn write_plan_receipts(
                 // initial validation. Revalidate that effective declaration for
                 // plan-run instead of reusing the pre-projection step cache.
                 let steps = validate_ladder(&manifest).map_err(|err| err.first_missing_signal())?;
-                let projected_routines =
-                    crate::tools::routine::project_manifest_routines(&manifest, &steps)?;
+                crate::tools::routine::project_manifest_routines(&manifest, &steps)?;
                 for step in steps {
-                    let skipped_path = if step.tool == "command" && step.permutation == "act" {
-                        crate::tools::routine::command_skip_if_absent(&step.args)?
-                    } else {
-                        None
-                    };
-                    let mut planned = json!({
-                        "event":"step-planned", "module":module,
-                        "step_id":step.step_id, "tool":step.tool,
-                        "permutation":step.permutation, "args":step.args,
-                        "ok":true, "mutation":false,
-                        "status":if skipped_path.is_some() {"skipped"} else {"planned"},
-                        "skipped":skipped_path.is_some()
-                    });
-                    if let Some(path) = skipped_path {
-                        planned["message"] = json!(format!("command-skipped-absent-path {path}"));
-                    }
-                    if extension.is_some() && step.tool == "package" {
-                        let pins = serde_json::to_value(&manifest.package_pins)
-                            .map_err(|error| error.to_string())?;
-                        let exclusion_set: Vec<&String> = manifest.package_pins.keys().collect();
-                        planned["package_pins"] = pins;
-                        planned["exclusion_set"] = json!(exclusion_set);
-                    }
-                    crate::atoms::attest::append_jsonl_to(&mut events, &planned)
-                        .map_err(|error| error.to_string())?;
-                    if let Some(children) = projected_routines.get(&step.step_id) {
-                        for child in children {
-                            crate::atoms::attest::append_jsonl_to(
-                                &mut events,
-                                &json!({
-                                    "event":"step-planned",
-                                    "module":module,
-                                    "parent_step_id":step.step_id,
-                                    "step_id":child.name,
-                                    "tool":child.tool,
-                                    "permutation":child.permutation,
-                                    "args":planned_routine_child_args(child),
-                                    "ok":true,
-                                    "mutation":false,
-                                    "status":"planned",
-                                    "skipped":false
-                                }),
-                            )
-                            .map_err(|error| error.to_string())?;
-                        }
+                    if step.tool == "command" && step.permutation == "act" {
+                        crate::tools::routine::command_skip_if_absent(&step.args)?;
                     }
                 }
                 Ok(())
@@ -1470,28 +770,16 @@ pub(crate) fn write_plan_receipts(
             load_module(&module_dir.join("sidecar.json")).map(|_| ())
         };
         match planned {
-            Ok(_) => {
-                crate::atoms::attest::append_jsonl_to(
-                    &mut events,
-                    &json!({"event":"module-planned","module":module,"ok":true}),
-                )
-                .map_err(io::Error::other)?;
-            }
-            Err(err) => {
+            Ok(_) => {}
+            Err(_err) => {
                 ok = false;
                 if first_missing_signal == "none" {
                     first_missing_signal = format!("module-missing-{module}");
                 }
-                crate::atoms::attest::append_jsonl_to(
-                    &mut events,
-                    &json!({"event":"module-planned","module":module,"ok":false,"message":err}),
-                )
-                .map_err(io::Error::other)?;
             }
         }
     }
-    crate::atoms::attest::write_receipt_bytes_atomic(&receipt_dir.join("events.jsonl"), &events)
-        .map_err(io::Error::other)?;
+
     let mut run = json!({
             "schema": "harmonia.run.v1",
             "ok": ok,

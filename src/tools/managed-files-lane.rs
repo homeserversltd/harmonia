@@ -1099,7 +1099,7 @@ pub(crate) fn managed_files_step_with_authorization(
         message: "managed-files".into(),
         command: None,
     };
-    let attest_log = module_dir.join("managed-files.attest.jsonl");
+    let attest_log = module_dir.join("managed-files");
     for file in hold {
         let path = Path::new(&file.path);
         crate::atoms::ask::backfill_file::validate_target(path)?;
@@ -1132,8 +1132,7 @@ pub(crate) fn managed_files_step_with_authorization(
                             .unwrap_or_default()
                     ),
                 },
-                &[],
-            )?;
+                &[], false)?;
         }
     }
     for file in proposals {
@@ -1260,9 +1259,9 @@ pub(crate) fn managed_files_step_with_authorization(
         };
         if !file_ok || observed.changed || observed.ownership_changed {
             if let Some(witness) = witness {
-                atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness)?;
+                atoms::attest::attest_config_plane(&attest_log, &receipt, &[], &witness, observed.changed || observed.ownership_changed)?;
             } else {
-                atoms::attest::attest(&attest_log, &receipt, &[])?;
+                atoms::attest::attest(&attest_log, &receipt, &[], observed.changed || observed.ownership_changed)?;
             }
         }
     }

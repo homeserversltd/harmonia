@@ -30,13 +30,12 @@ pub(crate) fn attest(
     let value = serde_json::json!({"schema":"harmonia.fs.make_link.v1","ok":outcome.ok,"observation":observation.projection,"outcome":outcome.projection});
     crate::atoms::attest::write_json_atomic(&receipt_dir.join(file_name), &value)?;
     crate::atoms::attest::attest(
-        &receipt_dir.join("harmonia-atoms.log"),
+        &receipt_dir.join("harmonia"),
         &Receipt {
             atom: "make-link".into(),
             ok: outcome.ok,
             drift: crate::atoms::Drift::Current,
             message: outcome.message.clone(),
         },
-        &[],
-    )
+        &[], outcome.projection.get("changed").and_then(Value::as_bool).unwrap_or(false))
 }

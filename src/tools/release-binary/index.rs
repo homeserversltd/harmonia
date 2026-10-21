@@ -551,7 +551,7 @@ pub(crate) fn execute(
         backup: crate::place_file::BackupPolicy::None,
         invocation: Some(invocation),
     })?;
-    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &placed.receipt, &[])?;
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &placed.receipt, &[], placed.movement.changed())?;
 
     let final_observation = stable_installed_observation(path)?;
     if !final_observation.current(&expected_sha256) {

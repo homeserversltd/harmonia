@@ -1644,7 +1644,7 @@ fn write_sweep_receipts(
             evidence.movement
         ),
     };
-    crate::atoms::attest::attest(&receipt_dir.join("harmonia-atoms.log"), &receipt, &[])?;
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &receipt, &[], outcome.changed)?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let base = request.receipt_name.trim_end_matches(".json");
     for (index, entry) in outcome.entries.iter().enumerate() {

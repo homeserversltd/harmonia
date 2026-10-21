@@ -160,9 +160,10 @@ pub(crate) fn execute(
         &outcome,
     )?;
     crate::atoms::attest::set_clock::attest(
-        &receipt_dir.join(format!("{step_id}.attest.jsonl")),
+        &receipt_dir.join(format!("{step_id}")),
         permutation,
         outcome.command.as_ref().expect("set-clock command result"),
+        changed,
     )?;
     Ok(outcome)
 }

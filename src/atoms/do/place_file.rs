@@ -743,7 +743,7 @@ pub(crate) fn write_compatibility_projection_after_attest(
     receipt: &Receipt,
     projection: &serde_json::Value,
 ) -> Result<(), String> {
-    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), receipt, &[])?;
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), receipt, &[], projection.get("truthful_changed").or_else(||projection.get("changed")).and_then(serde_json::Value::as_bool).unwrap_or(false))?;
     write_compatibility_projection(path, projection)
 }
 
@@ -1209,7 +1209,7 @@ pub(crate) fn same_root_directory_sync(
         message: format!("directory-sync diff={diff_decision} movement=none changed=false blocker={blocker}"),
     };
     if !(ok && diff_decision == "empty") {
-        crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
+        crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &receipt, &[], false)?;
     }
     write_compatibility_projection(
         &receipt_dir.join(format!("{step_id}.json")),
@@ -1255,7 +1255,7 @@ fn attest_place_file_failure(receipt_dir: &Path, signal: &str) -> Result<Receipt
         drift: Drift::Current,
         message: signal.to_string(),
     };
-    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &receipt, &[], false)?;
     Ok(receipt)
 }
 
@@ -1622,10 +1622,9 @@ fn converge_files_authorized_with_policy(
             Ok(outcome) => {
                 let receipt = outcome.receipt;
                 crate::atoms::attest::attest(
-                    &receipt_dir.join("atoms.jsonl"),
+                    &receipt_dir.join("harmonia"),
                     &receipt,
-                    &[],
-                )?;
+                    &[], outcome.movement.changed())?;
                 typed_receipts.push(receipt);
                 let changed = outcome.movement.changed();
                 (

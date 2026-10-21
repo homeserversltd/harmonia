@@ -43,6 +43,5 @@ pub(crate) fn attest(
                 result.code,
             ),
         },
-        &[],
-    )
+        &[], result.ok)
 }

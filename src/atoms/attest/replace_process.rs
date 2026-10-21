@@ -27,8 +27,7 @@ pub(crate) fn attest(
                 bytes.len()
             ),
         },
-        &[],
-    )?;
+        &[], true)?;
     Ok(persisted)
 }
 

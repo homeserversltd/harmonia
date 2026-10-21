@@ -39,13 +39,12 @@ pub(crate) fn write_bundle_attest(
     receipt_dir: &Path, name: &str, ok: bool, changed: bool,
 ) -> Result<(), String> {
     atoms::attest::attest(
-        &receipt_dir.join(format!("{name}.attest.jsonl")),
+        &receipt_dir.join(format!("{name}")),
         &Receipt {
             atom: "pull-repo".into(),
             ok,
             drift: if ok { Drift::Current } else { Drift::File { expected_sha256: "successful-acquisition".into(), actual_sha256: None } },
             message: format!("pull-repo receipt={name}; changed={changed}"),
         },
-        &[],
-    )
+        &[], changed)
 }

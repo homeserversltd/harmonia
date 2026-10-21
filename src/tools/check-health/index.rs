@@ -6,7 +6,7 @@ pub(crate) use crate::atoms::health::ProbeRequest;
 pub(crate) fn probe(request: &crate::tools::health::ProbeRequest<'_>) -> crate::CmdResult {
     let result = crate::atoms::ask::check_health::probe(request);
     let _ = crate::atoms::attest::check_health::attest(
-        Path::new("/var/lib/harmonia/receipts/check-health.attest.jsonl"),
+        Path::new("/var/lib/harmonia/receipts/check-health"),
         &result,
     );
     result

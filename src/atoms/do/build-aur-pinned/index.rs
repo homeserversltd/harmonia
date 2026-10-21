@@ -23,7 +23,7 @@ pub(crate) fn check(
     augment_comparison_receipt(&receipt_path, serde_json::json!({"pinned_version": observation.lock.pinned_version, "pinned_pkgbuild_sha": observation.lock.pkgbuild_sha, "available_version": observation.upstream.available_version, "available_pkgbuild_sha": observation.upstream.pkgbuild_sha, "upstream_source": observation.upstream.observed_source}), serde_json::json!({"ratchet_lock_matches_upstream": !newer_available}), DiffDecision::Empty, None, false)?;
     let outcome=OperationOutcome { ok:true, changed:false, skipped:false, message:format!("aur check {package}"), command:None };
     crate::atoms::attest::build_aur_pinned::report(
-        &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+        &receipt_dir.join(format!("{receipt_name}")),
         &receipt_path,
         observation.verdict.as_str(),
         outcome.ok,
@@ -209,7 +209,7 @@ pub(crate) fn build_pinned(
                 false,
             )?;
             crate::atoms::attest::build_aur_pinned::report(
-                &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+                &receipt_dir.join(format!("{receipt_name}")),
                 &receipt_path,
                 "installed-package-probe-failed",
                 outcome.ok,
@@ -261,7 +261,7 @@ pub(crate) fn build_pinned(
             false,
         )?;
         crate::atoms::attest::build_aur_pinned::report(
-            &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+            &receipt_dir.join(format!("{receipt_name}")),
             &receipt_path,
             "behind-pin",
             outcome.ok,
@@ -331,7 +331,7 @@ pub(crate) fn build_pinned(
         outcome.changed,
     )?;
     crate::atoms::attest::build_aur_pinned::report(
-        &receipt_dir.join(format!("{receipt_name}.attest.jsonl")),
+        &receipt_dir.join(format!("{receipt_name}")),
         &receipt_dir.join(format!("{receipt_name}.json")),
         run.observation().verdict.as_str(),
         outcome.ok,

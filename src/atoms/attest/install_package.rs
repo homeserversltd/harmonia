@@ -298,10 +298,9 @@ pub(crate) fn attest_step(
     };
     let message = serde_json::json!({"action":action,"result":result,"comparison":comparison,"ceiling":ceiling,"pin_witness":pin_witness}).to_string();
     atoms::attest::attest(
-        &receipt_dir.join(format!("{name}.attest.jsonl")),
+        &receipt_dir.join(format!("{name}")),
         &atoms::Receipt { atom: "install-package".into(), ok, drift, message },
-        &[],
-    )
+        &[], action != "check" && result.get("changed").and_then(serde_json::Value::as_bool).unwrap_or(false))
 }
 
 pub(crate) fn attest(log: &Path, message: &str, ok: bool) -> Result<(), String> {
@@ -313,6 +312,5 @@ pub(crate) fn attest(log: &Path, message: &str, ok: bool) -> Result<(), String> 
             drift: atoms::Drift::Current,
             message: message.into(),
         },
-        &[],
-    )
+        &[], false)
 }

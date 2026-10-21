@@ -2176,50 +2176,7 @@ fn write_receipt(request: &Request, receipt: &RunReceipt) -> Result<(), String> 
         request.receipt_custody.gid,
         0o644,
     )?;
-    let log = request.receipt_dir.join("harmonia-atoms.log");
-    match fs::symlink_metadata(&log) {
-        Ok(metadata)
-            if metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == request.receipt_custody.uid
-                && metadata.gid() == request.receipt_custody.gid
-                && metadata.nlink() == 1 => {}
-        Ok(_) => return Err("native-receipt-log-not-engine-controlled".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o644)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&log)
-                .map_err(|error| format!("native-receipt-log-create-failed: {error}"))?;
-            if unsafe {
-                libc::fchown(
-                    file.as_raw_fd(),
-                    request.receipt_custody.uid,
-                    request.receipt_custody.gid,
-                )
-            } != 0
-            {
-                drop(file);
-                let _ = fs::remove_file(&log);
-                return Err("native-receipt-log-owner-assignment-failed".into());
-            }
-        }
-        Err(error) => return Err(format!("native-receipt-log-observe-failed: {error}")),
-    }
-    let mut file = OpenOptions::new()
-        .append(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&log)
-        .map_err(|error| format!("native-receipt-log-open-failed: {error}"))?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
-    if metadata.uid() != request.receipt_custody.uid
-        || metadata.gid() != request.receipt_custody.gid
-        || metadata.nlink() != 1
-    {
-        return Err("native-receipt-log-not-engine-controlled".into());
-    }
+    let log = Path::new("harmonia");
     crate::atoms::attest::attest(
         &log,
         &crate::atoms::Receipt {
@@ -2238,10 +2195,7 @@ fn write_receipt(request: &Request, receipt: &RunReceipt) -> Result<(), String> 
                 receipt.status, receipt.changed, receipt.stage
             ),
         },
-        &[],
-    )?;
-    file.flush()
-        .map_err(|error| format!("native-receipt-log-flush-failed: {error}"))?;
+        &[], receipt.changed)?;
     Ok(())
 }
 
@@ -2285,7 +2239,7 @@ fn validate_receipt_output_custody(request: &Request) -> Result<(), String> {
                 "native-receipt-file",
             )?;
             validate_receipt_file_shape(
-                &request.receipt_dir.join("harmonia-atoms.log"),
+                &request.receipt_dir.join("harmonia"),
                 request.receipt_custody,
                 "native-receipt-log",
             )?;

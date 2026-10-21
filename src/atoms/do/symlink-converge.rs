@@ -275,7 +275,7 @@ fn write_blocked_receipt(
             receipt_identity(source_before)
         ),
     };
-    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &typed_receipt, &[])?;
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &typed_receipt, &[], changed.as_bool().unwrap_or(false))?;
     let receipt = json!({
         "schema": "harmonia.files.symlink_converge.v1",
         "ok": false,
@@ -450,7 +450,7 @@ pub(crate) fn symlink_converge(
                 source_after
             ),
         };
-        crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &typed_receipt, &[])?;
+        crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &typed_receipt, &[], outcome.changed)?;
         central_attested.set(true);
     }
     let path = receipt_dir.join(format!("{}.json", request.receipt_name));
@@ -579,7 +579,7 @@ fn symlink_converge_action(
                 receipt_identity(source_after)
             ),
         };
-        crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &typed_receipt, &[])?;
+        crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &typed_receipt, &[], changed)?;
         central_attested.set(true);
         crate::atoms::attest::make_link::write_existing(
             &receipt_dir.join(format!("{}.json", request.receipt_name)),

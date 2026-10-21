@@ -508,7 +508,7 @@ pub(crate) fn execute_manifest_modules(
     changed: &mut bool,
     ok: &mut bool,
     first_missing_signal: &mut String,
-    events: &mut File,
+    events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     for module_id in &profile.modules {
         if disabled_modules.contains(module_id) || halted.contains(module_id) {
@@ -920,7 +920,7 @@ pub(crate) fn execute_routine_child(
                 crate::place_file::execute(request)?
             };
             if !placed.receipt.ok || placed.movement.changed() {
-                crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &placed.receipt, &[])?;
+                crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &placed.receipt, &[], placed.movement.changed())?;
             }
             let changed = apply && placed.movement.changed();
 

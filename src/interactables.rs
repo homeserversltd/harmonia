@@ -446,7 +446,9 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
     {
         return Err("config-proposal list accepts only --json and --silenced".to_string());
     }
-    let feed = load_feed(&feed_path())?;
+    let path=feed_path();
+    let mut feed = load_feed(&path)?;
+    crate::ledger::filter_open_proposals(&path, &mut feed)?;
     let silenced = args.iter().any(|arg| arg == "--silenced");
     let mut filtered_feed = feed.clone();
     filtered_feed.interactables = feed

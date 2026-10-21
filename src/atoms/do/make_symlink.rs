@@ -747,15 +747,14 @@ fn write_receipt(
         }),
     )?;
     atoms::attest::attest(
-        &request.receipt_dir.join("harmonia-atoms.log"),
+        &request.receipt_dir.join("harmonia"),
         &atoms::Receipt {
             atom: "make-symlink".into(),
             ok: receipt.ok,
             drift: atoms::Drift::Current,
             message: receipt.signal.clone(),
         },
-        &[],
-    )?;
+        &[], receipt.changed)?;
     Ok(OperationOutcome {
         ok: receipt.ok,
         changed: receipt.changed,

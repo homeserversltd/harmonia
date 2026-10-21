@@ -11,7 +11,7 @@ pub(crate) fn write_tool_receipt(
     crate::write_tool_receipt(receipt_dir, step_id, "set-clock", permutation, outcome)
 }
 
-pub(crate) fn attest(log: &Path, operation: &str, result: &CmdResult) -> Result<(), String> {
+pub(crate) fn attest(log: &Path, operation: &str, result: &CmdResult, changed: bool) -> Result<(), String> {
     atoms::attest::attest(
         log,
         &atoms::Receipt {
@@ -23,6 +23,5 @@ pub(crate) fn attest(log: &Path, operation: &str, result: &CmdResult) -> Result<
                 result.code, result.stdout, result.stderr
             ),
         },
-        &[],
-    )
+        &[], changed)
 }

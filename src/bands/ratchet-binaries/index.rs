@@ -380,7 +380,7 @@ pub(crate) fn execute_manifest_modules(
     changed: &mut bool,
     ok: &mut bool,
     first_missing_signal: &mut String,
-    events: &mut File,
+    events: &mut crate::receipts::EventSink,
     carrier: Option<&crate::atoms::r#do::transaction::RunCarrierRef>,
 ) -> Result<(), String> {
     for module_id in &profile.modules {

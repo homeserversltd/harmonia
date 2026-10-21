@@ -918,7 +918,7 @@ pub(crate) fn promote_staged_binary(
         invocation,
     })?;
     if !placed.receipt.ok || placed.movement.changed() {
-        crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &placed.receipt, &[])?;
+        crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &placed.receipt, &[], placed.movement.changed())?;
     }
     Ok(CmdResult {
         ok: placed.receipt.ok,
@@ -2969,10 +2969,9 @@ pub(crate) fn run_engine_preflight(
                     Ok(placed) => {
                         if !placed.receipt.ok || placed.movement.changed() {
                             crate::atoms::attest::attest(
-                                &preflight_dir.join("atoms.jsonl"),
+                                &preflight_dir.join("harmonia"),
                                 &placed.receipt,
-                                &[],
-                            )?;
+                                &[], placed.movement.changed())?;
                         }
                         build = CmdResult {
                             ok: placed.receipt.ok,
@@ -3037,7 +3036,7 @@ pub(crate) fn run_engine_preflight(
             apply,
             &build_identity.environment,
             crate::atoms::r#do::build_crate::DEFAULT_TIMEOUT_SECS,
-            &preflight_dir.join("harmonia-atoms.log"),
+            &preflight_dir.join("harmonia"),
             "owner",
             invocation,
             crate::build_crate::IdentityMode::RegularExecutable,

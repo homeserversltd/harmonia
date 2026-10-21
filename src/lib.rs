@@ -276,6 +276,10 @@ pub mod device_profile;
 mod interactables;
 mod module_dispatch;
 mod receipts;
+mod ledger;
+mod deeds;
+#[path = "../migrations/retired-receipt-streams.rs"]
+mod retired_receipt_streams;
 mod subscription;
 
 pub(crate) use atoms::attest::convergence_receipts::*;
@@ -525,6 +529,7 @@ fn write_cli_run_refusal(
 
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     match args.first().map(String::as_str) {
+        Some("ledger") => ledger::command(&args[1..]),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], Some(&invocation))
         }

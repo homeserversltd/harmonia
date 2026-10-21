@@ -142,7 +142,6 @@ mod receipt {
                     result.code, result.stdout, result.stderr
                 ),
             },
-            &[],
-        )
+            &[], result.ok)
     }
 }

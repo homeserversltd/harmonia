@@ -763,7 +763,7 @@ fn executable_present_in_paths(
             outcome.executable, outcome.resolved_path, outcome.first_blocker
         ),
     };
-    crate::atoms::attest::attest(&receipt_dir.join("atoms.jsonl"), &receipt, &[])?;
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &receipt, &[], false)?;
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let receipt_name = if request.receipt_name.ends_with(".json") {
         request.receipt_name.clone()

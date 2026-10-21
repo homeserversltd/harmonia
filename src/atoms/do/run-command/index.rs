@@ -106,15 +106,7 @@ pub(crate) fn command_with_timeout_attested(
         // attestation log; these can carry credentials or private data.
         message: format!("bounded command action completed={}", outcome.ok),
     };
-    if let Some(attest_log) = attest_log {
-        crate::atoms::attest::attest(attest_log, &receipt, &[])?;
-    } else {
-        let value = serde_json::to_value(&receipt)
-            .map_err(|error| format!("attest-serialize: {error}"))?;
-        let stderr = std::io::stderr();
-        let mut stderr = stderr.lock();
-        crate::atoms::attest::append_jsonl_to(&mut stderr, &value)?;
-    }
+    crate::atoms::attest::attest(attest_log.unwrap_or_else(||Path::new("harmonia")), &receipt, &[], outcome.ok)?;
     Ok(outcome)
 }
 pub(crate) fn mutating_command(

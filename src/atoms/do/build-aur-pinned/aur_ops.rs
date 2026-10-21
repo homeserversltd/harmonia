@@ -65,7 +65,7 @@ pub(crate) fn report(
         .and_then(|name| name.to_str())
         .ok_or_else(|| "aur-attest-log-name-invalid".to_string())?;
     let receipt_name = name
-        .strip_suffix(".attest.jsonl")
+        .strip_suffix("")
         .ok_or_else(|| "aur-attest-log-suffix-invalid".to_string())?;
     let receipt_path = log.with_file_name(format!("{receipt_name}.json"));
     crate::atoms::attest::build_aur_pinned::report(
@@ -100,7 +100,7 @@ pub(crate) fn verify_artifact_lock(
         command: None,
     };
     crate::atoms::attest::attest(
-        &receipt_dir.join("artifact-lock.attest.jsonl"),
+        &receipt_dir.join("artifact-lock"),
         &crate::atoms::Receipt {
             atom: "ratchet-aur-package-observe".into(),
             ok: observation.ok,
@@ -110,8 +110,7 @@ pub(crate) fn verify_artifact_lock(
                 observation.artifact_count, observation.first_missing_signal
             ),
         },
-        &[],
-    )?;
+        &[], false)?;
     Ok(outcome)
 }
 

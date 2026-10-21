@@ -325,6 +325,7 @@ pub(crate) fn run_profile_engine_with_projection(
     requested_latest_alias: Option<&Path>,
     materialize_on_stage: bool,
 ) -> Result<(), String> {
+    crate::retired_receipt_streams::run()?;
     crate::receipts::clear_config_state_receipts(receipt_dir)?;
     let mut active_profile = profile.clone();
     let mut active_projection = projection.clone();
@@ -333,7 +334,7 @@ pub(crate) fn run_profile_engine_with_projection(
     let apply = mode.is_software_apply();
     let invocation = mode.invocation();
     let run_started = Instant::now();
-    let mut events = crate::atoms::attest::create_receipt_file(&receipt_dir.join("events.jsonl"))?;
+    let mut events = crate::receipts::EventSink;
     event(
         &mut events,
         "engine-start",

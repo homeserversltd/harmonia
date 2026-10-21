@@ -245,15 +245,14 @@ pub(crate) fn attest_change_unit(
             return Ok(());
         }
         crate::atoms::attest::attest(
-            &receipt_dir.join("harmonia-atoms.log"),
+            &receipt_dir.join("harmonia"),
             &crate::atoms::Receipt {
                 atom: "systemd".into(),
                 ok: command.ok,
                 drift: crate::atoms::Drift::Current,
                 message: format!("service={service}; action={action}; decision={decision}; reason={reason}; code={}", command.code),
             },
-            &[],
-        )?;
+            &[], decision != "held")?;
     }
     Ok(())
 }

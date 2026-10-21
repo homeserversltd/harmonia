@@ -91,7 +91,7 @@ pub(crate) fn attest(
 ) -> Result<(), String> {
     let value = serde_json::json!({"schema":"harmonia.fs.write_file.v1","ok":outcome.ok,"observation":observation.projection,"outcome":outcome.projection});
     crate::atoms::attest::write_json_atomic(&receipt_dir.join(file_name), &value)?;
-    log(receipt_dir, outcome.ok, &outcome.message)
+    log(receipt_dir, outcome.ok, &outcome.message, outcome.projection.get("changed").and_then(serde_json::Value::as_bool).unwrap_or(false))
 }
 pub(crate) fn write_managed_error(dir: &Path, path: &Path, r: ManagedError) -> Result<(), String> {
     let v = serde_json::json!({"schema":"harmonia.files.managed_file.v1","ok":false,"module":r.module,"path":r.path,"apply":r.apply,"state":"act-error","error":r.error,"first_missing_signal":"managed-file-act-error"});
@@ -130,17 +130,16 @@ fn write(
     label: &str,
 ) -> Result<(), String> {
     crate::atoms::attest::write_json_atomic(path, value)?;
-    log(dir, ok, &format!("{label} receipt={}", path.display()))
+    log(dir, ok, &format!("{label} receipt={}", path.display()), value.get("truthful_changed").or_else(||value.get("changed")).and_then(serde_json::Value::as_bool).unwrap_or(false))
 }
-fn log(dir: &Path, ok: bool, message: &str) -> Result<(), String> {
+fn log(dir: &Path, ok: bool, message: &str, changed: bool) -> Result<(), String> {
     crate::atoms::attest::attest(
-        &dir.join("harmonia-atoms.log"),
+        &dir.join("harmonia"),
         &Receipt {
             atom: "write-file".into(),
             ok,
             drift: Drift::Current,
             message: message.into(),
         },
-        &[],
-    )
+        &[], changed)
 }

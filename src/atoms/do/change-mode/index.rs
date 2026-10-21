@@ -189,7 +189,7 @@ pub(crate) fn reconcile(
                 drift: Drift::Current,
                 message: format!("path={} metadata-failure={evidence}", plan.path.display()),
             };
-            crate::atoms::attest::attest(receipt_log, &receipt, &[])?;
+            crate::atoms::attest::attest(receipt_log, &receipt, &[], changed_value.as_bool().unwrap_or(false))?;
             return Ok(json!({
                 "atom":"change-mode", "ok":false,
                 "observed_state":observed_state,
@@ -252,7 +252,7 @@ pub(crate) fn reconcile(
             plan.path.display(), before_mode, desired_mode, diff_decision, movement, changed, final_mode, blocker
         ),
     };
-    crate::atoms::attest::attest(receipt_log, &receipt, &[])?;
+    crate::atoms::attest::attest(receipt_log, &receipt, &[], changed.unwrap_or(false))?;
     Ok(json!({
         "atom":"change-mode", "ok":ok, "changed":changed,
         "observed_state":observed_state,
@@ -274,7 +274,7 @@ pub(crate) fn converge_metadata(
     if specs.is_empty() {
         return Err("files-metadata-files-empty".into());
     }
-    let receipt_log = receipt_dir.join("atoms.jsonl");
+    let receipt_log = receipt_dir.join("harmonia");
     let mut preflight = Vec::with_capacity(specs.len());
     let mut preflight_blockers = Vec::new();
     let mut invalid_paths = Vec::new();
@@ -345,7 +345,7 @@ pub(crate) fn converge_metadata(
                 "step={receipt_name} diff=blocked movement=none changed=false blocker={blocker}"
             ),
         };
-        crate::atoms::attest::attest(&receipt_log, &receipt, &[])?;
+        crate::atoms::attest::attest(&receipt_log, &receipt, &[], false)?;
         crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
         let file_name = if receipt_name.ends_with(".json") {
             receipt_name.to_string()
