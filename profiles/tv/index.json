@@ -3,8 +3,8 @@
   "categories_required": true,
   "id": "tv",
   "package_authority": {
-    "os_family": "arch",
-    "package_manager": "pacman"
+    "os_family": "debian",
+    "package_manager": "apt"
   },
   "dotfile_pool": "tv",
   "aliases": [
@@ -34,6 +34,7 @@
     "caduceus",
     "keyman-runtime",
     "sudoers",
+    "gamescope-backports-pin",
     "grub-branding"
   ],
   "identity": "tv",

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/sbin/agathodaimon/cli.py console session-select "$@"

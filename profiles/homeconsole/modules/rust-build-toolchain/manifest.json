@@ -18,6 +18,10 @@
       "ubuntu": [
         "rustc",
         "cargo"
+      ],
+      "debian": [
+        "rustc",
+        "cargo"
       ]
     }
   },

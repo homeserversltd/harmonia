@@ -1024,7 +1024,10 @@ pub(crate) fn execute_manifest_modules(
     active_lane: Option<&str>,
 ) -> Result<(), String> {
     for module_id in &profile.modules {
-        if disabled_modules.contains(module_id) || halted.contains(module_id) {
+        if disabled_modules.contains(module_id)
+            || halted.contains(module_id)
+            || projection.authority_excluded.contains(module_id)
+        {
             continue;
         }
         let Some(projected) = projection.modules.get(module_id) else {

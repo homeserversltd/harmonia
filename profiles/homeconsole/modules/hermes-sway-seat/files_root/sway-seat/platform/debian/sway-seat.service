@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes headless Sway seat
+
+[Service]
+Type=simple
+Environment=WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1
+Environment=XDG_RUNTIME_DIR=%t
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_CURRENT_DESKTOP=sway XDG_SESSION_DESKTOP=sway XDG_SESSION_TYPE=wayland
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=/usr/bin/sway -c /home/hermes/.config/sway/config
+
+[Install]
+WantedBy=default.target

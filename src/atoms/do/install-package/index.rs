@@ -927,6 +927,96 @@ fn fallback_upgraded(b: PackageBackend, p: &[PendingPackage], t: u64) -> Vec<Upg
         })
         .collect()
 }
+fn observe_apt_check(
+    r: &Path,
+    t: u64,
+    pins: &std::collections::BTreeMap<String, String>,
+) -> UpdateObservation {
+    let d = update_sandbox(r);
+    let mut created = false;
+    let setup = (|| -> io::Result<Vec<String>> {
+        fs::create_dir_all(r)?;
+        fs::create_dir(&d)?;
+        created = true;
+        let root = fs::canonicalize(&d)?;
+        for relative in ["lists/partial", "cache/archives/partial", "state", "log"] {
+            fs::create_dir_all(root.join(relative))?;
+        }
+        // Host update hooks can mutate the live package state even when lists
+        // are private. Keep their execution outside this read-only check.
+        let config = root.join("apt.conf");
+        fs::write(&config, concat!(
+            "#clear APT::Update::Pre-Invoke;\n",
+            "#clear APT::Update::Post-Invoke;\n",
+            "#clear APT::Update::Post-Invoke-Success;\n",
+        ))?;
+        let mut options = vec!["-c".into(), config.to_string_lossy().into_owned()];
+        for (key, path) in [
+            ("Dir::State", root.join("state")),
+            ("Dir::State::Lists", root.join("lists")),
+            ("Dir::State::extended_states", root.join("state/extended_states")),
+            ("Dir::Cache", root.join("cache")),
+            ("Dir::Cache::archives", root.join("cache/archives")),
+            ("Dir::Cache::pkgcache", root.join("cache/pkgcache.bin")),
+            ("Dir::Cache::srcpkgcache", root.join("cache/srcpkgcache.bin")),
+            ("Dir::Log", root.join("log")),
+        ] {
+            options.extend(["-o".into(), format!("{key}={}", path.display())]);
+        }
+        options.extend([
+            "-o".into(), "Dir::State::status=/var/lib/dpkg/status".into(),
+            "-o".into(), "APT::Update::Error-Mode=any".into(),
+        ]);
+        Ok(options)
+    })();
+    let (refresh, q, mut pending, ok) = match setup {
+        Err(error) => (
+            synthetic(&format!("apt sandbox setup failed: {error}")),
+            synthetic("apt query skipped after sandbox setup failure"),
+            Vec::new(), false,
+        ),
+        Ok(options) => {
+            let program = apt_program();
+            let mut refresh_args = options.clone();
+            refresh_args.extend(["update".into(), "--allow-releaseinfo-change".into()]);
+            let refresh = capture_owned_with_timeout(&program, refresh_args, t);
+            let q = if refresh.ok {
+                let mut query_args = options;
+                query_args.extend(["-s".into(), "upgrade".into()]);
+                run_apt_command(r, "check", &program, query_args, t, pins)
+            } else {
+                synthetic("apt query skipped after refresh failure")
+            };
+            let ok = refresh.ok && q.ok;
+            let pending = if ok { parse_apt_pending(&q.stdout) } else { Vec::new() };
+            (refresh, q, pending, ok)
+        }
+    };
+    let cleanup_failure = if created {
+        fs::remove_dir_all(&d).err().map(|error| error.to_string())
+    } else {
+        None
+    };
+    let probe_ok = ok && cleanup_failure.is_none();
+    pending.retain(|item| !pins.contains_key(&item.name));
+    UpdateObservation {
+        backend: "apt".into(),
+        observed_state: if !probe_ok { "probe-failed" } else if pending.is_empty() {
+            "empty"
+        } else { "pending" }.into(),
+        desired_state: "no-pending-updates".into(),
+        current: q.clone(),
+        probe_ok,
+        pending_count: pending.len(),
+        pending,
+        ignored_upgrades: Vec::new(),
+        db_synced_at: probe_ok.then(now_rfc3339),
+        refresh_command: refresh,
+        query: q,
+        cleanup_failure,
+    }
+}
+
 fn observe_update(
     r: &Path,
     a: &str,
@@ -1020,6 +1110,9 @@ fn observe_update(
             }
         }
         PackageBackend::Apt => {
+            if a == "check" {
+                return observe_apt_check(r, t, pins);
+            }
             let x = apt_program();
             let refresh =
                 command::capture_with_timeout(&x, &["update", "--allow-releaseinfo-change"], t);

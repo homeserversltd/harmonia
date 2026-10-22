@@ -9,6 +9,10 @@
     "ubuntu": {
       "os_family": "ubuntu",
       "package_manager": "apt"
+    },
+    "debian": {
+      "os_family": "debian",
+      "package_manager": "apt"
     }
   },
   "dotfile_pool": "homeconsole",
@@ -34,6 +38,7 @@
     "sudoers",
     "sunshine",
     "retroarch-input",
+    "gamescope-backports-pin",
     "grub-branding",
     "sway-seat",
     "cua-driver",

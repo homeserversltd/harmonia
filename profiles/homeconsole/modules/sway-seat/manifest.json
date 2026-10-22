@@ -31,6 +31,14 @@
         "wlrctl",
         "wtype",
         "python3-venv"
+      ],
+      "debian": [
+        "sway",
+        "wayvnc",
+        "foot",
+        "wlrctl",
+        "wtype",
+        "python3-venv"
       ]
     }
   },

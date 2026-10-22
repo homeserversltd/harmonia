@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes loopback WayVNC seat
+Requires=sway-seat.service
+After=sway-seat.service
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=%t
+Environment=WAYLAND_DISPLAY=wayland-1
+ExecStartPre=/usr/local/libexec/sway-seat/sway-seat-wait-ready
+ExecStart=/usr/bin/wayvnc --config /home/hermes/.config/wayvnc/config
+
+[Install]
+WantedBy=default.target

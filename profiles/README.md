@@ -8,6 +8,8 @@ The ten execution bands are entered in charter order, with `restart-services` be
 
 The profile and module paths are checkable in the repository, for example `profiles/homeconsole/index.json` and `profiles/homeconsole/modules/`.
 
+HomeConsole selects an exact `debian`/`apt`, `ubuntu`/`apt`, or `arch`/`pacman` authority from the body's OS identity. Debian platform payloads sit beside their preserved Ubuntu twins; Netplan is `authority-excluded` outside Ubuntu. The TV profile uses `debian`/`apt` with its existing `tv` dotfile pool. Both profiles include the files-only `gamescope-backports-pin` module.
+
 ## One-level overlays
 
 An overlay index may declare `"extends": "<base-profile-id>"` and optionally an ordered `"excludes": ["<base-module-id>", ...]` list. Exclusions filter only modules inherited from the one-level base; surviving base modules stay in base order, followed by the overlay's own modules in their declared order. Exclusions are validated first: every excluded ID must be present in the full base module list and must not be declared by the overlay. Unknown IDs refuse as `profile-extends-exclude-unknown`; overlay-owned IDs refuse as `profile-extends-exclude-declared`. The unchanged duplicate-module refusal then checks the full base list against overlay modules before filtering, so exclusions cannot silently shadow overlay-owned IDs or hide another duplicate.

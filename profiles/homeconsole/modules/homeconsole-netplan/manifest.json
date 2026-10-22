@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "homeconsole-netplan",
+  "authorities": ["ubuntu"],
   "title": "Wired network defaults",
   "summary": "Offers NetworkManager with DHCP for wired interfaces.",
   "category": "interactable",

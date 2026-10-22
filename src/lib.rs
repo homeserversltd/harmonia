@@ -858,6 +858,12 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let profile_path = Path::new(path);
             let profile = load_profile(profile_path).map_err(|e| e.to_string())?;
             let module_root = default_module_root(profile_path);
+            let projection = load_profile_projection(
+                &profile, &module_root, &std::collections::BTreeSet::new(),
+            )?;
+            if let Some((id, error)) = projection.errors.iter().next() {
+                return Err(format!("module-unresolved id={id} {error}"));
+            }
             let module_seats = profile
                 .modules
                 .iter()
@@ -874,7 +880,9 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                                 .unwrap_or_else(|| "none".to_string())
                         ));
                     }
-                    let seat = if crate::bands::stage_profile::module_uses_shared_seat(
+                    let seat = if projection.authority_excluded.contains(module_id) {
+                        "authority-excluded"
+                    } else if crate::bands::stage_profile::module_uses_shared_seat(
                         &module_root,
                         &module_dir,
                     ) {
@@ -888,7 +896,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let extension = crate::bands::stage_profile::profile_extends(&module_root)?;
             let excluded_module_ids =
                 crate::bands::stage_profile::profile_excludes(&module_root)?;
-            let plan = crate::atoms::r#do::transaction::derive_plan(&profile, &module_root, None)?;
+            let plan = projection.derive_standing_update_plan(&profile, &module_root)?;
             let module_is_member = |member: &str, module_id: &str| {
                 plan.member_modules
                     .get(member)
@@ -931,8 +939,19 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             if let Some(module_ids) = excluded_module_ids.as_ref() {
                 println!("excluded_module_ids={}", module_ids.join(","));
             }
+            if let Some(authority) = &profile.package_authority {
+                println!("package_authority={}/{}", authority.os_family, authority.package_manager);
+            }
             println!("modules={}", profile.modules.join(","));
             println!("module_seats={}", module_seats.join(","));
+            println!("module_status={}", profile.modules.iter().map(|id| {
+                let status = if projection.authority_excluded.contains(id) {
+                    "authority-excluded"
+                } else {
+                    "resolved"
+                };
+                format!("{id}:{status}")
+            }).collect::<Vec<_>>().join(","));
             println!(
                 "pinned_module_membership={}",
                 pinned_module_membership.join(",")
@@ -1718,6 +1737,12 @@ fn update_module_command(
         return Err(format!("module-disabled-{}", parsed.module_id));
     }
 
+    if projection.authority_excluded.contains(&parsed.module_id) {
+        println!("ok=true");
+        println!("module_id={}", parsed.module_id);
+        println!("status=authority-excluded");
+        return Ok(());
+    }
     let projected = projection
         .modules
         .get(&parsed.module_id)

@@ -668,18 +668,12 @@ pub(crate) fn write_plan_receipts(
 ) -> io::Result<()> {
     let extension = crate::bands::stage_profile::profile_extends(module_root)
         .map_err(io::Error::other)?;
-    let projection = if extension.is_some() {
-        Some(
-            crate::bands::stage_profile::load_profile_projection(
-                profile,
-                module_root,
-                &std::collections::BTreeSet::new(),
-            )
-            .map_err(io::Error::other)?,
-        )
-    } else {
-        None
-    };
+    let projection = crate::bands::stage_profile::load_profile_projection(
+        profile,
+        module_root,
+        &std::collections::BTreeSet::new(),
+    )
+    .map_err(io::Error::other)?;
     let mut ok = true;
     let mut first_missing_signal = "none".to_string();
 
@@ -688,6 +682,16 @@ pub(crate) fn write_plan_receipts(
         first_missing_signal = "profile-modules-empty".to_string();
     }
     for module in &profile.modules {
+        if projection.authority_excluded.contains(module) {
+            continue;
+        }
+        if let Some(error) = projection.errors.get(module) {
+            ok = false;
+            if first_missing_signal == "none" {
+                first_missing_signal = error.clone();
+            }
+            continue;
+        }
         let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, module)
             .map_err(io::Error::other)?;
         let manifest_path = module_dir.join("manifest.json");
@@ -695,8 +699,7 @@ pub(crate) fn write_plan_receipts(
             && is_ladder_manifest(&manifest_path)
         {
             let projected_manifest = projection
-                .as_ref()
-                .and_then(|projection| projection.modules.get(module))
+                .modules.get(module)
                 .and_then(|projected| match &projected.loaded {
                     crate::bands::stage_profile::LoadedModule::Ladder(manifest) => {
                         Some(manifest.clone())
@@ -757,9 +760,10 @@ pub(crate) fn write_plan_receipts(
             "identity": profile.identity,
             "identity_source": run_identity_source(),
             "module_count": profile.modules.len(),
+            "authority_excluded_module_ids": projection.authority_excluded,
             "first_missing_signal": first_missing_signal,
         });
-    if let Some(base_id) = crate::bands::stage_profile::profile_extends(module_root).map_err(io::Error::other)? {
+    if let Some(base_id) = extension {
         run["extends"] = json!(base_id);
         run["base_profile_id"] = json!(base_id);
         run["union_module_count"] = json!(profile.modules.len());

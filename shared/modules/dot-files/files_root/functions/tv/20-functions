@@ -3,89 +3,6 @@ _update_atuin(){
     bash <(curl --proto '=https' --tlsv1.2 -sSf https://setup.atuin.sh) -- --non-interactive
 }
 
-# Function to rebuild yay when it breaks due to library updates
-_rebuild_yay() {
-    echo "=== Rebuilding yay ==="
-
-    # Check if yay is installed
-    if ! command -v yay &> /dev/null; then
-        echo "yay is not installed. Cannot rebuild."
-        return 1
-    fi
-
-    # Ensure git and base-devel are installed
-    echo "Ensuring git and base-devel are installed..."
-    sudo pacman -S --needed --noconfirm git base-devel
-
-    # Clone yay-bin (binary version, faster than compiling)
-    echo "Cloning yay-bin repository..."
-    rm -rf /tmp/yay-bin
-    if ! git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin; then
-        echo "Failed to clone yay-bin repository."
-        return 1
-    fi
-
-    # Build and install
-    echo "Building and installing yay..."
-    cd /tmp/yay-bin
-    if makepkg -si --noconfirm; then
-        echo "✅ yay rebuilt successfully!"
-        cd - > /dev/null
-        rm -rf /tmp/yay-bin
-        return 0
-    else
-        echo "❌ Failed to rebuild yay."
-        cd - > /dev/null
-        return 1
-    fi
-}
-
-# Wrapper function that auto-rebuilds yay on library errors
-_safe_yay() {
-    # Try running yay with the provided arguments
-    local yay_output
-    local yay_error
-    local yay_exit_code
-
-    # Check if yay is installed
-    if ! command -v yay &> /dev/null; then
-        echo "yay is not installed. Cannot run yay."
-        return 1
-    fi
-
-    # Capture both stdout and stderr
-    yay_output=$(yay "$@" 2>&1)
-    yay_exit_code=$?
-
-    # Check if the error is related to library issues
-    if [[ $yay_exit_code -ne 0 ]] && echo "$yay_output" | grep -q "libalpm.so"; then
-        echo "🔧 Detected yay library compatibility issue (libalpm.so error)"
-        echo "This typically happens after pacman updates. Rebuilding yay..."
-        echo ""
-
-        # Attempt to rebuild yay
-        if _rebuild_yay; then
-            echo ""
-            echo "Retrying original yay command..."
-            # Retry the original command
-            yay "$@"
-            return $?
-        else
-            echo "Failed to rebuild yay. Please rebuild manually with: rebuild.yay"
-            return 1
-        fi
-    else
-        # No library error, just return the output and exit code
-        echo "$yay_output"
-        return $yay_exit_code
-    fi
-}
-
-# User-facing function to manually rebuild yay
-rebuild.yay() {
-    _rebuild_yay
-}
-
 # Function to update oh-my-posh if there's a version change
 _update_oh_my_posh() {
     # Define the installation directory
@@ -207,20 +124,6 @@ n(){
     }
 }
 
-find.program() {
-    if [ -z "$1" ]; then
-        echo "Usage: find_program <program_name>"
-        return 1
-    fi
-    local query="$1"
-    echo "Searching in pacman repository..."
-    pacman_results=$(pacman -Ss "$query" | grep -E '^[a-z]*/[a-z0-9.+-]+' | awk '{print $1}')
-    echo "Searching in AUR..."
-    aur_results=$(yay -Ss "$query" | grep -E '^[a-z]*/[a-z0-9.+-]+' | awk '{print $1}')
-    echo -e "$pacman_results\n$aur_results" | fzf --ansi --multi --preview 'echo {}'
-}
-
-
 # Searches for text in all files in the current folder
 find.text() {
 	# If The Silver Searcher is installed, use that
@@ -330,28 +233,6 @@ _install_programs() {
         fi
     fi
 
-    # Try installing with pacman
-    if command -v pacman &> /dev/null; then
-        echo "Attempting to install ${program_list} using pacman..."
-        if sudo pacman -Sy --noconfirm ${filtered_programs[@]}; then
-            echo "${program_list} installed successfully using pacman."
-            return
-        else
-            echo "Failed to install ${program_list} using pacman."
-        fi
-    fi
-
-    # Try installing with yay
-    if command -v yay &> /dev/null; then
-        echo "Attempting to install ${program_list} using yay..."
-        if yay -S --noconfirm ${filtered_programs[@]}; then
-            echo "${program_list} installed successfully using yay."
-            return
-        else
-            echo "Failed to install ${program_list} using yay."
-        fi
-    fi
-
     echo "Could not install ${program_list} with any available package manager."
 }
 
@@ -394,28 +275,6 @@ uninstall_programs() {
             return
         else
             echo "Failed to remove ${program_list} using apt."
-        fi
-    fi
-
-    # Try uninstalling with pacman
-    if command -v pacman &> /dev/null; then
-        echo "Attempting to remove ${program_list} using pacman..."
-        if sudo pacman -Rns --noconfirm ${filtered_programs[@]}; then
-            echo "${program_list} removed successfully using pacman."
-            return
-        else
-            echo "Failed to remove ${program_list} using pacman."
-        fi
-    fi
-
-    # Try uninstalling with yay
-    if command -v yay &> /dev/null; then
-        echo "Attempting to remove ${program_list} using yay..."
-        if yay -Rns --noconfirm ${filtered_programs[@]}; then
-            echo "${program_list} removed successfully using yay."
-            return
-        else
-            echo "Failed to remove ${program_list} using yay."
         fi
     fi
 

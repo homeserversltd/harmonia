@@ -1,0 +1,2 @@
+#!/bin/sh
+printf '%s\n' 'Arcadia OS: steamos-update is unavailable.' >&2; exit 7

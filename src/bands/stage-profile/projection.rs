@@ -23,6 +23,7 @@ pub(crate) struct ProjectedModule {
 pub(crate) struct ProfileProjection {
     pub(crate) modules: BTreeMap<String, ProjectedModule>,
     pub(crate) errors: BTreeMap<String, String>,
+    pub(crate) authority_excluded: BTreeSet<String>,
     pub(crate) beam_finalization: Option<crate::atoms::ask::beam::PendingBeamFinalization>,
 }
 
@@ -133,9 +134,43 @@ pub(crate) fn load_profile_projection(
 ) -> Result<ProfileProjection, String> {
     let mut modules = BTreeMap::new();
     let mut errors = BTreeMap::new();
+    let mut authority_excluded = BTreeSet::new();
     for id in &profile.modules {
         if disabled.contains(id) {
             continue;
+        }
+        // Interpret the optional manifest restriction once, before package-family
+        // lowering. Consumers use this projection, never the manifest key.
+        let exclusion = (|| -> Result<bool, String> {
+            let module_dir = crate::bands::stage_profile::resolve_module_dir(module_root, id)?;
+            let path = module_dir.join("manifest.json");
+            if !path.is_file() {
+                return Ok(false);
+            }
+            let raw: Value = serde_json::from_str(
+                &fs::read_to_string(&path)
+                    .map_err(|e| format!("module-read-failed {}: {e}", path.display()))?,
+            )
+            .map_err(|e| format!("module-parse-failed {}: {e}", path.display()))?;
+            let Some(value) = raw.get("authorities").filter(|value| !value.is_null()) else {
+                return Ok(false);
+            };
+            let authorities: Vec<String> = serde_json::from_value(value.clone())
+                .map_err(|e| format!("module-authorities-invalid {}: {e}", path.display()))?;
+            let authority = profile.package_authority.as_ref()
+                .ok_or_else(|| format!("module-package-authority-missing module={id}"))?;
+            Ok(!authorities.iter().any(|family| family == &authority.os_family))
+        })();
+        match exclusion {
+            Ok(true) => {
+                authority_excluded.insert(id.clone());
+                continue;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                errors.insert(id.clone(), error);
+                continue;
+            }
         }
         let loaded = match crate::bands::stage_profile::groups::load_profile_module_for_authority(
             module_root,
@@ -273,6 +308,7 @@ pub(crate) fn load_profile_projection(
     Ok(ProfileProjection {
         modules,
         errors,
+        authority_excluded,
         beam_finalization: None,
     })
 }
