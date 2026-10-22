@@ -26,7 +26,7 @@
     },
     "syzygy": {
       "schema": "appliance.syzygy.v1",
-      "members": ["harmonia", "caduceus", "sbin", "documentation", "coronatio"],
+      "members": ["harmonia", "caduceus", "sbin", "documentation", "keyman", "coronatio"],
       "gui_face": "Coronatio"
     },
     "tabs": {

@@ -1496,6 +1496,10 @@ pub(crate) fn explain() -> Result<(), String> {
         stamp.verdict.as_deref().unwrap_or("UNAVAILABLE")
     );
     println!("wukong_staff_stamp_signal={}", stamp.signal);
+    println!(
+        "wukong_staff_stamp_sha={}",
+        stamp.stamp_sha.as_deref().unwrap_or("none")
+    );
     if let Some(fire_seal) = stamp.fire_seal.as_ref() {
         println!("wukong_fire_seal_profile={}", fire_seal.profile);
         println!("wukong_fire_seal_status={}", fire_seal.status);

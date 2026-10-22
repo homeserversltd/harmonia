@@ -262,6 +262,43 @@ fn committed_documentation_source_sha(
         .map(str::to_owned)
 }
 
+/// Read Keyman's worn source from the committed sync step in its censused
+/// module, whose id differs between HomeServer and the other profiles.
+fn committed_keyman_source_sha(
+    dir: &Path,
+    receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+) -> Option<String> {
+    let modules = receipt.member_modules.get("keyman")?;
+    if modules.len() != 1 {
+        return None;
+    }
+    let module_dir = dir.join("modules").join(&modules[0]);
+    let mut observed = BTreeSet::new();
+    for step in ["keyman-source", "keyman-source-repository"] {
+        let bytes = match fs::read(module_dir.join(format!("{step}.json"))) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        let source: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let command: serde_json::Value = serde_json::from_slice(
+            &fs::read(module_dir.join(format!("{step}.command.json"))).ok()?,
+        )
+        .ok()?;
+        if command.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+            || command.get("code").and_then(serde_json::Value::as_i64) != Some(0)
+        {
+            return None;
+        }
+        let sha = source
+            .get("resolved_commit")
+            .and_then(serde_json::Value::as_str)
+            .filter(|sha| valid_lower_hex(sha, 40))?;
+        observed.insert(sha.to_owned());
+    }
+    (observed.len() == 1).then(|| observed.into_iter().next()).flatten()
+}
+
 /// Resolve each available member independently, then mint only from a complete
 /// known-good set. Stamp comparisons use this run's committed source receipts,
 /// never a latest remote flag as the member's worn identity.
@@ -613,6 +650,10 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                 "documentation" => (
                     committed_documentation_source_sha(dir, receipt),
                     "modules.documentation.documentation-source-sync.json+command.json",
+                ),
+                "keyman" => (
+                    committed_keyman_source_sha(dir, receipt),
+                    "keyman git-artifact sync.json+command.json",
                 ),
                 _ => (None, "unsupported-member"),
             };
