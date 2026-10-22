@@ -1779,6 +1779,12 @@ fn fetch_exact_pinned_asset_set(
     if metadata.draft {
         return Err("fetch-artifact-release-draft".into());
     }
+    if asset_set.iter().any(|(asset_name, sidecar_name)| {
+        optional_release_asset_url(&metadata, asset_name).is_none()
+            || optional_release_asset_url(&metadata, sidecar_name).is_none()
+    }) {
+        return Err("fetch-artifact-release-assets-incomplete".into());
+    }
     let flag_url = optional_release_asset_url(&metadata, "release.flag")
         .ok_or_else(|| "fetch-artifact-release-flag-missing".to_string())?;
     let flag = download_release_asset(request, &flag_url, "release.flag", true)?;
