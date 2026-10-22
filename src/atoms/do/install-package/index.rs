@@ -1313,6 +1313,8 @@ fn package_update_tool_inner(
     invocation: Option<&InvocationKey>,
     ceiling_authorization: Option<&CeilingAuthorization>,
 ) -> Result<OperationOutcome, String> {
+    // A check remains a query even if a caller carries software apply authority.
+    let apply = apply && !(b == PackageBackend::Apt && a == "check");
     let pre = observe_update(r, a, t, b, pins);
     write_pin_witness(r, n, pins, b)?;
     let different = !pre.probe_ok || pre.pending_count > 0;

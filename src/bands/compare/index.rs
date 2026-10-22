@@ -233,6 +233,9 @@ pub(crate) fn execute_manifest_modules(
             *first_missing_signal = beam.first_missing_signal.to_string();
         }
         for module_id in &profile.modules {
+            if projection.authority_excluded.contains(module_id) {
+                continue;
+            }
             halted.insert(module_id.clone());
             let state = states.entry(module_id.clone()).or_insert(ModuleExecution {
                 ok: false,
