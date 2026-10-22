@@ -1,0 +1,32 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "rust-build-toolchain",
+  "title": "Developer tools",
+  "summary": "Provides the tools needed to build software on this device.",
+  "category": "known-good",
+  "version": "1.1.0",
+  "description": "Maintain wrappers for the Rust toolchain already provisioned by birth.",
+  "optional": false,
+  "constants": {
+    "packages": [
+      "rustc",
+      "cargo"
+    ],
+    "packages_by_family": {
+      "debian": [
+        "rustc",
+        "cargo"
+      ]
+    }
+  },
+  "ladder": [
+    {
+      "step_id": "rust-wrapper-shims",
+      "tool": "files",
+      "permutation": "managed-files",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ],
+  "files_root": "files_root"
+}

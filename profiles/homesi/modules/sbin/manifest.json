@@ -1,0 +1,67 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sbin",
+  "title": "Appliance controls",
+  "summary": "Keeps appliance maintenance controls available and current.",
+  "category": "known-good",
+  "version": "1.2.0",
+  "description": "Synchronize the sbin repository, converge its whole owned recursive shelf, and refresh the staff venv only when dependency bytes change, and link /usr/local/bin/agathodaimon to /usr/local/sbin/agathodaimon/cli.py.",
+  "optional": false,
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "sbin-source-sync",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "component": "sbin",
+        "path": "/opt/sbin/source",
+        "source_dir": "/opt/sbin/source",
+        "bearer": "owner"
+      }
+    },
+    {
+      "step_id": "caduceus-venv-converge",
+      "tool": "venv",
+      "permutation": "converge",
+      "args": {
+        "venv": "/var/lib/caduceus/venv",
+        "source_root": "/opt/sbin/source",
+        "source_patterns": [
+          "requirements*.txt",
+          "pyproject.toml"
+        ]
+      }
+    },
+    {
+      "step_id": "sbin-source-shelf-sweep",
+      "tool": "files",
+      "permutation": "source-shelf-sweep",
+      "args": {
+        "source_root": "/opt/sbin/source",
+        "shelf_source": "agathodaimon",
+        "target_shelf": "/usr/local/sbin/agathodaimon",
+        "shelf_owner": "root",
+        "shelf_group": "root",
+        "shelf_directory_mode": 493,
+        "shelf_file_mode": 493,
+        "prune": true,
+        "provenance_state": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
+        "owned_recursive": true
+      }
+    },
+    {
+      "step_id": "agathodaimon-front-door-link",
+      "tool": "files",
+      "permutation": "symlink-converge",
+      "args": {
+        "source": "/usr/local/sbin/agathodaimon/cli.py",
+        "target": "/usr/local/bin/agathodaimon",
+        "required_source_kind": "regular-executable",
+        "owner": "root",
+        "group": "root"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

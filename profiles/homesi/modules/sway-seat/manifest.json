@@ -1,0 +1,67 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sway-seat",
+  "title": "Remote support screen",
+  "summary": "Keeps a remote support screen ready without starting it automatically.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Keep the Debian support-screen package checks and private Hermes headless readiness helper; birth owns the session floor.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {
+    "packages": [
+      "sway",
+      "wayvnc",
+      "foot",
+      "wlrctl",
+      "wtype",
+      "python3-venv"
+    ],
+    "packages_by_family": {
+      "debian": [
+        "sway",
+        "wayvnc",
+        "foot",
+        "wlrctl",
+        "wtype",
+        "python3-venv"
+      ]
+    }
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "sway-seat-packages-present",
+      "tool": "package",
+      "permutation": "check",
+      "args": {
+        "packages": "$constants.packages"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-readiness-helper",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/ready-helper",
+        "target_path": "/usr/local/libexec/sway-seat/sway-seat-wait-ready",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sway-seat-user-manager-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "user": "owner",
+        "timeout_secs": 60
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

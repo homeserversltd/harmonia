@@ -1,0 +1,20 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "system-packages",
+  "title": "Software updates",
+  "summary": "Keeps this device's installed software current.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "homesi system package upgrade ladder using the package tool.",
+  "optional": false,
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "system-packages-upgrade",
+      "tool": "package",
+      "permutation": "upgrade",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ]
+}

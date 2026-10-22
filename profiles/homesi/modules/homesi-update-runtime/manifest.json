@@ -1,0 +1,66 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "homesi-update-runtime",
+  "title": "Update schedule",
+  "summary": "Keeps the built-in software update schedule and removes outdated schedules.",
+  "category": "known-good",
+  "version": "3.6.0",
+  "description": "Retire obsolete profile-named schedules; the birth-owned public engine timer remains the only update scheduler.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "retire-harmonia-homeserver-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeserver.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homeserver-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homeserver.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homesi-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homesi.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-homesi-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-homesi.timer",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-tv-service",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-tv.service",
+        "timeout_secs": 30
+      }
+    },
+    {
+      "step_id": "retire-harmonia-tv-timer",
+      "tool": "systemd",
+      "permutation": "disable-stop-remove",
+      "args": {
+        "service": "harmonia-tv.timer",
+        "timeout_secs": 30
+      }
+    }
+  ]
+}

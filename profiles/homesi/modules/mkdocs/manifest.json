@@ -1,0 +1,79 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "mkdocs",
+  "title": "Documentation site",
+  "summary": "Keeps the household's documentation site configured and available.",
+  "category": "interactable",
+  "version": "1.0.3",
+  "description": "The shared documentation module owns the documentation bytes; this module keeps the whole MkDocs hub serving at loopback 127.0.0.1:8005 on every sold appliance. Only HomeServer nginx publishes it to the LAN.",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "mkdocs-binary-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/test",
+        "args": [
+          "-x",
+          "/opt/docs/venv/bin/mkdocs"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "mkdocs-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "opt/docs/mkdocs.yml",
+          "etc/systemd/system/mkdocs.service"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "mkdocs-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "mkdocs-unit-valid",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {
+        "program": "/usr/bin/systemd-analyze",
+        "args": [
+          "--root=/",
+          "verify",
+          "/etc/systemd/system/mkdocs.service"
+        ],
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "mkdocs-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "mkdocs-service-ready",
+      "tool": "systemd",
+      "permutation": "is-active-probe",
+      "args": {
+        "service": "mkdocs.service",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

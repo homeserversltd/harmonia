@@ -1,0 +1,17 @@
+# HomeSuperintelligence login banner
+# Sourced for interactive TTY/SSH login shells.
+case "$-" in
+  *i*) ;;
+  *) return 0 2>/dev/null || exit 0 ;;
+esac
+
+if [ -z "${HOMESI_BANNER_SHOWN:-}" ]; then
+  export HOMESI_BANNER_SHOWN=1
+  cat <<'EOF'
+HomeSuperintelligence — your household assistant
+Chat: chat.home.arpa
+Private shelves: homesi.home.arpa/models and homesi.home.arpa/inbox
+Daily safe update: update       Inspect only: update-check
+Last update: update-status      Show this guide again: help
+EOF
+fi

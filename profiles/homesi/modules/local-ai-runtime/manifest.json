@@ -1,0 +1,32 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "local-ai-runtime",
+  "title": "On-device assistant",
+  "summary": "Keeps the on-device assistant available and checks that it is responding.",
+  "category": "known-good",
+  "version": "3.6.1",
+  "description": "Read the born upstream runtime launchers through PATH; birth owns the binary and launcher locations.",
+  "optional_warning": "The local model runtime is optional; missing born llama-server or llama-cli launchers are reported without provisioning software.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "local-ai-server-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "llama-server",
+        "receipt_label": "local-ai-server"
+      }
+    },
+    {
+      "step_id": "local-ai-cli-present",
+      "tool": "files",
+      "permutation": "executable-present",
+      "args": {
+        "executable": "llama-cli",
+        "receipt_label": "local-ai-cli"
+      }
+    }
+  ],
+  "optional": true
+}

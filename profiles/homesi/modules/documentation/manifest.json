@@ -1,0 +1,41 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "documentation",
+  "title": "Documentation source and shelf",
+  "summary": "Synchronizes the documentation source and owns the shared documentation bytes.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "The shared documentation module synchronizes the source checkout and owns the documentation shelf bytes.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "documentation-source-sync",
+      "tool": "git-artifact",
+      "permutation": "sync",
+      "args": {
+        "component": "documentation",
+        "path": "/opt/docs/source",
+        "bearer": "owner"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "documentation-docs-sweep",
+      "tool": "files",
+      "permutation": "source-shelf-sweep",
+      "args": {
+        "source_root": "/opt/docs/source",
+        "shelf_source": "docs",
+        "target_shelf": "/opt/docs/docs",
+        "shelf_owner": "owner",
+        "shelf_group": "owner",
+        "shelf_directory_mode": 493,
+        "shelf_file_mode": 420,
+        "prune": true,
+        "owned_recursive": true,
+        "provenance_state": "/var/lib/harmonia/state/documentation-docs-sweep.json"
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

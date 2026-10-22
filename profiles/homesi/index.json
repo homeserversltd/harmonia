@@ -1,0 +1,37 @@
+{
+  "schema": "harmonia.profile.v1",
+  "id": "homesi",
+  "package_authority": {
+    "os_family": "debian",
+    "package_manager": "apt"
+  },
+  "dotfile_pool": "homesi",
+  "identity": "homesi",
+  "categories_required": true,
+  "description": "HomeSuperintelligence: a headless Debian 13 household assistant with local models, appliance controls, documentation, and two private model shelves.",
+  "module_spine_entered": "profiles/homesi/modules",
+  "modules": [
+    "system-packages",
+    "dot-files",
+    "keyman-runtime",
+    "rust-build-toolchain",
+    "local-ai-runtime",
+    "homesi-update-runtime",
+    "household-time",
+    "caduceus",
+    "sbin",
+    "documentation",
+    "mkdocs",
+    "sudoers",
+    "grub-branding",
+    "sway-seat",
+    "cua-driver",
+    "hermes-seat",
+    "hermes-sway-config",
+    "hermes-wayvnc-config",
+    "hermes-sway-seat",
+    "hermes-cua-driver-service",
+    "hermes-gateway-service",
+    "model-shelf"
+  ]
+}

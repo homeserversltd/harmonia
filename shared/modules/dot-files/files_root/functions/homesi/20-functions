@@ -1,0 +1,35 @@
+# HomeSuperintelligence local operator functions
+# Sourced by /home/owner/.bashrc on TTY/SSH login.
+
+homesi_help() {
+  cat <<'EOF'
+HomeSuperintelligence local commands
+
+Maintenance (Caduceus -> Harmonia):
+  update          caduceus update now
+  update-check    caduceus update status
+  update-status   caduceus receipts latest
+  health          caduceus health
+  timer           Show the birth-owned Harmonia systemd timer.
+  maintenance-log Show recent maintenance service logs.
+  reboot          Reboot through systemd.
+  poweroff        Power off through systemd.
+
+Receipts and inspection:
+  receipts        List latest maintenance receipts.
+  ip-now          Show current local IP addresses.
+
+Chat: chat.home.arpa
+Private shelves: homesi.home.arpa/models and homesi.home.arpa/inbox
+  Models          /home/owner/Models
+  Inbox           /home/owner/Inbox
+EOF
+}
+
+help() {
+  if [ "$#" -gt 0 ]; then
+    builtin help "$@"
+  else
+    homesi_help
+  fi
+}
