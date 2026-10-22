@@ -38,7 +38,7 @@ def read_bounded(response, limit):
 def fetch_bytes(url, limit, accept):
     request = urllib.request.Request(
         url,
-        headers={"Accept": accept, "User-Agent": "HomeConsole-desktop-maintenance"},
+        headers={"Accept": accept, "User-Agent": "Appliance-desktop-maintenance"},
     )
     try:
         with urllib.request.urlopen(request, timeout=45) as response:

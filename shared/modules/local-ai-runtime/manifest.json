@@ -6,7 +6,7 @@
   "category": "known-good",
   "version": "3.6.1",
   "description": "Local AI runtime ladder: compatibility links, binary readback, and service status readback.",
-  "optional_warning": "Local AI runtime components are optional; when packages, compatibility links, binaries, or services are absent, Harmonia warns instead of failing the HomeConsole profile. On Ubuntu, the existing /usr/bin/llama-server and /usr/bin/llama-cli links expect llama.cpp-tools; this module does not install it.",
+  "optional_warning": "Local AI runtime components are optional; when packages, compatibility links, binaries, or services are absent, Harmonia warns instead of failing the appliance profile. On Ubuntu, the existing /usr/bin/llama-server and /usr/bin/llama-cli links expect llama.cpp-tools; this module does not install it.",
   "constants": {},
   "ladder": [
     {
