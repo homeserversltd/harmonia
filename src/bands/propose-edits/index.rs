@@ -368,14 +368,14 @@ pub(crate) fn persist_feed_with_intent(
     path: &Path,
     intent: FeedPersistenceIntent,
 ) -> Result<usize, String> {
-    persist_feed_with_config(path, intent, &[])
+    persist_feed_with_config(path, intent, &[]).map(|writes| writes.unwrap_or(0))
 }
 
 fn persist_feed_with_config(
     path: &Path,
     intent: FeedPersistenceIntent,
     config: &[crate::ledger::ConfigProposal],
-) -> Result<usize, String> {
+) -> Result<Option<usize>, String> {
     crate::atoms::attest::with_proposal_projection_lock(path, || {
         let feed = match &intent {
             FeedPersistenceIntent::Replace(feed) => feed.clone(),
@@ -388,13 +388,27 @@ fn persist_feed_with_config(
                         == serde_json::to_value(&composed)
                             .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?
                 {
-                    return Ok(0);
+                    return Ok(Some(0));
                 }
                 composed
             }
         };
-        persist_feed_locked(path, &feed, config)
+        if let Err(error) = crate::ledger::prepare_config_proposals(path, &feed, config) {
+            // A failed source write must not expose an unusable new offer.
+            // Hold the prior projection and report the failure without blocking
+            // the module's independent software convergence.
+            report_proposal_row_failure(&error);
+            return Ok(None);
+        }
+        persist_feed_locked(path, &feed, config).map(Some)
     })
+}
+
+fn report_proposal_row_failure(error: &str) {
+    let signal = crate::deeds::coded_signal(error);
+    crate::deeds::reporting_failure("profile_ledger", &signal);
+    let _ = crate::deeds::record("proposal-rows", "harmonia-interactables", false, false,
+        None, None, None, Some(&signal), None);
 }
 
 fn persist_feed_locked(
@@ -424,10 +438,7 @@ fn persist_feed_locked(
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
     )?;
     if let Err(error) = crate::ledger::sync_proposals(path, feed, config) {
-        let signal = crate::deeds::coded_signal(&error);
-        crate::deeds::reporting_failure("profile_ledger", &signal);
-        let _ = crate::deeds::record("proposal-rows", "harmonia-interactables", false, false,
-            None, None, None, Some(&signal), None);
+        report_proposal_row_failure(&error);
     }
     if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,None,None,None,None,Some(writes as u64))?; }
     Ok(writes)
@@ -817,7 +828,7 @@ fn refresh_interactables_at_path_with_policy(
         });
     }
     feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
-    persist_feed_with_config(
+    let published = persist_feed_with_config(
         &path,
         FeedPersistenceIntent::Upsert {
             entries: feed
@@ -830,7 +841,10 @@ fn refresh_interactables_at_path_with_policy(
             sort_by_id: true,
         },
         &config,
-    )?;
+    )?.is_some();
+    if !published {
+        for recognition in &mut recognitions { recognition.interactable_id = None; }
+    }
     Ok(recognitions)
 }
 

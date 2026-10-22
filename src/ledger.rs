@@ -357,6 +357,33 @@ pub(crate) fn has_proposal_source(path: &Path, id: &str) -> Result<bool, String>
     ).map_err(database_error)
 }
 
+/// Make new sources durable before exposing their reference strings. Do not
+/// resolve any prior identity here: the old feed may still be visible until
+/// its projection succeeds. Final synchronization resolves retired rows.
+pub(crate) fn prepare_config_proposals(
+    path: &Path, feed: &crate::interactables::InteractablesFeed, config: &[ConfigProposal],
+) -> Result<(), String> {
+    if config.is_empty() { return Ok(()); }
+    if let Some(connection) = reader()? {
+        if proposal_rows_match(&connection, &path.to_string_lossy(), feed)?
+            && config_rows_match(&connection, &path.to_string_lossy(), feed, config)?
+        { return Ok(()); }
+    }
+    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
+        seat.validate_ruyi(&serde_json::to_value(feed).map_err(|error| error.to_string())?)?;
+    }
+    let mut connection = writer()?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
+    let feed_id = path.to_string_lossy();
+    for proposal in config {
+        if let Some(item) = feed.interactables.iter().find(|item| item.id==proposal.id && !item.has_run) {
+            upsert_proposal_row(&transaction, &feed_id, item)?;
+            upsert_config_row(&transaction, &feed_id, proposal)?;
+        }
+    }
+    transaction.commit().map_err(database_error)
+}
+
 /// The public feed remains the presentation surface. Its proposal identities
 /// and their config state/source snapshots change together, by key; no run
 /// receipt, diff or command payload is copied into the database.
@@ -379,14 +406,19 @@ pub(crate) fn sync_proposals(
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
     project_proposal_rows(&transaction, &feed_id, feed)?;
     for proposal in config.iter().filter(|proposal| feed.interactables.iter().any(|item| item.id==proposal.id && !item.has_run)) {
-        transaction.execute(
-            "INSERT INTO proposal_config(feed_id,id,config_state,source) VALUES(?1,?2,?3,?4)
-             ON CONFLICT(feed_id,id) DO UPDATE SET config_state=excluded.config_state,source=excluded.source
-             WHERE (config_state,source) IS NOT (excluded.config_state,excluded.source)",
-            params![feed_id,proposal.id,proposal.state.to_string(),proposal.source],
-        ).map_err(database_error)?;
+        upsert_config_row(&transaction, &feed_id, proposal)?;
     }
     transaction.commit().map_err(database_error)
+}
+
+fn upsert_config_row(connection: &Connection, feed_id: &str, proposal: &ConfigProposal) -> Result<(), String> {
+    connection.execute(
+        "INSERT INTO proposal_config(feed_id,id,config_state,source) VALUES(?1,?2,?3,?4)
+         ON CONFLICT(feed_id,id) DO UPDATE SET config_state=excluded.config_state,source=excluded.source
+         WHERE (config_state,source) IS NOT (excluded.config_state,excluded.source)",
+        params![feed_id,proposal.id,proposal.state.to_string(),proposal.source],
+    ).map_err(database_error)?;
+    Ok(())
 }
 
 fn config_rows_match(
@@ -411,18 +443,7 @@ fn config_rows_match(
 
 fn project_proposal_rows(connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed) -> Result<(), String> {
     for item in &feed.interactables {
-        connection.execute(
-            "INSERT INTO proposals(feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-             ON CONFLICT(feed_id,id) DO UPDATE SET module_id=excluded.module_id,kind=excluded.kind,
-              target_path=excluded.target_path,reference_source_path=excluded.reference_source_path,
-              live_sha=excluded.live_sha,reference_sha=excluded.reference_sha,silenced=excluded.silenced,has_run=excluded.has_run
-             WHERE (module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
-               IS NOT (excluded.module_id,excluded.kind,excluded.target_path,excluded.reference_source_path,
-                       excluded.live_sha,excluded.reference_sha,excluded.silenced,excluded.has_run)",
-            params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
-                item.reference_source_path.as_ref().map(|p|p.to_string_lossy()),item.live_sha,item.reference_sha,item.silenced,item.has_run],
-        ).map_err(database_error)?;
+        upsert_proposal_row(connection, feed_id, item)?;
     }
     // Keyset walk: no whole-store load or body replay, even during repair.
     let mut after: Option<String> = None;
@@ -439,6 +460,22 @@ fn project_proposal_rows(connection: &Connection, feed_id: &str, feed: &crate::i
         }
         after = Some(id);
     }
+    Ok(())
+}
+
+fn upsert_proposal_row(connection: &Connection, feed_id: &str, item: &crate::interactables::Interactable) -> Result<(), String> {
+    connection.execute(
+        "INSERT INTO proposals(feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+         ON CONFLICT(feed_id,id) DO UPDATE SET module_id=excluded.module_id,kind=excluded.kind,
+          target_path=excluded.target_path,reference_source_path=excluded.reference_source_path,
+          live_sha=excluded.live_sha,reference_sha=excluded.reference_sha,silenced=excluded.silenced,has_run=excluded.has_run
+         WHERE (module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
+           IS NOT (excluded.module_id,excluded.kind,excluded.target_path,excluded.reference_source_path,
+                   excluded.live_sha,excluded.reference_sha,excluded.silenced,excluded.has_run)",
+        params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
+            item.reference_source_path.as_ref().map(|p|p.to_string_lossy()),item.live_sha,item.reference_sha,item.silenced,item.has_run],
+    ).map_err(database_error)?;
     Ok(())
 }
 
