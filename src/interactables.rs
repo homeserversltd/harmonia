@@ -601,35 +601,33 @@ fn interactable_run(
         .get("compiled_target_absent")
         .and_then(Value::as_bool)
         == Some(true);
-    let mut reference_options = fs::OpenOptions::new();
-    reference_options
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
-    let mut reference_file = reference_options.open(reference_source_path).map_err(|error| {
-        format!(
-            "interactable-reference-source-open-failed {}: {error}",
-            reference_source_path.display()
-        )
-    })?;
-    let reference_metadata = reference_file.metadata().map_err(|error| {
-        format!(
-            "interactable-reference-source-stat-failed {}: {error}",
-            reference_source_path.display()
-        )
-    })?;
-    if !reference_metadata.is_file() {
-        return Err(format!(
-            "interactable-reference-source-not-regular {}",
-            reference_source_path.display()
-        ));
-    }
-    let mut desired_bytes = Vec::new();
-    reference_file.read_to_end(&mut desired_bytes).map_err(|error| {
-        format!(
-            "interactable-reference-source-read-failed {}: {error}",
-            reference_source_path.display()
-        )
-    })?;
+    let (desired_bytes, reference_mode) = match crate::ledger::proposal_source(&path, &item.id)? {
+        // The former atomic snapshot writer used mode 0644. No snapshot path
+        // is opened for a row-backed proposal.
+        Some(bytes) => (bytes, 0o644),
+        None => {
+            // An older pending feed may still refer to its existing file.
+            // Read it no-follow, leave it untouched, and never recreate it.
+            let mut reference_options = fs::OpenOptions::new();
+            reference_options
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+            let mut reference_file = reference_options.open(reference_source_path).map_err(|error| {
+                format!("interactable-reference-source-open-failed {}: {error}", reference_source_path.display())
+            })?;
+            let metadata = reference_file.metadata().map_err(|error| {
+                format!("interactable-reference-source-stat-failed {}: {error}", reference_source_path.display())
+            })?;
+            if !metadata.is_file() {
+                return Err(format!("interactable-reference-source-not-regular {}", reference_source_path.display()));
+            }
+            let mut bytes = Vec::new();
+            reference_file.read_to_end(&mut bytes).map_err(|error| {
+                format!("interactable-reference-source-read-failed {}: {error}", reference_source_path.display())
+            })?;
+            (bytes, metadata.mode() & 0o7777)
+        }
+    };
     let reference_sha256 = format!("{:x}", Sha256::digest(&desired_bytes));
     let mut receipt = if compiled_target_absent {
         if item.live_sha.is_some()
@@ -707,7 +705,7 @@ fn interactable_run(
             .map(crate::atoms::files::resolve_gid)
             .transpose()?
             .unwrap_or(default_gid);
-        let desired_mode = item.mode.unwrap_or(reference_metadata.mode() & 0o7777);
+        let desired_mode = item.mode.unwrap_or(reference_mode);
         let projectio_receipt = crate::atoms::projectio::create_absent(
             crate::atoms::projectio::AbsentCreationRequest {
                 target: target_path,
@@ -760,8 +758,7 @@ fn interactable_run(
             .unwrap_or_else(|| target_metadata.gid());
         let desired_mode = item
             .mode
-            .or_else(|| crate::atoms::files::source_mode(reference_source_path).ok())
-            .ok_or_else(|| "interactable-reference-source-mode-failed".to_string())?;
+            .unwrap_or(reference_mode);
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos().to_string())

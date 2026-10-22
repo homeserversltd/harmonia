@@ -214,24 +214,15 @@ pub(crate) fn retain_config_witness(witness: &crate::atoms::attest::ConfigPlaneW
     Ok(())
 }
 
-fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
-    let mut legacy = fs::read_dir(receipt_dir)
-        .ok()
+fn collect_config_surfaces(_receipt_dir: &Path) -> Vec<serde_json::Value> {
+    let feed_path = crate::interactables::feed_path();
+    let mut legacy = crate::bands::propose_edits::take_config_state_recognitions()
         .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            let name = name.to_str()?;
-            if !name.starts_with("config-state-")
-                || !name.ends_with(".json")
-                || !entry.file_type().ok()?.is_file()
-            {
-                return None;
-            }
-            let value = serde_json::from_str::<serde_json::Value>(
-                &fs::read_to_string(entry.path()).ok()?,
-            )
-            .ok()?;
+        .filter_map(|(id, current)| {
+            // Look up only this invocation's recognized keys. A refusal or a
+            // reporting-store failure has reply-local evidence but no live row.
+            let value = crate::ledger::config_state(&feed_path, &id).ok().flatten()
+                .filter(is_current_run_receipt).unwrap_or(current);
             if value.get("schema").and_then(serde_json::Value::as_str)
                 != Some("harmonia.config_state.v1")
             {
@@ -239,7 +230,7 @@ fn collect_config_surfaces(receipt_dir: &Path) -> Vec<serde_json::Value> {
             }
             if !is_current_run_receipt(&value) { return None; }
             let record = serde_json::from_value::<ConfigSurfaceReceipt>(value.clone()).ok()?;
-            // Keep legacy fields and any additive sidecar fields verbatim.
+            // Keep the existing config-surface shape and additive fields verbatim.
             Some((record.id, record.target, value))
         })
         .collect::<Vec<_>>();

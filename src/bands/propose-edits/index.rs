@@ -19,15 +19,15 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 thread_local! {
-    static CURRENT_CONFIG_RECOGNITION_IDS: RefCell<BTreeSet<String>> = RefCell::new(BTreeSet::new());
+    static CURRENT_CONFIG_RECOGNITIONS: RefCell<BTreeMap<String, Value>> = RefCell::new(BTreeMap::new());
 }
 
 pub(crate) fn reset_config_state_recognitions() {
-    CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| ids.borrow_mut().clear());
+    CURRENT_CONFIG_RECOGNITIONS.with(|state| state.borrow_mut().clear());
 }
 
-fn remember_config_state_recognition(id: &str) {
-    CURRENT_CONFIG_RECOGNITION_IDS.with(|ids| { ids.borrow_mut().insert(id.to_owned()); });
+pub(crate) fn take_config_state_recognitions() -> BTreeMap<String, Value> {
+    CURRENT_CONFIG_RECOGNITIONS.with(|state| std::mem::take(&mut *state.borrow_mut()))
 }
 
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
@@ -96,7 +96,11 @@ fn read_regular_file_no_follow(path: &Path, context: &str) -> Result<Vec<u8>, St
     Ok(bytes)
 }
 
-fn proposal_sources_root(parent: &Path, create: bool) -> Result<Option<PathBuf>, String> {
+fn proposal_reference(feed_path: &Path, id: &str) -> Result<PathBuf, String> {
+    if !is_config_proposal_id(id) {
+        return Err("config-proposal-source-id-invalid".to_string());
+    }
+    let parent = feed_path.parent().unwrap_or_else(|| Path::new("."));
     let absolute_parent = if parent.is_absolute() {
         parent.to_path_buf()
     } else if parent.as_os_str().is_empty() || parent == Path::new(".") {
@@ -107,39 +111,9 @@ fn proposal_sources_root(parent: &Path, create: bool) -> Result<Option<PathBuf>,
             .join(parent)
     };
     let parent = crate::atoms::attest::convergence_receipts::validate_receipt_directory_root(&absolute_parent)?;
-    let root = parent.join("proposal-sources");
-    match fs::symlink_metadata(&root) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            crate::atoms::attest::prepare_receipt_parent(&root)?;
-        }
-        Err(error) => return Err(format!("config-proposal-source-root-observe-failed {}: {error}", root.display())),
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() => {
-            return Err(format!("config-proposal-source-root-collision {}", root.display()));
-        }
-        Ok(_) => {}
-    }
-    let root = crate::atoms::attest::convergence_receipts::validate_receipt_directory_root(&root)?;
-    if root.parent() != Some(parent.as_path()) {
-        return Err(format!("config-proposal-source-root-not-direct-child {}", root.display()));
-    }
-    Ok(Some(root))
-}
-
-fn materialize_proposal_reference(
-    feed_path: &Path,
-    id: &str,
-    bytes: &[u8],
-) -> Result<PathBuf, String> {
-    if !is_config_proposal_id(id) {
-        return Err("config-proposal-source-id-invalid".to_string());
-    }
-    let parent = feed_path.parent().unwrap_or_else(|| Path::new("."));
-    let root = proposal_sources_root(parent, true)?
-        .ok_or_else(|| "config-proposal-source-root-missing".to_string())?;
-    let snapshot = root.join(format!("{id}.source"));
-    crate::atoms::attest::write_bytes_atomic(&snapshot, bytes)?;
-    Ok(snapshot)
+    // Preserve the public reference string. The snapshot itself is now keyed
+    // SQLite state; this path is never created or followed for a row-backed item.
+    Ok(parent.join("proposal-sources").join(format!("{id}.source")))
 }
 
 pub(crate) fn persist_feed(
@@ -394,6 +368,14 @@ pub(crate) fn persist_feed_with_intent(
     path: &Path,
     intent: FeedPersistenceIntent,
 ) -> Result<usize, String> {
+    persist_feed_with_config(path, intent, &[])
+}
+
+fn persist_feed_with_config(
+    path: &Path,
+    intent: FeedPersistenceIntent,
+    config: &[crate::ledger::ConfigProposal],
+) -> Result<usize, String> {
     crate::atoms::attest::with_proposal_projection_lock(path, || {
         let feed = match &intent {
             FeedPersistenceIntent::Replace(feed) => feed.clone(),
@@ -411,13 +393,14 @@ pub(crate) fn persist_feed_with_intent(
                 composed
             }
         };
-        persist_feed_locked(path, &feed)
+        persist_feed_locked(path, &feed, config)
     })
 }
 
 fn persist_feed_locked(
     path: &Path,
     feed: &interactables::InteractablesFeed,
+    config: &[crate::ledger::ConfigProposal],
 ) -> Result<usize, String> {
     let feed_bytes = {
         let mut bytes = serde_json::to_vec_pretty(feed)
@@ -440,7 +423,7 @@ fn persist_feed_locked(
         &records,
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
     )?;
-    if let Err(error) = crate::ledger::sync_proposals(path, feed) {
+    if let Err(error) = crate::ledger::sync_proposals(path, feed, config) {
         let signal = crate::deeds::coded_signal(&error);
         crate::deeds::reporting_failure("profile_ledger", &signal);
         let _ = crate::deeds::record("proposal-rows", "harmonia-interactables", false, false,
@@ -452,17 +435,27 @@ fn persist_feed_locked(
 
 pub(crate) fn prune_stale_interactables(
     profile: &Profile,
+    observed_modules: &BTreeSet<String>,
     events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
-    prune_stale_interactables_at_path(&path, profile, events)
+    prune_stale_interactables_with_observations(&path, profile, observed_modules, events)
 }
 
 pub(crate) fn prune_stale_interactables_at_path(
     path: &Path,
     profile: &Profile,
+    events: &mut crate::receipts::EventSink,
+) -> Result<(), String> {
+    prune_stale_interactables_with_observations(path, profile, &BTreeSet::new(), events)
+}
+
+fn prune_stale_interactables_with_observations(
+    path: &Path,
+    profile: &Profile,
+    observed_modules: &BTreeSet<String>,
     _events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
     let mut feed = interactables::load_feed_raw(path)?;
@@ -470,6 +463,7 @@ pub(crate) fn prune_stale_interactables_at_path(
     let mut removed_ids = BTreeSet::new();
 
     for entry in feed.interactables.drain(..) {
+        let row_backed = crate::ledger::has_proposal_source(path, &entry.id)?;
         let reason = if entry.kind == "engine-replacement" {
             Some("retired-kind")
         } else if !active_modules.contains(&entry.module_id) {
@@ -480,7 +474,14 @@ pub(crate) fn prune_stale_interactables_at_path(
             Some("profile-absent-from-current-certificate")
         } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry) {
             None
+        } else if row_backed && observed_modules.contains(&entry.module_id)
+            && !CURRENT_CONFIG_RECOGNITIONS.with(|state| state.borrow().contains_key(&entry.id))
+        {
+            // Only a successfully observed module can retire an offer it no
+            // longer produces. A failed/missing observation is not resolution.
+            Some("config-proposal-no-longer-produced")
         } else if !interactables::is_ruyi_born_kind(&entry.kind)
+            && !row_backed
             && !entry
                 .reference_source_path
                 .as_deref()
@@ -551,6 +552,7 @@ fn refresh_interactables_at_path_with_policy(
     }
     let mut feed = interactables::load_feed(path)?;
     let mut recognitions = Vec::new();
+    let mut config = Vec::new();
     let mut remove_ids = BTreeSet::new();
     let mut upsert_ids = BTreeSet::new();
     let now = stamp();
@@ -636,7 +638,7 @@ fn refresh_interactables_at_path_with_policy(
         } else {
             stable_id(&entry.target, live_sha.as_deref().unwrap_or_default(), &reference_sha)
         };
-        let reference_source = materialize_proposal_reference(path, &id, &reference_bytes)?;
+        let reference_source = proposal_reference(path, &id)?;
         let reference_source_id = reference_source.to_string_lossy().into_owned();
         let target_proposal_count = feed
             .interactables
@@ -690,17 +692,22 @@ fn refresh_interactables_at_path_with_policy(
                 "config-state-{}.json",
                 id.strip_prefix("config-proposal-").unwrap_or(&id)
             ));
-        remember_config_state_recognition(&id);
-        crate::atoms::attest::write_json_atomic(
-            &state_receipt,
-            &serde_json::json!({
+        let mut config_state = serde_json::json!({
                 "schema": "harmonia.config_state.v1", "config_state": state, "id": id.clone(),
                 "target": entry.target.clone(), "reference": reference_source.clone(), "score": score,
                 "live_sha": live_sha.clone(), "compiled_target_absent": target_absent,
                 "reference_sha": reference_sha.clone(), "threshold": threshold,
                 "reference_id": reference_source.clone()
-            }),
-        )?;
+            });
+        // Match the atomic JSON writer's run identity without creating a file.
+        if let Some(run_id) = crate::receipts::receipt_run_id(&state_receipt) {
+            config_state["run_id"] = serde_json::json!(run_id);
+        }
+        // Refused recognition has no live proposal. Its evidence belongs only
+        // to this invocation's reply, never an orphan row or a stale sidecar.
+        CURRENT_CONFIG_RECOGNITIONS.with(|state| {
+            state.borrow_mut().insert(id.clone(), config_state.clone());
+        });
         if score < threshold {
             remove_ids.extend(
                 feed.interactables
@@ -723,6 +730,9 @@ fn refresh_interactables_at_path_with_policy(
             });
             continue;
         }
+        config.push(crate::ledger::ConfigProposal {
+            id: id.clone(), state: config_state, source: reference_bytes,
+        });
         let interactable_id = id.clone();
         let mut refreshed = Interactable {
             id: id.clone(),
@@ -807,7 +817,7 @@ fn refresh_interactables_at_path_with_policy(
         });
     }
     feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
-    persist_feed_with_intent(
+    persist_feed_with_config(
         &path,
         FeedPersistenceIntent::Upsert {
             entries: feed
@@ -819,6 +829,7 @@ fn refresh_interactables_at_path_with_policy(
             remove_ids,
             sort_by_id: true,
         },
+        &config,
     )?;
     Ok(recognitions)
 }

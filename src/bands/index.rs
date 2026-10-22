@@ -791,8 +791,12 @@ pub(crate) fn run_profile_engine_with_projection(
                         &mut events,
                         context.map(|value| value.face.as_str()),
                     );
+                let observed_modules = state.module_states.iter()
+                    .filter(|(id, result)| result.ok && !halted_modules.contains(*id))
+                    .map(|(id, _)| id.clone()).collect();
                 let prune_result = crate::bands::propose_edits::prune_stale_interactables(
                     &active_profile,
+                    &observed_modules,
                     &mut events,
                 );
                 propose_result?;

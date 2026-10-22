@@ -13,6 +13,15 @@ const PROPOSALS_TABLE: &str = "CREATE TABLE IF NOT EXISTS proposals (
     kind TEXT NOT NULL, target_path TEXT, reference_source_path TEXT,
     live_sha TEXT, reference_sha TEXT, silenced INTEGER NOT NULL,
     has_run INTEGER NOT NULL, PRIMARY KEY(feed_id,id));";
+const CONFIG_PROPOSALS_TABLE: &str = "CREATE TABLE IF NOT EXISTS proposal_config (
+    feed_id TEXT NOT NULL, id TEXT NOT NULL, config_state TEXT NOT NULL,
+    source BLOB NOT NULL, PRIMARY KEY(feed_id,id));";
+
+pub(crate) struct ConfigProposal {
+    pub(crate) id: String,
+    pub(crate) state: Value,
+    pub(crate) source: Vec<u8>,
+}
 
 fn database_error(error: rusqlite::Error) -> String {
     format!("harmonia-state-database-failed: {error}")
@@ -80,6 +89,7 @@ pub(crate) fn writer() -> Result<Connection, String> {
          CREATE TABLE IF NOT EXISTS deed_outbox (id TEXT PRIMARY KEY, count INTEGER NOT NULL);"
     ).map_err(database_error)?;
     transaction.execute_batch(PROPOSALS_TABLE).map_err(database_error)?;
+    transaction.execute_batch(CONFIG_PROPOSALS_TABLE).map_err(database_error)?;
     transaction.commit().map_err(database_error)?;
     Ok(connection)
 }
@@ -312,15 +322,54 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The existing public feed remains the declaration/presentation surface. Rows
-/// track only open identities and state; no diff, command payload or receipt is
-/// copied into the database. Its loaded public feed seat governs this projection.
-pub(crate) fn sync_proposals(path: &Path, feed: &crate::interactables::InteractablesFeed) -> Result<(), String> {
+fn config_reader() -> Result<Option<Connection>, String> {
+    let Some(connection) = reader()? else { return Ok(None); };
+    let present: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='proposal_config')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    Ok(present.then_some(connection))
+}
+
+/// Old stores and absent keys are null. Queries never create or repair state.
+pub(crate) fn config_state(path: &Path, id: &str) -> Result<Option<Value>, String> {
+    let Some(connection) = config_reader()? else { return Ok(None); };
+    let state: Option<String> = connection.query_row(
+        "SELECT config_state FROM proposal_config WHERE feed_id=?1 AND id=?2",
+        params![path.to_string_lossy(),id], |row| row.get(0),
+    ).optional().map_err(database_error)?;
+    state.map(|state| serde_json::from_str(&state).map_err(|error| error.to_string())).transpose()
+}
+
+pub(crate) fn proposal_source(path: &Path, id: &str) -> Result<Option<Vec<u8>>, String> {
+    let Some(connection) = config_reader()? else { return Ok(None); };
+    connection.query_row(
+        "SELECT source FROM proposal_config WHERE feed_id=?1 AND id=?2",
+        params![path.to_string_lossy(),id], |row| row.get(0),
+    ).optional().map_err(database_error)
+}
+
+pub(crate) fn has_proposal_source(path: &Path, id: &str) -> Result<bool, String> {
+    let Some(connection) = config_reader()? else { return Ok(false); };
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM proposal_config WHERE feed_id=?1 AND id=?2)",
+        params![path.to_string_lossy(),id], |row| row.get(0),
+    ).map_err(database_error)
+}
+
+/// The public feed remains the presentation surface. Its proposal identities
+/// and their config state/source snapshots change together, by key; no run
+/// receipt, diff or command payload is copied into the database.
+pub(crate) fn sync_proposals(
+    path: &Path, feed: &crate::interactables::InteractablesFeed, config: &[ConfigProposal],
+) -> Result<(), String> {
     let feed_id = path.to_string_lossy();
     let observed = reader()?;
     if observed.is_none() && feed.interactables.is_empty() { return Ok(()); }
     if let Some(connection) = observed.as_ref() {
-        if proposal_rows_match(connection, &feed_id, feed)? { return Ok(()); }
+        if proposal_rows_match(connection, &feed_id, feed)? && config_rows_match(connection, &feed_id, feed, config)? {
+            return Ok(());
+        }
     }
     drop(observed);
     if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
@@ -329,7 +378,35 @@ pub(crate) fn sync_proposals(path: &Path, feed: &crate::interactables::Interacta
     let mut connection = writer()?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
     project_proposal_rows(&transaction, &feed_id, feed)?;
+    for proposal in config.iter().filter(|proposal| feed.interactables.iter().any(|item| item.id==proposal.id && !item.has_run)) {
+        transaction.execute(
+            "INSERT INTO proposal_config(feed_id,id,config_state,source) VALUES(?1,?2,?3,?4)
+             ON CONFLICT(feed_id,id) DO UPDATE SET config_state=excluded.config_state,source=excluded.source
+             WHERE (config_state,source) IS NOT (excluded.config_state,excluded.source)",
+            params![feed_id,proposal.id,proposal.state.to_string(),proposal.source],
+        ).map_err(database_error)?;
+    }
     transaction.commit().map_err(database_error)
+}
+
+fn config_rows_match(
+    connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed,
+    config: &[ConfigProposal],
+) -> Result<bool, String> {
+    if config.is_empty() { return Ok(true); }
+    let present: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='proposal_config')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    if !present { return Ok(false); }
+    for proposal in config.iter().filter(|proposal| feed.interactables.iter().any(|item| item.id==proposal.id && !item.has_run)) {
+        let same: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM proposal_config WHERE feed_id=?1 AND id=?2 AND config_state=?3 AND source=?4)",
+            params![feed_id,proposal.id,proposal.state.to_string(),proposal.source], |row| row.get(0),
+        ).map_err(database_error)?;
+        if !same { return Ok(false); }
+    }
+    Ok(true)
 }
 
 fn project_proposal_rows(connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed) -> Result<(), String> {
@@ -355,6 +432,9 @@ fn project_proposal_rows(connection: &Connection, feed_id: &str, feed: &crate::i
             params![feed_id,after], |row| row.get(0)).optional().map_err(database_error)?;
         let Some(id) = next else { break; };
         if !feed.interactables.iter().any(|item| item.id==id) {
+            // Both parts of the proposal resolve with its identity, under the
+            // caller's single transaction; a crash cannot leave either behind.
+            connection.execute("DELETE FROM proposal_config WHERE feed_id=?1 AND id=?2", params![feed_id,id]).map_err(database_error)?;
             connection.execute("DELETE FROM proposals WHERE feed_id=?1 AND id=?2", params![feed_id,id]).map_err(database_error)?;
         }
         after = Some(id);
@@ -390,6 +470,7 @@ pub(crate) fn filter_open_proposals(path: &Path, feed: &mut crate::interactables
             // view from the feed; the next producer repairs the persistent rows.
             let connection = Connection::open_in_memory().map_err(database_error)?;
             connection.execute_batch(PROPOSALS_TABLE).map_err(database_error)?;
+            connection.execute_batch(CONFIG_PROPOSALS_TABLE).map_err(database_error)?;
             project_proposal_rows(&connection, &feed_id, feed)?;
             connection
         }
