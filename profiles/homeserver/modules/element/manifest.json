@@ -7,10 +7,9 @@
   "version": "1.0.1",
   "description": "HOMESERVER Element Web client and portal surface. Element follows Synapse because its configuration targets and validates the Synapse endpoint.",
   "constants": {
-    "element_domain": "chat.home.arpa",
-    "element_alias_domain": "element.home.arpa",
-    "portal_name": "element",
-    "portal_local_url": "https://chat.home.arpa"
+    "element_domain": "agora.home.arpa",
+    "portal_name": "Agora",
+    "portal_local_url": "https://agora.home.arpa"
   },
   "files_root": "files_root",
   "ladder": [

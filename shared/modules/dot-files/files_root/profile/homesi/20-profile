@@ -9,7 +9,7 @@ if [ -z "${HOMESI_BANNER_SHOWN:-}" ]; then
   export HOMESI_BANNER_SHOWN=1
   cat <<'EOF'
 HomeSuperintelligence — your household assistant
-Chat: chat.home.arpa
+Chat: agora.home.arpa
 Private shelves: homesi.home.arpa/models and homesi.home.arpa/inbox
 Daily safe update: update       Inspect only: update-check
 Last update: update-status      Show this guide again: help

@@ -19,7 +19,7 @@ Receipts and inspection:
   receipts        List latest maintenance receipts.
   ip-now          Show current local IP addresses.
 
-Chat: chat.home.arpa
+Chat: agora.home.arpa
 Private shelves: homesi.home.arpa/models and homesi.home.arpa/inbox
   Models          /home/owner/Models
   Inbox           /home/owner/Inbox

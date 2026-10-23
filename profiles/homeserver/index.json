@@ -198,9 +198,8 @@
   "element_contract": {
     "schema": "harmonia.homeserver.element_contract.v1",
     "module": "element",
-    "element_domain": "chat.home.arpa",
-    "element_alias_domain": "element.home.arpa",
-    "portal_name": "element",
-    "portal_local_url": "https://chat.home.arpa"
+    "element_domain": "agora.home.arpa",
+    "portal_name": "Agora",
+    "portal_local_url": "https://agora.home.arpa"
   }
 }
