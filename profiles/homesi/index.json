@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homesi",
+  "version": "1.1.0",
   "package_authority": {
     "os_family": "debian",
     "package_manager": "apt"
@@ -30,6 +31,7 @@
     "hermes-sway-seat",
     "hermes-cua-driver-service",
     "hermes-gateway-service",
-    "model-shelf"
+    "model-shelf",
+    "model-slots"
   ]
 }

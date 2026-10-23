@@ -1,0 +1,16 @@
+[Unit]
+Description=Local AI model slot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=owner
+Group=owner
+Environment=HOME=/home/owner
+ExecStart=/usr/local/sbin/agathodaimon/cli.py local-ai slot run %i
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

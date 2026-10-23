@@ -1,0 +1,7 @@
+# The local-ai slot lever may restart or stop only these three instances.
+caduceus ALL=(root) NOPASSWD: /usr/bin/systemctl restart model-slot@brain.service
+caduceus ALL=(root) NOPASSWD: /usr/bin/systemctl stop model-slot@brain.service
+caduceus ALL=(root) NOPASSWD: /usr/bin/systemctl restart model-slot@embed.service
+caduceus ALL=(root) NOPASSWD: /usr/bin/systemctl stop model-slot@embed.service
+caduceus ALL=(root) NOPASSWD: /usr/bin/systemctl restart model-slot@ear.service
+caduceus ALL=(root) NOPASSWD: /usr/bin/systemctl stop model-slot@ear.service

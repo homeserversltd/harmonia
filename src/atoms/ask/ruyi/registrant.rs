@@ -24,19 +24,47 @@ fn service_token(value: &Value) -> bool {
 
 impl DeclaredServices {
     fn read() -> Self {
+        match crate::bands::stage_profile::read_device_ruyi_service_inputs() {
+            Ok((services, local_ai)) => Self::from_inputs(services, local_ai),
+            Err(_) => Self { entries: Vec::new(), first_invalid: Some("services".into()) },
+        }
+    }
+
+    fn from_inputs(services: Option<Value>, local_ai: Option<Value>) -> Self {
         let mut declared = Self { entries: Vec::new(), first_invalid: None };
-        let raw = match crate::bands::stage_profile::read_device_ruyi_services() {
-            Ok(None) => return declared,
-            Ok(Some(raw)) => raw,
-            Err(_) => {
+        if let Some(raw) = services {
+            if let Some(entries) = raw.as_array() {
+                declared.extend_declared(entries);
+            } else {
                 declared.first_invalid = Some("services".into());
-                return declared;
             }
-        };
-        let Some(entries) = raw.as_array() else {
-            declared.first_invalid = Some("services".into());
-            return declared;
-        };
+        }
+        if let Some(ear) = local_ai.as_ref().and_then(|ai| ai.get("slots")).and_then(|slots| slots.get("ear")) {
+            if ear.get("lan").and_then(Value::as_bool) == Some(true)
+                && ear.get("model").is_some_and(|model| !model.is_null())
+            {
+                match (ear.get("model").and_then(Value::as_str), ear.get("port").and_then(Value::as_u64)) {
+                    (Some(model), Some(port)) if !model.is_empty() && (1..=65535).contains(&port) => {
+                        let derived = json!({
+                            "kind": "speech-to-text", "port": port,
+                            "path": "/v1/audio/transcriptions",
+                            "model": model.strip_suffix(".gguf").unwrap_or(model),
+                            "protocol": "openai-audio-transcriptions"
+                        });
+                        // Compare the service identity, not additive peer metadata.
+                        let fields = ["kind", "port", "path", "model", "protocol"];
+                        if !declared.entries.iter().any(|entry| fields.iter().all(|field| entry[*field] == derived[*field])) {
+                            declared.entries.push(derived);
+                        }
+                    }
+                    _ => { declared.first_invalid.get_or_insert_with(|| "local_ai.slots.ear".into()); }
+                }
+            }
+        }
+        declared
+    }
+
+    fn extend_declared(&mut self, entries: &[Value]) {
         for (index, entry) in entries.iter().enumerate() {
             let valid = entry.is_object()
                 && service_token(&entry["kind"])
@@ -45,16 +73,15 @@ impl DeclaredServices {
                 && entry["path"].as_str().is_some_and(|path| Path::new(path).is_absolute())
                 && entry.get("model").is_none_or(|model| model.is_null() || model.is_string());
             if !valid {
-                declared.first_invalid.get_or_insert_with(|| format!("services[{index}]"));
+                self.first_invalid.get_or_insert_with(|| format!("services[{index}]"));
                 continue;
             }
             let mut entry = entry.clone();
             if entry.get("model").is_none() {
                 entry["model"] = Value::Null;
             }
-            declared.entries.push(entry);
+            self.entries.push(entry);
         }
-        declared
     }
 
     fn apply_to(&self, row: &mut Value) {

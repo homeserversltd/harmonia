@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub(crate) mod model_slots;
+
 pub(crate) use crate::atoms::systemd::{
     execute_validated_step, run_action, run_permutation_with_material_gate, validate_candidate_units,
 };

@@ -1,0 +1,19 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "model-slots",
+  "title": "Local models",
+  "summary": "Runs filled model slots and leaves empty slots stopped.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "One owner-run staff template, reconciled from local_ai.slots without writing appliance settings; absent local_ai is a no-op.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "model-slots-converge",
+      "tool": "systemd",
+      "permutation": "model-slots",
+      "args": {},
+      "on_failure": "stop"
+    }
+  ]
+}

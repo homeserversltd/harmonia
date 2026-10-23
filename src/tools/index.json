@@ -1408,6 +1408,12 @@
       "routine_summonable": true,
       "permutations": [
         {
+          "name": "model-slots",
+          "description": "converge the one model-slot template and brain/embed/ear instances from the read-only local_ai declaration",
+          "args": [],
+          "placement": "RestartServices"
+        },
+        {
           "name": "daemon-reload",
           "description": "reload the system systemd manager only when this module changed managed material",
           "args": [

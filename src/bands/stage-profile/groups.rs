@@ -258,9 +258,20 @@ pub(crate) fn read_device_caduceus_bind() -> Result<Option<String>, String> {
 
 /// Leave service-entry interpretation to the Ruyi registrant; malformed
 /// declarations must not become an engine configuration refusal.
-pub(crate) fn read_device_ruyi_services() -> Result<Option<serde_json::Value>, String> {
+pub(crate) fn read_device_ruyi_service_inputs() -> Result<
+    (Option<serde_json::Value>, Option<serde_json::Value>), String,
+> {
+    let config = read_device_config_at(&appliance_config_path())?;
+    Ok((
+        config.as_ref().and_then(|config| config.get("services").cloned()),
+        config.as_ref().and_then(|config| config.get("local_ai").cloned()),
+    ))
+}
+
+/// The slot lever is Caduceus's. Harmonia only reads this optional declaration.
+pub(crate) fn read_device_local_ai() -> Result<Option<serde_json::Value>, String> {
     Ok(read_device_config_at(&appliance_config_path())?
-        .and_then(|config| config.get("services").cloned()))
+        .and_then(|config| config.get("local_ai").cloned()))
 }
 
 pub(crate) fn read_device_syzygy_declaration() -> Result<Option<SyzygyDeclaration>, String> {

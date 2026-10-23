@@ -876,6 +876,12 @@ pub(crate) fn execute_routine_child(
                     .collect(),
             ))
         }
+        "systemd" if permutation.name == "model-slots" => {
+            let outcome = crate::tools::systemd::model_slots::execute(
+                &manifest.base_dir, invocation.filter(|_| apply),
+            )?;
+            Ok((outcome, BTreeMap::new()))
+        }
         "systemd" if permutation.name == "show-assert" => {
             let service = args
                 .get("service")

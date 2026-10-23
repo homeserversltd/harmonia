@@ -4,7 +4,7 @@
   "title": "System access",
   "summary": "Allows approved appliance controls to perform their required maintenance tasks.",
   "category": "known-good",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "One shared sudoers module selects all/ plus exactly one appliance pool and forcibly converges only estate-owned caduceus-* sudoers.d fragments after visudo validation.",
   "optional": false,
   "constants": {},

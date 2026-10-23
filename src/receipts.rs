@@ -668,6 +668,8 @@ pub(crate) fn write_plan_receipts(
     let mut ok = true;
     let mut first_missing_signal = "none".to_string();
 
+    let mut model_slots_plan = None;
+
     if profile.modules.is_empty() {
         ok = false;
         first_missing_signal = "profile-modules-empty".to_string();
@@ -723,6 +725,16 @@ pub(crate) fn write_plan_receipts(
                 let steps = validate_ladder(&manifest).map_err(|err| err.first_missing_signal())?;
                 crate::tools::routine::project_manifest_routines(&manifest, &steps)?;
                 for step in steps {
+                    if step.tool == "systemd" && step.permutation == "model-slots" {
+                        model_slots_plan = Some(serde_json::to_value(
+                            crate::tools::systemd::model_slots::plan(&module_dir).map_err(|error| {
+                                if first_missing_signal == "none" {
+                                    first_missing_signal = error.clone();
+                                }
+                                error
+                            })?,
+                        ).map_err(|error| error.to_string())?);
+                    }
                     if step.tool == "command" && step.permutation == "act" {
                         crate::tools::routine::command_skip_if_absent(&step.args)?;
                     }
@@ -752,8 +764,12 @@ pub(crate) fn write_plan_receipts(
             "identity_source": run_identity_source(),
             "module_count": profile.modules.len(),
             "authority_excluded_module_ids": projection.authority_excluded,
+            "module_ids": profile.modules,
             "first_missing_signal": first_missing_signal,
         });
+    if let Some(plan) = model_slots_plan {
+        run["model_slots"] = plan;
+    }
     if let Some(base_id) = extension {
         run["extends"] = json!(base_id);
         run["base_profile_id"] = json!(base_id);

@@ -787,6 +787,10 @@ pub(crate) fn execute_validated_step_with_source(
             software_authorization,
             invocation,
         ),
+        ("systemd", "model-slots") => tools::systemd::model_slots::execute(
+            source_module_dir,
+            invocation.filter(|_| software_authorization.is_some()),
+        ),
         ("systemd", _) => tools::systemd::execute_validated_step(
             step,
             module_dir,
