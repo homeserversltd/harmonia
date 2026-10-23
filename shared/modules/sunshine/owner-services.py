@@ -20,8 +20,16 @@ def systemctl(*args, quiet=False):
 
 
 def selected(values_path, profile_path):
-    profile = json.loads(profile_path.read_text())['profile']
-    return json.loads(values_path.read_text()).get(profile)
+    certificate = json.loads(profile_path.read_text())
+    kernel = certificate.get('kernel')
+    profile = kernel.get('profile') if isinstance(kernel, dict) else None
+    # The device certificate owns identity. Keep the older flat reader's
+    # alias only when the canonical field is absent, never over its value.
+    if profile is None:
+        profile = certificate.get('profile')
+    if not isinstance(profile, str) or not profile.strip():
+        raise KeyError('kernel.profile')
+    return json.loads(values_path.read_text()).get(profile.strip())
 
 
 def current(values):
