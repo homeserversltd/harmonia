@@ -4,8 +4,8 @@
   "title": "Model shelves",
   "summary": "Keeps two private household shelves for models and incoming files.",
   "category": "known-good",
-  "version": "1.0.0",
-  "description": "Maintain the Samba configuration for the two born owner shelves and restart Samba only after this module changed; birth owns packages, accounts, and directories.",
+  "version": "1.0.1",
+  "description": "Keep the born Samba configuration and LAN-only model-shelf nftables gate as owner-accepted Config targets; restart Samba and reload nftables only after this module changed in a press; birth owns packages, accounts, and directories.",
   "files_root": "files_root",
   "ladder": [
     {
@@ -16,13 +16,30 @@
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "etc/samba/smb.conf"
+          "etc/samba/smb.conf",
+          "etc/nftables.conf"
         ],
         "owner": "root",
         "group": "root",
         "mode": 420,
         "backup_existing": false,
         "receipt_name": "model-shelf-config"
+      }
+    },
+    {
+      "step_id": "model-shelf-nftables-reload",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "systemctl",
+        "args": [
+          "reload",
+          "nftables.service"
+        ],
+        "timeout_secs": 60,
+        "observation": {
+          "kind": "module_changed_before_step"
+        }
       }
     },
     {
