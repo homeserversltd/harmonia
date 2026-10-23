@@ -583,6 +583,217 @@ fn interactable_run(
     if item.extra.contains_key("command_proposal") {
         return run_command_proposal(&path, &item, invocation);
     }
+    run_file_config_proposal(&path, &item.id, invocation)
+}
+
+struct ConfigActContinuation {
+    manifest: crate::tools::ladder::LadderManifest,
+    steps: Vec<crate::tools::ladder::ValidatedStep>,
+}
+
+fn run_file_config_proposal(
+    path: &Path,
+    proposal_id: &str,
+    invocation: Option<&crate::Invocation>,
+) -> Result<(), String> {
+    let accepted = crate::atoms::attest::with_proposal_projection_lock(path, || {
+        let feed = load_feed(path)?;
+        let Some(item) = feed
+            .interactables
+            .iter()
+            .find(|item| item.id == proposal_id)
+            .cloned()
+        else {
+            if crate::tools::hermes_appearance::has_current_successful_completion(
+                &feed,
+                proposal_id,
+            ) {
+                return Ok(None);
+            }
+            return Err(format!("interactable-unknown-id {proposal_id}"));
+        };
+        if item.kind != "hard-stamp" || item.extra.contains_key("command_proposal") {
+            return Err("config-file-proposal-kind-stale".into());
+        }
+        let continuation = prepare_config_act_continuation(&item)?;
+        if continuation
+            .as_ref()
+            .is_some_and(|continuation| !continuation.steps.is_empty())
+            && invocation.and_then(crate::Invocation::key).is_none()
+        {
+            return Err("config-acceptance-owner-invocation-required".into());
+        }
+        let receipt = accept_config_file_locked(path, &item)?;
+        Ok(Some((receipt, continuation)))
+    })?;
+    let Some((receipt, continuation)) = accepted else {
+        return Ok(());
+    };
+    if let Some(continuation) =
+        continuation.filter(|continuation| !continuation.steps.is_empty())
+    {
+        run_config_act_continuation(
+            &continuation,
+            invocation.and_then(crate::Invocation::key),
+        )?;
+    }
+    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
+    Ok(())
+}
+
+fn prepare_config_act_continuation(
+    item: &Interactable,
+) -> Result<Option<ConfigActContinuation>, String> {
+    let Some(binding) = item
+        .extra
+        .get("config_act_binding")
+        .filter(|binding| !binding.is_null())
+    else {
+        return Ok(None);
+    };
+    let binding = binding
+        .as_object()
+        .ok_or("config-act-manifest-binding-invalid")?;
+    let manifest_path = binding
+        .get("manifest_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or("config-act-manifest-binding-invalid")?;
+    let manifest_sha = binding
+        .get("manifest_sha256")
+        .and_then(Value::as_str)
+        .filter(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .ok_or("config-act-manifest-binding-invalid")?;
+    let target_step_id = binding
+        .get("target_step_id")
+        .and_then(Value::as_str)
+        .filter(|step_id| !step_id.is_empty())
+        .ok_or("config-act-manifest-binding-invalid")?;
+    if !manifest_path.is_absolute()
+        || manifest_path.file_name().and_then(|name| name.to_str()) != Some("manifest.json")
+        || manifest_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some(item.module_id.as_str())
+    {
+        return Err("config-act-manifest-binding-invalid".into());
+    }
+    let manifest_bytes = read_config_act_manifest(&manifest_path)?;
+    let observed_sha = format!("{:x}", Sha256::digest(&manifest_bytes));
+    if observed_sha != manifest_sha {
+        return Err("config-act-manifest-binding-stale".into());
+    }
+    let manifest = crate::tools::ladder::load_ladder_manifest(&manifest_path)?;
+    if manifest.id != item.module_id {
+        return Err("config-act-module-binding-stale".into());
+    }
+    let steps = crate::tools::ladder::validate_ladder(&manifest)
+        .map_err(|error| format!("config-act-manifest-invalid {}", error.first_missing_signal()))?;
+    let final_manifest_bytes = read_config_act_manifest(&manifest_path)?;
+    if format!("{:x}", Sha256::digest(&final_manifest_bytes)) != manifest_sha {
+        return Err("config-act-manifest-binding-stale".into());
+    }
+    let target_index = steps
+        .iter()
+        .position(|step| step.step_id == target_step_id)
+        .ok_or("config-act-target-step-binding-stale")?;
+    let continuation_steps = steps
+        .into_iter()
+        .skip(target_index + 1)
+        .filter(|step| {
+            step.tool == "command"
+                && step.permutation == "act"
+                && step
+                    .args
+                    .get("observation")
+                    .and_then(Value::as_object)
+                    .and_then(|observation| observation.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("module_changed_before_step")
+        })
+        .collect();
+    Ok(Some(ConfigActContinuation {
+        manifest,
+        steps: continuation_steps,
+    }))
+}
+
+fn read_config_act_manifest(path: &Path) -> Result<Vec<u8>, String> {
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    let mut file = options.open(path).map_err(|error| {
+        format!("config-act-manifest-read-failed {}: {error}", path.display())
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        format!("config-act-manifest-stat-failed {}: {error}", path.display())
+    })?;
+    if !metadata.is_file() || metadata.len() > 256 * 1024 {
+        return Err("config-act-manifest-not-regular-or-too-large".into());
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        format!("config-act-manifest-read-failed {}: {error}", path.display())
+    })?;
+    Ok(bytes)
+}
+
+fn run_config_act_continuation(
+    continuation: &ConfigActContinuation,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<(), String> {
+    let mut failed_step = None;
+    for step in &continuation.steps {
+        if let Some(precondition) = crate::tools::routine::command_precondition(&step.args)? {
+            let argv = precondition.args.iter().map(String::as_str).collect::<Vec<_>>();
+            let probe = crate::tools::command::capture_with_options(
+                &precondition.program,
+                &argv,
+                crate::tools::command::CaptureOptions::new()
+                    .cwd(precondition.cwd.as_deref())
+                    .timeout_secs(
+                        precondition
+                            .timeout_secs
+                            .unwrap_or(crate::tools::command::DEFAULT_TIMEOUT_SECS),
+                    ),
+            );
+            if !probe.ok {
+                failed_step.get_or_insert_with(|| step.step_id.clone());
+                if continuation.manifest.isolation.as_deref() == Some("per-step") {
+                    continue;
+                }
+                break;
+            }
+        }
+        let outcome = crate::atoms::command::execute_validated_step_after_config_acceptance(
+            step,
+            &continuation.manifest.base_dir,
+            invocation,
+        )?;
+        if !outcome.ok {
+            failed_step.get_or_insert_with(|| step.step_id.clone());
+            if step.on_failure == crate::tools::ladder::OnFailure::Stop
+                && continuation.manifest.isolation.as_deref() != Some("per-step")
+            {
+                break;
+            }
+        }
+    }
+    if let Some(step_id) = failed_step {
+        return Err(format!("config-acceptance-module-act-failed step_id={step_id}"));
+    }
+    Ok(())
+}
+
+fn accept_config_file_locked(
+    path: &Path,
+    item: &Interactable,
+) -> Result<Value, String> {
+    let path = path.to_path_buf();
     let backup_root = path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -797,16 +1008,10 @@ fn interactable_run(
     };
     receipt["has_run"] = serde_json::Value::Bool(true);
     receipt["config_state"] = serde_json::Value::String("interactable".into());
-    if compiled_target_absent {
-        crate::bands::propose_edits::persist_feed_with_intent(
-            &path,
-            crate::bands::propose_edits::FeedPersistenceIntent::Remove {
-                ids: [item.id.clone()].into_iter().collect(),
-                receipts: Vec::new(),
-            },
-        )?;
+    let receipts = if compiled_target_absent {
+        Vec::new()
     } else {
-        let feed_receipt = serde_json::json!({
+        vec![serde_json::json!({
             "schema": "harmonia.config_state.receipt.v1",
             "config_state": "interactable",
             "id": item.id,
@@ -814,21 +1019,18 @@ fn interactable_run(
             "reference_id": item.reference_source_path,
             "score": item.recognition_score,
             "actuator": receipt.clone(),
-        });
-        crate::bands::propose_edits::persist_feed_with_intent(
-            &path,
-            crate::bands::propose_edits::FeedPersistenceIntent::Remove {
-                ids: [item.id.clone()].into_iter().collect(),
-                receipts: vec![feed_receipt],
-            },
-        )?;
+        })]
+    };
+    if !crate::bands::propose_edits::resolve_config_proposal_locked(
+        path.as_path(),
+        &item.id,
+        receipts,
+    )? {
+        return Err("interactable-acceptance-proposal-no-longer-pending".into());
     }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
-    );
-    Ok(())
+    Ok(receipt)
 }
+
 
 fn run_command_proposal(
     path: &Path,

@@ -661,8 +661,8 @@ pub(crate) fn compile_fragments_step(
             interactable_policy(manifest),
         )?;
         let recognitions =
-            crate::bands::propose_edits::refresh_interactables_for_compiled_convergence(
-                manifest, &request, &outcome,
+            crate::bands::propose_edits::refresh_interactables_for_compiled_convergence_at_step(
+                manifest, &request, &outcome, &step.step_id,
             )?;
         let target_exists_after = compile_fragments_target_exists(&target)?;
         let absent_offer_persisted = if !target_exists_before && !target_exists_after {
@@ -1184,8 +1184,8 @@ pub(crate) fn managed_files_step_with_authorization(
         )?;
         let target_exists_before = target.exists();
         let missing_signal = format!("managed-file-target-absent:{}", target.display());
-        let recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence(
-            manifest, &request, &observed,
+        let recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence_at_step(
+            manifest, &request, &observed, &step.step_id,
         )?;
         let target_exists_after = target.exists();
         let absent_offer_persisted = if !target_exists_before && !target_exists_after {
@@ -3038,8 +3038,8 @@ pub(crate) fn files_converge_step(
         })
         .transpose()?;
     if let (Some(request), Some(outcome)) = (config_request.as_ref(), config_outcome.as_ref()) {
-        config_recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence(
-            manifest, request, outcome,
+        config_recognitions = crate::bands::propose_edits::refresh_interactables_for_convergence_at_step(
+            manifest, request, outcome, &step.step_id,
         )?;
     }
     let config_outcome =

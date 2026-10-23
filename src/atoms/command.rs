@@ -1360,6 +1360,35 @@ pub(crate) fn execute_validated_step_without_receipt_files(
     )
 }
 
+pub(crate) fn execute_validated_step_after_config_acceptance(
+    step: &crate::tools::ladder::ValidatedStep,
+    source_module_dir: &std::path::Path,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<crate::OperationOutcome, String> {
+    if step.tool != "command"
+        || step.permutation != "act"
+        || step
+            .args
+            .get("observation")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|observation| observation.get("kind"))
+            .and_then(serde_json::Value::as_str)
+            != Some("module_changed_before_step")
+    {
+        return Err("config-acceptance-act-step-binding-invalid".into());
+    }
+    execute_validated_step_inner(
+        step,
+        Path::new("."),
+        source_module_dir,
+        true,
+        None,
+        true,
+        invocation,
+        false,
+    )
+}
+
 fn execute_validated_step_inner(
     step: &crate::tools::ladder::ValidatedStep,
     module_dir: &std::path::Path,

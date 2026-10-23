@@ -787,8 +787,8 @@ pub(crate) fn execute_routine_child(
                 let exempt = config_state
                     == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt);
                 let truthful_changed = exempt && proposal.changed;
-                crate::bands::propose_edits::refresh_interactables_for_convergence(
-                    manifest, &request, &proposal,
+                crate::bands::propose_edits::refresh_interactables_for_convergence_at_step(
+                    manifest, &request, &proposal, step_id,
                 )?;
                 crate::write_json(
                     &receipt_dir.join(format!("{name}.json")),

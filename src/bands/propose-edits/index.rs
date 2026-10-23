@@ -20,6 +20,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 thread_local! {
     static CURRENT_CONFIG_RECOGNITIONS: RefCell<BTreeMap<String, Value>> = RefCell::new(BTreeMap::new());
+    static CONFIG_SOURCE_STEP: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// A lowered file child belongs to its source ladder step, not to its generated name.
+/// Keep that identity only for this routine call and restore it on every return.
+pub(crate) struct ConfigSourceStepGuard(Option<String>);
+
+impl ConfigSourceStepGuard {
+    pub(crate) fn enter(step_id: &str) -> Self {
+        Self(CONFIG_SOURCE_STEP.with(|current| current.replace(Some(step_id.to_owned()))))
+    }
+}
+
+impl Drop for ConfigSourceStepGuard {
+    fn drop(&mut self) {
+        CONFIG_SOURCE_STEP.with(|current| current.replace(self.0.take()));
+    }
 }
 
 pub(crate) fn reset_config_state_recognitions() {
@@ -444,6 +461,28 @@ fn persist_feed_locked(
     Ok(writes)
 }
 
+/// Resolve an accepted file proposal while the caller holds the projection lock.
+/// This deliberately calls the locked writer directly instead of reacquiring the flock.
+pub(crate) fn resolve_config_proposal_locked(
+    path: &Path,
+    id: &str,
+    receipts: Vec<Value>,
+) -> Result<bool, String> {
+    let feed = interactables::load_feed(path)?;
+    if !feed.interactables.iter().any(|item| item.id == id) {
+        return Ok(false);
+    }
+    let feed = compose_feed(
+        feed,
+        &FeedPersistenceIntent::Remove {
+            ids: [id.to_string()].into_iter().collect(),
+            receipts,
+        },
+    );
+    persist_feed_locked(path, &feed, &[])?;
+    Ok(true)
+}
+
 pub(crate) fn prune_stale_interactables(
     profile: &Profile,
     observed_modules: &BTreeSet<String>,
@@ -541,6 +580,34 @@ pub(crate) fn refresh_interactables_for_compiled_convergence(
     refresh_interactables_at_path_with_policy(&path, manifest, request, outcome, true)
 }
 
+pub(crate) fn refresh_interactables_for_convergence_at_step(
+    manifest: &LadderManifest,
+    request: &FileConvergenceRequest,
+    outcome: &FileConvergenceOutcome,
+    step_id: &str,
+) -> Result<Vec<ConfigRecognition>, String> {
+    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    refresh_interactables_at_path_with_policy_and_step(
+        &path, manifest, request, outcome, false, Some(step_id),
+    )
+}
+
+pub(crate) fn refresh_interactables_for_compiled_convergence_at_step(
+    manifest: &LadderManifest,
+    request: &FileConvergenceRequest,
+    outcome: &FileConvergenceOutcome,
+    step_id: &str,
+) -> Result<Vec<ConfigRecognition>, String> {
+    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    refresh_interactables_at_path_with_policy_and_step(
+        &path, manifest, request, outcome, true, Some(step_id),
+    )
+}
+
 pub(crate) fn refresh_interactables_at_path(
     path: &Path,
     manifest: &LadderManifest,
@@ -556,6 +623,19 @@ fn refresh_interactables_at_path_with_policy(
     request: &FileConvergenceRequest,
     outcome: &FileConvergenceOutcome,
     compiled_artifact_authoritative: bool,
+) -> Result<Vec<ConfigRecognition>, String> {
+    refresh_interactables_at_path_with_policy_and_step(
+        path, manifest, request, outcome, compiled_artifact_authoritative, None,
+    )
+}
+
+fn refresh_interactables_at_path_with_policy_and_step(
+    path: &Path,
+    manifest: &LadderManifest,
+    request: &FileConvergenceRequest,
+    outcome: &FileConvergenceOutcome,
+    compiled_artifact_authoritative: bool,
+    step_id: Option<&str>,
 ) -> Result<Vec<ConfigRecognition>, String> {
     if outcome.config_state == Some(crate::atoms::files::ConfigConvergenceState::InteractableExempt)
     {
@@ -741,6 +821,9 @@ fn refresh_interactables_at_path_with_policy(
             });
             continue;
         }
+        let config_act_binding = step_id
+            .map(|step_id| config_act_binding(manifest, step_id))
+            .transpose()?;
         config.push(crate::ledger::ConfigProposal {
             id: id.clone(), state: config_state, source: reference_bytes,
         });
@@ -794,6 +877,12 @@ fn refresh_interactables_at_path_with_policy(
         } else {
             refreshed.extra.remove("compiled_target_absent");
         }
+        refreshed.extra.remove("config_act_binding");
+        if let Some(binding) = &config_act_binding {
+            refreshed
+                .extra
+                .insert("config_act_binding".into(), binding.clone());
+        }
         let unchanged = prior_same_id.as_ref().is_some_and(|prior| {
             (!target_absent || target_proposal_count == 1)
                 && serde_json::to_value(prior).ok() == serde_json::to_value(&refreshed).ok()
@@ -846,6 +935,46 @@ fn refresh_interactables_at_path_with_policy(
         for recognition in &mut recognitions { recognition.interactable_id = None; }
     }
     Ok(recognitions)
+}
+
+fn config_act_binding(
+    manifest: &LadderManifest,
+    step_id: &str,
+) -> Result<Value, String> {
+    let manifest_path = manifest.base_dir.join("manifest.json");
+    let manifest_path = if manifest_path.is_absolute() {
+        manifest_path
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("config-act-manifest-cwd-failed: {error}"))?
+            .join(manifest_path)
+    };
+    if manifest_path.file_name().and_then(|name| name.to_str()) != Some("manifest.json")
+        || manifest_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some(manifest.id.as_str())
+    {
+        return Err("config-act-manifest-binding-invalid".into());
+    }
+    let metadata = fs::symlink_metadata(&manifest_path).map_err(|error| {
+        format!("config-act-manifest-stat-failed {}: {error}", manifest_path.display())
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() > 256 * 1024 {
+        return Err("config-act-manifest-not-regular-or-too-large".into());
+    }
+    let bytes = read_regular_file_no_follow(&manifest_path, "config-act-manifest")?;
+    let source_step_id = CONFIG_SOURCE_STEP.with(|current| current.borrow().clone())
+        .unwrap_or_else(|| step_id.to_owned());
+    if !manifest.ladder.iter().any(|step| step.step_id == source_step_id) {
+        return Err("config-act-source-step-binding-invalid".into());
+    }
+    Ok(serde_json::json!({
+        "manifest_path": manifest_path,
+        "manifest_sha256": format!("{:x}", Sha256::digest(&bytes)),
+        "target_step_id": source_step_id,
+    }))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

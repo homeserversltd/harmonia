@@ -1063,6 +1063,8 @@ pub(crate) fn execute_routine(
         .iter()
         .find(|s| s.step_id == step.step_id)
         .ok_or_else(|| format!("routine-step-missing-{}", step.step_id))?;
+    let _config_source_step =
+        crate::bands::propose_edits::ConfigSourceStepGuard::enter(&source.step_id);
     let mut projected = BTreeMap::new();
     projected.insert(step.step_id.clone(), projected_children.to_vec());
     crate::tools::files::preflight_file_targets(
