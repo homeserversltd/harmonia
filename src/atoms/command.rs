@@ -1332,14 +1332,8 @@ pub(crate) fn execute_validated_step(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     execute_validated_step_inner(
-        step,
-        module_dir,
-        source_module_dir,
-        apply,
-        active_lane,
-        module_changed_before_step,
-        invocation,
-        true,
+        step, module_dir, source_module_dir, apply, active_lane,
+        module_changed_before_step, invocation, true, None,
     )
 }
 
@@ -1349,44 +1343,38 @@ pub(crate) fn execute_validated_step_without_receipt_files(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<crate::OperationOutcome, String> {
     execute_validated_step_inner(
-        step,
-        Path::new("."),
-        source_module_dir,
-        true,
-        None,
-        false,
-        invocation,
-        false,
+        step, Path::new("."), source_module_dir, true, None, false,
+        invocation, false, None,
     )
 }
 
 pub(crate) fn execute_validated_step_after_config_acceptance(
     step: &crate::tools::ladder::ValidatedStep,
     source_module_dir: &std::path::Path,
+    active_lane: Option<&str>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<crate::OperationOutcome, String> {
+) -> Result<(crate::OperationOutcome, serde_json::Value), String> {
     if step.tool != "command"
         || step.permutation != "act"
-        || step
-            .args
-            .get("observation")
+        || step.args.get("observation")
             .and_then(serde_json::Value::as_object)
             .and_then(|observation| observation.get("kind"))
-            .and_then(serde_json::Value::as_str)
-            != Some("module_changed_before_step")
+            .and_then(serde_json::Value::as_str) != Some("module_changed_before_step")
     {
         return Err("config-acceptance-act-step-binding-invalid".into());
     }
-    execute_validated_step_inner(
-        step,
-        Path::new("."),
-        source_module_dir,
-        true,
-        None,
-        true,
-        invocation,
-        false,
-    )
+    let mut receipt = serde_json::Value::Null;
+    let outcome = execute_validated_step_inner(
+        step, Path::new("."), source_module_dir, true, active_lane, true,
+        invocation, false, Some(&mut receipt),
+    )?;
+    if receipt.is_null() {
+        receipt = serde_json::json!({
+            "step_id": step.step_id, "ok": outcome.ok, "changed": outcome.changed,
+            "skipped": outcome.skipped, "executed": false, "message": outcome.message,
+        });
+    }
+    Ok((outcome, receipt))
 }
 
 fn execute_validated_step_inner(
@@ -1398,6 +1386,7 @@ fn execute_validated_step_inner(
     module_changed_before_step: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     persist_receipt_files: bool,
+    receipt_reply: Option<&mut serde_json::Value>,
 ) -> Result<crate::OperationOutcome, String> {
     if step.permutation == "act" {
         if let Some(path) = crate::tools::routine::command_skip_if_absent(&step.args)? {
@@ -1599,6 +1588,17 @@ fn execute_validated_step_inner(
         && executed
         && comparison_changed
         && command_result.as_ref().is_some_and(|result| result.ok);
+    if let Some(reply) = receipt_reply {
+        *reply = serde_json::json!({
+            "step_id": step.step_id, "program": program, "args": argv,
+            "observed_state": observed_state, "desired_state": desired_state,
+            "diff_decision": decision, "executed": executed, "changed": changed,
+            "skipped": skipped, "final_observed_state": final_observed_state,
+            "lane": requested_lane, "active_lane": active_lane, "lane_matches": lane_matches,
+            "exit_code": command_result.as_ref().map(|result| result.code),
+            "ok": command_result.as_ref().is_none_or(|result| result.ok),
+        });
+    }
     if persist_receipt_files {
         if is_act {
             crate::receipts::write_command_comparison_receipt(

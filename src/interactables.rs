@@ -589,6 +589,7 @@ fn interactable_run(
 struct ConfigActContinuation {
     manifest: crate::tools::ladder::LadderManifest,
     steps: Vec<crate::tools::ladder::ValidatedStep>,
+    active_lane: Option<String>,
 }
 
 fn run_file_config_proposal(
@@ -626,30 +627,39 @@ fn run_file_config_proposal(
         let receipt = accept_config_file_locked(path, &item)?;
         Ok(Some((receipt, continuation)))
     })?;
-    let Some((receipt, continuation)) = accepted else {
+    let Some((mut receipt, continuation)) = accepted else {
         return Ok(());
     };
+    let mut failed_step = None;
     if let Some(continuation) =
         continuation.filter(|continuation| !continuation.steps.is_empty())
     {
-        run_config_act_continuation(
+        let (acts, failure) = run_config_act_continuation(
             &continuation,
             invocation.and_then(crate::Invocation::key),
-        )?;
+        );
+        receipt["module_acts"] = Value::Array(acts);
+        failed_step = failure;
+        if failed_step.is_some() { receipt["ok"] = Value::Bool(false); }
     }
     println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
+    if let Some(step_id) = failed_step {
+        return Err(format!("config-acceptance-module-act-failed step_id={step_id}"));
+    }
     Ok(())
 }
 
 fn prepare_config_act_continuation(
     item: &Interactable,
 ) -> Result<Option<ConfigActContinuation>, String> {
-    let Some(binding) = item
+    let binding = item
         .extra
         .get("config_act_binding")
         .filter(|binding| !binding.is_null())
-    else {
-        return Ok(None);
+        .cloned();
+    let binding = match binding {
+        Some(binding) => binding,
+        None => recover_config_act_binding(item)?,
     };
     let binding = binding
         .as_object()
@@ -686,7 +696,11 @@ fn prepare_config_act_continuation(
     if observed_sha != manifest_sha {
         return Err("config-act-manifest-binding-stale".into());
     }
-    let manifest = crate::tools::ladder::load_ladder_manifest(&manifest_path)?;
+    let profile_index = binding.get("selected_profile_index")
+        .and_then(Value::as_str).map(PathBuf::from);
+    let manifest = crate::tools::ladder::load_ladder_manifest_with_context(
+        &manifest_path, false, profile_index.as_deref(),
+    )?;
     if manifest.id != item.module_id {
         return Err("config-act-module-binding-stale".into());
     }
@@ -718,7 +732,91 @@ fn prepare_config_act_continuation(
     Ok(Some(ConfigActContinuation {
         manifest,
         steps: continuation_steps,
+        active_lane: binding.get("active_lane").and_then(Value::as_str).map(str::to_owned),
     }))
+}
+
+/// Resolve old rows from current source rather than silently accepting an
+/// unloaded file when their optional binding is absent or null.
+fn recover_config_act_binding(item: &Interactable) -> Result<Value, String> {
+    if item.module_id.is_empty() || item.module_id.contains('/')
+        || item.module_id.contains('\\') || item.module_id == "." || item.module_id == ".."
+    {
+        return Err("config-act-module-identity-invalid".into());
+    }
+    let (profile, profile_index) = crate::device_profile::resolve_certificate_profile()?;
+    if !profile.modules.contains(&item.module_id) {
+        return Err("config-act-module-not-in-worn-profile".into());
+    }
+    let module_root = crate::default_module_root(&profile_index);
+    let loaded = crate::bands::stage_profile::groups::load_profile_module_for_authority(
+        &module_root, &item.module_id, profile.package_authority.as_ref(),
+    )?;
+    let crate::LoadedModule::Ladder(manifest) = loaded else {
+        return Err("config-act-owning-module-not-ladder".into());
+    };
+    let manifest_path = manifest.base_dir.join("manifest.json");
+    let bytes = read_config_act_manifest(&manifest_path)?;
+    let steps = crate::tools::ladder::validate_ladder(&manifest)
+        .map_err(|error| format!("config-act-manifest-invalid {}", error.first_missing_signal()))?;
+    let routines = crate::tools::routine::project_manifest_routines(&manifest, &steps)?;
+    let target = item.target_path.as_deref().ok_or("hard-stamp-target-missing")?;
+    let mut owners = Vec::new();
+    for step in &steps {
+        let mut owns = config_step_owns_target(step, &manifest, target)?;
+        if let Some(children) = routines.get(&step.step_id) {
+            for child in children {
+                let child = crate::tools::ladder::ValidatedStep {
+                    step_id: child.name.clone(), tool: child.tool.clone(),
+                    permutation: child.permutation.clone(), args: child.args.clone(),
+                    on_failure: child.on_failure,
+                };
+                owns |= config_step_owns_target(&child, &manifest, target)?;
+            }
+        }
+        if owns { owners.push(step.step_id.clone()); }
+    }
+    if owners.len() != 1 {
+        return Err("config-act-target-owner-unresolved".into());
+    }
+    if read_config_act_manifest(&manifest_path)? != bytes {
+        return Err("config-act-manifest-binding-stale".into());
+    }
+    Ok(serde_json::json!({
+        "manifest_path": manifest_path,
+        "manifest_sha256": format!("{:x}", Sha256::digest(&bytes)),
+        "target_step_id": owners[0], "selected_profile_index": profile_index,
+    }))
+}
+
+fn config_step_owns_target(
+    step: &crate::tools::ladder::ValidatedStep,
+    manifest: &crate::tools::ladder::LadderManifest,
+    target: &Path,
+) -> Result<bool, String> {
+    if step.tool == "place-file" && step.permutation == "place" {
+        return Ok(step.args.get("path").and_then(Value::as_str).map(Path::new) == Some(target));
+    }
+    if step.tool != "files" { return Ok(false); }
+    match step.permutation.as_str() {
+        "managed-files" => Ok(crate::tools::files::materialize_managed_files(step, manifest)?
+            .iter().any(|file| Path::new(&file.path) == target)),
+        "compile-fragments" => Ok(step.args.get("target_path").or_else(|| step.args.get("output_path"))
+            .and_then(Value::as_str).map(Path::new) == Some(target)),
+        "converge" | "directory-sync" => {
+            let Some(root) = step.args.get("target_root").and_then(Value::as_str) else { return Ok(false); };
+            if let Some(files) = step.args.get("files").and_then(Value::as_array) {
+                return Ok(files.iter().filter_map(Value::as_str)
+                    .any(|relative| Path::new(root).join(relative) == target));
+            }
+            if step.permutation != "directory-sync" { return Ok(false); }
+            let Ok(relative) = target.strip_prefix(root) else { return Ok(false); };
+            crate::atoms::files::validate_relative_path(relative)?;
+            let Some(source) = step.args.get("source_root").and_then(Value::as_str) else { return Ok(false); };
+            Ok(crate::tools::files::resolve_ladder_path(manifest, source).join(relative).is_file())
+        }
+        _ => Ok(false),
+    }
 }
 
 fn read_config_act_manifest(path: &Path) -> Result<Vec<u8>, String> {
@@ -745,10 +843,19 @@ fn read_config_act_manifest(path: &Path) -> Result<Vec<u8>, String> {
 fn run_config_act_continuation(
     continuation: &ConfigActContinuation,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<(), String> {
+) -> (Vec<Value>, Option<String>) {
+    let mut receipts = Vec::new();
     let mut failed_step = None;
     for step in &continuation.steps {
-        if let Some(precondition) = crate::tools::routine::command_precondition(&step.args)? {
+        let precondition = match crate::tools::routine::command_precondition(&step.args) {
+            Ok(precondition) => precondition,
+            Err(error) => {
+                receipts.push(serde_json::json!({"step_id":step.step_id,"ok":false,"error":error}));
+                failed_step.get_or_insert_with(|| step.step_id.clone());
+                break;
+            }
+        };
+        if let Some(precondition) = precondition {
             let argv = precondition.args.iter().map(String::as_str).collect::<Vec<_>>();
             let probe = crate::tools::command::capture_with_options(
                 &precondition.program,
@@ -762,6 +869,8 @@ fn run_config_act_continuation(
                     ),
             );
             if !probe.ok {
+                receipts.push(serde_json::json!({"step_id":step.step_id,"ok":false,
+                    "executed":false,"precondition_exit_code":probe.code}));
                 failed_step.get_or_insert_with(|| step.step_id.clone());
                 if continuation.manifest.isolation.as_deref() == Some("per-step") {
                     continue;
@@ -769,11 +878,22 @@ fn run_config_act_continuation(
                 break;
             }
         }
-        let outcome = crate::atoms::command::execute_validated_step_after_config_acceptance(
+        let result = crate::atoms::command::execute_validated_step_after_config_acceptance(
             step,
             &continuation.manifest.base_dir,
+            continuation.active_lane.as_deref(),
             invocation,
-        )?;
+        );
+        let (outcome, mut receipt) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                receipts.push(serde_json::json!({"step_id":step.step_id,"ok":false,"error":error}));
+                failed_step.get_or_insert_with(|| step.step_id.clone());
+                break;
+            }
+        };
+        receipt["module_id"] = serde_json::json!(continuation.manifest.id);
+        receipts.push(receipt);
         if !outcome.ok {
             failed_step.get_or_insert_with(|| step.step_id.clone());
             if step.on_failure == crate::tools::ladder::OnFailure::Stop
@@ -783,10 +903,7 @@ fn run_config_act_continuation(
             }
         }
     }
-    if let Some(step_id) = failed_step {
-        return Err(format!("config-acceptance-module-act-failed step_id={step_id}"));
-    }
-    Ok(())
+    (receipts, failed_step)
 }
 
 fn accept_config_file_locked(

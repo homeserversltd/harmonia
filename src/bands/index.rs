@@ -332,6 +332,9 @@ pub(crate) fn run_profile_engine_with_projection(
     materialize_on_stage: bool,
 ) -> Result<(), String> {
     let _observation_guard = crate::deeds::ObservationGuard::enter(!mode.is_software_apply());
+    let _config_lane = propose_edits::ConfigActiveLaneGuard::enter(
+        context.map(|value| value.face.as_str()),
+    );
     crate::receipts::clear_config_state_receipts(receipt_dir)?;
     let mut active_profile = profile.clone();
     let mut active_projection = projection.clone();

@@ -21,6 +21,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 thread_local! {
     static CURRENT_CONFIG_RECOGNITIONS: RefCell<BTreeMap<String, Value>> = RefCell::new(BTreeMap::new());
     static CONFIG_SOURCE_STEP: RefCell<Option<String>> = const { RefCell::new(None) };
+    static CONFIG_ACTIVE_LANE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct ConfigActiveLaneGuard(Option<String>);
+
+impl ConfigActiveLaneGuard {
+    pub(crate) fn enter(lane: Option<&str>) -> Self {
+        Self(CONFIG_ACTIVE_LANE.with(|current| current.replace(lane.map(str::to_owned))))
+    }
+}
+
+impl Drop for ConfigActiveLaneGuard {
+    fn drop(&mut self) {
+        CONFIG_ACTIVE_LANE.with(|current| current.replace(self.0.take()));
+    }
 }
 
 /// A lowered file child belongs to its source ladder step, not to its generated name.
@@ -970,10 +985,21 @@ fn config_act_binding(
     if !manifest.ladder.iter().any(|step| step.step_id == source_step_id) {
         return Err("config-act-source-step-binding-invalid".into());
     }
+    let selected_profile_index = manifest.selected_profile_index.as_ref().map(|path| {
+        if path.is_absolute() {
+            Ok(path.clone())
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .map_err(|error| format!("config-act-profile-cwd-failed: {error}"))
+        }
+    }).transpose()?;
     Ok(serde_json::json!({
         "manifest_path": manifest_path,
         "manifest_sha256": format!("{:x}", Sha256::digest(&bytes)),
         "target_step_id": source_step_id,
+        "active_lane": CONFIG_ACTIVE_LANE.with(|current| current.borrow().clone()),
+        "selected_profile_index": selected_profile_index,
     }))
 }
 
@@ -1009,6 +1035,7 @@ pub(crate) fn execute_manifest_band(
     active_lane: Option<&str>,
     module_changed_before_band: bool,
 ) -> Result<ModuleExecution, String> {
+    let _config_lane = ConfigActiveLaneGuard::enter(active_lane);
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
         ok: true,
