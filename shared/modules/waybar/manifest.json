@@ -4,8 +4,8 @@
   "title": "Status bar",
   "summary": "Shows status and quick controls in the bar along the bottom of the screen.",
   "category": "interactable",
-  "version": "1.0.0",
-  "description": "Converges the Waybar config and user unit, declares hs-waybar.service for census, and reloads the owner user manager.",
+  "version": "1.1.0",
+  "description": "One shared owner status-bar job; TV keeps its face controls and HomeSI selects native desktop controls through its profile pool.",
   "optional": false,
   "constants": {
     "target_dir": "/home/owner",
@@ -34,8 +34,7 @@
         "files": [
           ".config/systemd/user/hs-waybar.service",
           ".config/waybar/style.css",
-          ".config/waybar/badge-state.css",
-          ".config/waybar/waybar.conf"
+          ".config/waybar/badge-state.css"
         ],
         "backup_existing": true,
         "owner": "owner",
@@ -48,6 +47,20 @@
           "first_missing_signal": "tv-desktop-config-files-incomplete"
         }
       }
+    },
+    {
+      "step_id": "desktop-status-values",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/config",
+        "target_path": "/home/owner/.config/waybar/waybar.conf",
+        "mode": 420,
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner"
+      },
+      "on_failure": "stop"
     },
     {
       "step_id": "user-daemon-reload",

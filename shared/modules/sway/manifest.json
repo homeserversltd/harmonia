@@ -4,8 +4,8 @@
   "title": "Desktop layout",
   "summary": "Sets the TV desktop's windows, menus, shortcuts, and startup preferences.",
   "category": "interactable",
-  "version": "1.1.3",
-  "description": "TV Sway configuration is converged from this module into the owner home.",
+  "version": "1.2.0",
+  "description": "One owner desktop job shared by TV and HomeSI; profile-pool fragments supply display and shortcut values while the hometv-named session units remain shared compatibility names.",
   "optional": false,
   "constants": {
     "target_dir": "/home/owner",
@@ -40,9 +40,7 @@
         "target_root": "$constants.target_dir",
         "files": [
           ".config/sway/config",
-          ".config/sway/conf.d/output.conf",
           ".config/sway/conf.d/input.conf",
-          ".config/sway/conf.d/bindings.conf",
           ".config/sway/conf.d/look.conf",
           ".config/sway/conf.d/windows.conf",
           ".config/sway/conf.d/60-waybar-floats.conf",
@@ -58,6 +56,34 @@
         "group": "owner",
         "receipt_name": "tv-sway-files"
       }
+    },
+    {
+      "step_id": "desktop-bindings",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/bindings",
+        "target_path": "/home/owner/.config/sway/conf.d/bindings.conf",
+        "mode": 420,
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "desktop-output",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/output",
+        "target_path": "/home/owner/.config/sway/conf.d/output.conf",
+        "mode": 420,
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner"
+      },
+      "on_failure": "stop"
     }
   ]
 }

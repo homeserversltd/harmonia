@@ -1,11 +1,11 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "sway-seat",
-  "title": "Remote support screen",
-  "summary": "Keeps a remote support screen ready without starting it automatically.",
+  "title": "Owner desktop seat",
+  "summary": "Keeps the selected owner desktop and support-screen definitions current.",
   "category": "known-good",
-  "version": "1.0.0",
-  "description": "Preserves Arch seat payloads and offers a private Hermes headless Sway readiness helper without writing birth-owned linger markers or enable links, or activating units.",
+  "version": "1.0.1",
+  "description": "Preserves existing support-seat pools; the HomeSI pool links a Debian owner full-desktop unit. The shared Sunshine job owns HomeSI-only enablement; all Hermes seat modules remain separate.",
   "optional": false,
   "config_deploy": "interactable",
   "constants": {

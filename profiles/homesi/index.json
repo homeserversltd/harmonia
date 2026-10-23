@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homesi",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "package_authority": {
     "os_family": "debian",
     "package_manager": "apt"
@@ -9,7 +9,7 @@
   "dotfile_pool": "homesi",
   "identity": "homesi",
   "categories_required": true,
-  "description": "HomeSuperintelligence: a headless Debian 13 household assistant with local models, appliance controls, documentation, and two private model shelves.",
+  "description": "HomeSuperintelligence: a Debian 13 household assistant with local models, appliance controls, documentation, two private model shelves, and an owner desktop streamed over Sunshine beside the private Hermes seat.",
   "module_spine_entered": "profiles/homesi/modules",
   "modules": [
     "system-packages",
@@ -24,6 +24,10 @@
     "sudoers",
     "grub-branding",
     "sway-seat",
+    "sway",
+    "kitty",
+    "waybar",
+    "chromium",
     "cua-driver",
     "hermes-seat",
     "hermes-sway-config",
@@ -32,6 +36,7 @@
     "hermes-cua-driver-service",
     "hermes-gateway-service",
     "model-shelf",
-    "model-slots"
+    "model-slots",
+    "sunshine"
   ]
 }

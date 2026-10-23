@@ -1,0 +1,14 @@
+[Unit]
+Description=Owner Sway desktop
+
+[Service]
+Type=simple
+Environment=WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1
+Environment=XDG_CURRENT_DESKTOP=sway XDG_SESSION_DESKTOP=sway XDG_SESSION_TYPE=wayland
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=/usr/bin/sway -c /home/owner/.config/sway/config
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
