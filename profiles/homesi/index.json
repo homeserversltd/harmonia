@@ -14,7 +14,6 @@
     "system-packages",
     "dot-files",
     "keyman-runtime",
-    "rust-build-toolchain",
     "local-ai-runtime",
     "homesi-update-runtime",
     "household-time",
