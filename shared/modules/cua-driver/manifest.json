@@ -20,18 +20,14 @@
     {
       "step_id": "cua-driver-maintenance-helper",
       "tool": "files",
-      "permutation": "converge",
+      "permutation": "compile-fragments",
       "args": {
-        "source_root": "files_root",
-        "target_root": "/",
-        "files": [
-          "usr/local/libexec/sway-seat/cua-driver-maintain"
-        ],
+        "source_root": "files_root/fragments/cua-driver-maintain",
+        "target_path": "/usr/local/libexec/sway-seat/cua-driver-maintain",
         "mode": 493,
-        "backup_existing": false,
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "cua-driver-maintenance-helper"
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
       },
       "on_failure": "stop"
     },

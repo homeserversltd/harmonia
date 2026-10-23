@@ -2,7 +2,7 @@
   "url": "http://127.0.0.1:8787/health",
   "managed_files": [
     {
-      "path": "/var/lib/caduceus/venv/lib/python3.14/site-packages/caduceus-staff.pth",
+      "path": "/var/lib/caduceus/venv/lib/python3.13/site-packages/caduceus-staff.pth",
       "mode": 420,
       "content": "/usr/local/sbin\n"
     },
