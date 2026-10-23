@@ -1,0 +1,7 @@
+# Enhanced less configuration (moar-like functionality)
+export LESS='-RXISMFg --incsearch --mouse --wheel-lines=10'
+export LESSHISTFILE='/home/owner/.cache/less_history'
+export LESSCHARSET='utf-8'
+
+# Moar compatibility alias with line numbers
+alias moar='less -N'

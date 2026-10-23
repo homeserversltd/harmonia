@@ -1,0 +1,247 @@
+#!/usr/bin/env zsh
+ _listcommands() {
+    # Use Zsh's print with ANSI colors for consistency
+    local RED="%F{red}"
+    local YELLOW="%F{yellow}"
+    local BLUE="%F{blue}"
+    local NOCOLOR="%f"
+
+    print -P "${RED}Aliases:${NOCOLOR}"
+    for alias in ${(ok)aliases}; do
+    alias_name=$alias
+    alias_command=${aliases[$alias]}
+    print -P "${YELLOW}${alias_name}${NOCOLOR}='${BLUE}${alias_command}${NOCOLOR}'"
+done
+
+print -P "\n${RED}Functions:${NOCOLOR}"
+# Correctly sort function names alphabetically, excluding those starting with an underscore
+func_names=(${(ok)functions})
+for func in "${func_names[@]}"; do
+    [[ $func == _* ]] && continue  # Skip functions starting with an underscore
+    print -P "${YELLOW}$func${NOCOLOR}"
+done
+}
+
+#nnn file manager
+nn(){
+# Block nesting of nnn in subshells
+    [ "${NNNLVL:-0}" -eq 0 ] || {
+        echo "nnn is already running"
+        return
+    }
+    if [ -z "$EDITOR" ]; then
+        EDITOR=nano
+    fi
+
+    # Ensure FIFO exists for plugins
+    NNN_FIFO="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/fifo"
+    if [ ! -p "$NNN_FIFO" ]; then
+        mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/nnn"
+        (umask 077; mkfifo "$NNN_FIFO" 2>/dev/null)
+    fi
+    export NNN_FIFO
+    export NNN_TMPFILE="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.lastd"
+    command nnn -dHEPp "$@"
+    [ ! -f "$NNN_TMPFILE" ] || {
+        . "$NNN_TMPFILE"
+        rm -f -- "$NNN_TMPFILE" > /dev/null
+    }
+}
+n(){
+# Block nesting of nnn in subshells
+    [ "${NNNLVL:-0}" -eq 0 ] || {
+        echo "nnn is already running"
+        return
+    }
+    if [ -z "$EDITOR" ]; then
+        EDITOR=nano
+    fi
+
+    # Ensure FIFO exists for plugins
+    NNN_FIFO="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/fifo"
+    if [ ! -p "$NNN_FIFO" ]; then
+        mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/nnn"
+        (umask 077; mkfifo "$NNN_FIFO" 2>/dev/null)
+    fi
+    export NNN_FIFO
+    export NNN_TMPFILE="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.lastd"
+    command nnn -E "$@"
+    [ ! -f "$NNN_TMPFILE" ] || {
+        . "$NNN_TMPFILE"
+        rm -f -- "$NNN_TMPFILE" > /dev/null
+    }
+}
+
+# Extracts any archive(s)
+function extract() {
+	for archive; do
+		if [ -f "$archive" ] ; then
+			case "$archive" in
+				*.tar.bz2)   tar xvjf "$archive"   ;;
+				*.tar.gz)    tar xvzf "$archive"   ;;
+				*.bz2)       bunzip2 "$archive"    ;;
+				*.rar)       rar x "$archive"      ;;
+				*.gz)        gunzip "$archive"     ;;
+				*.tar)       tar xvf "$archive"    ;;
+				*.tbz2)      tar xvjf "$archive"   ;;
+				*.tgz)       tar xvzf "$archive"   ;;
+				*.zip)       unzip "$archive"      ;;
+				*.Z)         uncompress "$archive" ;;
+				*.7z)        7z x "$archive"       ;;
+				*)           echo "don't know how to extract '$archive'..." ;;
+			esac
+		else
+			echo "'$archive' is not a valid file!"
+		fi
+	done
+}
+
+find.program() {
+    if [ -z "$1" ]; then
+        echo "Usage: find_program <program_name>"
+        return 1
+    fi
+    local query="$1"
+    echo "Searching in apt repository..."
+    apt_results=$(apt-cache search "$query" | grep -E '^[a-z0-9.+-]+' | awk '{print $1}')
+    echo "Searching for files..."
+    file_results=$(apt-file search "$query" | grep -E '^[a-z0-9.+-]+' | awk -F: '{print $1}')
+    echo -e "$apt_results\n$file_results" | fzf --ansi --multi --preview 'echo {}'
+}
+find.empty() {
+    echo "Empty Directories:"
+    echo "----------------"
+    find . -type d -empty -print
+
+    echo -e "\nEmpty Files:"
+    echo "------------"
+    find . -type f -empty -print
+}
+# Search for text in all files in the current folder
+find.text() {
+	# Use The Silver Searcher if installed
+	if [[ -x "$(command -v ag)" ]]; then
+		ag --color --ignore-case --hidden --literal "${@}" 2> /dev/null
+
+	# Use ripgrep if installed
+	elif [[ -x "$(command -v rg)" ]]; then
+		rg --pretty "${@}" | more
+
+	else # Use grep
+		# -i case-insensitive
+		# -I ignore binary files
+		# -H print filename
+		# -r recursive search
+		# -n print line number
+		grep -iIHrn --color=always "${@}" . | $PAGER -r
+	fi
+}
+find.process() {
+    if [ -z "$1" ]; then
+    echo "Usage: proc.find <process_name>"
+    return 1
+fi
+ps aux | grep -i "$1" | grep -v grep
+}
+net.ports() {
+    echo "=== Open Ports ==="
+    sudo ss -tulpn | grep LISTEN
+    }
+net.connections() {
+    echo "=== Active Connections ==="
+    ss -s
+    }
+net.ips() {
+    echo "=== IP Addresses ==="
+    ip -br a
+    }
+
+
+# Function to install programs
+_install_programs() {
+    local programs=("$@")
+
+    # Filter out already installed programs
+    local filtered_programs=()
+    for program_name in "${programs[@]}"; do
+        if ! command -v $program_name &> /dev/null; then
+            filtered_programs+=("$program_name")
+        else
+            echo "'$program_name' is already installed."
+        fi
+    done
+
+    # If all programs are already installed, exit the function
+    if [ ${#filtered_programs[@]} -eq 0 ]; then
+        echo "All programs are already installed."
+        return
+    fi
+
+    # Convert array to space-separated string
+    local program_list="${filtered_programs[@]}"
+
+    # Try installing with apt
+    if command -v apt &> /dev/null; then
+        echo "Attempting to install ${program_list} using apt..."
+        if sudo apt install -y ${filtered_programs[@]}; then
+            echo "${program_list} installed successfully using apt."
+            return
+        else
+            echo "Failed to install ${program_list} using apt."
+        fi
+    fi
+
+    echo "Could not install ${program_list} with any available package manager."
+}
+
+# Function to parse input and call install_programs for the entire list
+procure() {
+    local programs=("$@")
+    _install_programs "${programs[@]}"
+}
+
+# Function to uninstall programs
+uninstall_programs() {
+    local programs=("$@")
+
+    # Filter out programs that are not installed
+    local filtered_programs=()
+    for program_name in "${programs[@]}"; do
+        if command -v $program_name &> /dev/null; then
+            filtered_programs+=("$program_name")
+        else
+            echo "'$program_name' is not installed."
+        fi
+    done
+
+    # If no programs are installed, exit the function
+    if [ ${#filtered_programs[@]} -eq 0 ]; then
+        echo "None of the specified programs are installed."
+        return
+    fi
+
+    # Convert array to space-separated string
+    local program_list="${filtered_programs[@]}"
+
+    # Try uninstalling with apt
+    if command -v apt &> /dev/null; then
+        echo "Attempting to remove ${program_list} using apt..."
+        if sudo apt remove -y ${filtered_programs[@]}; then
+            echo "${program_list} removed successfully using apt."
+            sudo apt autoremove -y
+            return
+        else
+            echo "Failed to remove ${program_list} using apt."
+        fi
+    fi
+
+    echo "Could not remove ${program_list} with any available package manager."
+}
+
+# Function to parse input and call uninstall_programs for the entire list
+purge() {
+    local programs=("$@")
+    uninstall_programs "${programs[@]}"
+}
+
+
