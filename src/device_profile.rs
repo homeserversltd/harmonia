@@ -232,7 +232,7 @@ pub(crate) fn certificate_profile() -> Result<String, String> {
 /// Resolve the sold profile whose seal this process wears. This is optional
 /// evidence: a certificate/profile read failure never gates an update press.
 pub(crate) fn own_sold_profile() -> Option<String> {
-    const SOLD_PROFILES: [&str; 3] = ["homeserver", "homeconsole", "tv"];
+    const SOLD_PROFILES: [&str; 3] = ["homeserver", "homesi", "tv"];
     const MAX_PROFILE_LINEAGE: usize = 16;
 
     let certificate = load_certificate().ok()?;

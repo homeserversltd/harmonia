@@ -1518,7 +1518,7 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("covenant=Rust update manager and appliance-profile execution engine");
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");
-    println!("profiles=homeserver,homeconsole,tv");
+    println!("profiles=homeserver,homesi,tv");
     println!("homeconsole_identity=homeconsole");
     Ok(())
 }
