@@ -1481,7 +1481,7 @@ pub(crate) fn reconcile_ruyi_with_household_trust(
                 .any(|declared| declared == &member)
                 .then_some(member)
         })
-        .filter(|face| matches!(face.as_str(), "arcadia" | "coronatio"));
+        .filter(|face| matches!(face.as_str(), "arcadia" | "coronatio" | "noesis"));
     let newest = [
         self_row
             .get("caduceus_sha")
