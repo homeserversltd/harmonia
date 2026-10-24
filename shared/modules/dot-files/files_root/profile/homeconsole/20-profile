@@ -12,7 +12,6 @@ if [ -z "${ARCH_CONSOLE_BANNER_SHOWN:-}" ]; then
 |                        HomeConsole                          |
 |                 Arch Gaming Console appliance                |
 +--------------------------------------------------------------+
-| Steam Big Picture is the couch shell.                        |
 | Drop games into the matching console folder, then run: sync                  |
 | Daily safe update: update       Inspect only: update-check   |
 | Last update receipt: update-status       Timer: timer        |

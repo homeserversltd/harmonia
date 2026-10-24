@@ -27,7 +27,6 @@
     "rust-build-toolchain",
     "homeconsole-network",
     "arcadia-gui-runtime",
-    "console-session",
     "local-ai-runtime",
     "homeconsole-update-runtime",
     "household-time",
@@ -38,7 +37,6 @@
     "sudoers",
     "sunshine",
     "retroarch-input",
-    "gamescope-backports-pin",
     "grub-branding",
     "sway-seat",
     "cua-driver",
@@ -52,8 +50,6 @@
     "hermes-gateway-service",
     "homeconsole-netplan",
     "homeconsole-sddm-autologin",
-    "homeconsole-sway-session",
-    "steam-device-rules",
-    "steam-polkit-helpers"
+    "homeconsole-sway-session"
   ]
 }

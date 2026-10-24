@@ -31,7 +31,7 @@ Receipts and inspection:
   ip-now          Show current local IP addresses.
 
 North Star:
-  Drop games into the SMB folders, run sync, launch from Steam Big Picture.
+  Drop games into the SMB folders, run sync.
   The update path skips mutation when a real game is running and preserves pinned artifacts.
 EOF
 }

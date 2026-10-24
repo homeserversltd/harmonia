@@ -1,2 +1,0 @@
-#!/bin/sh
-exec /usr/local/sbin/agathodaimon/cli.py console select-branch "$@"

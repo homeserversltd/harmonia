@@ -1,0 +1,1 @@
+Steam and gamescope source is preserved at HOMESERVERSLTD/harmonia-steam:steam-console-20261024 (base fd1fd0a81cbef6c0191b897771e9fac210d936e8).

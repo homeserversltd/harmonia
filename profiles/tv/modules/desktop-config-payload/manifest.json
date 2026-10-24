@@ -2,22 +2,21 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "desktop-config-payload",
   "title": "Desktop preferences",
-  "summary": "Keeps the TV's game launch policy and prompt preferences in place.",
+  "summary": "Keeps the TV's captured manifest and prompt preferences in place.",
   "category": "interactable",
   "version": "1.0.0",
-  "description": "TV residual manifest/prompt/game-launcher payload is converged from this module.",
+  "description": "TV residual manifest/prompt payload is converged from this module.",
   "optional": false,
   "constants": {
     "target_dir": "/home/owner",
     "expected_files": [
       "MANIFEST.captured.txt",
       "SANITIZATION.md",
-      "omp.json",
-      "/etc/hometv/steam-gamescope-policy.md"
+      "omp.json"
     ],
     "phase": 5,
     "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
-    "meaning": "TV residual manifest/prompt/game-launcher payload is converged from this module."
+    "meaning": "TV residual manifest/prompt payload is converged from this module."
   },
   "files_root": "files_root",
   "ladder": [
@@ -52,22 +51,6 @@
         "owner": "owner",
         "group": "owner",
         "receipt_name": "tv-desktop-config-prompt"
-      }
-    },
-    {
-      "step_id": "game-launcher",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/game-launcher",
-        "target_root": "/",
-        "files": [
-          "etc/hometv/steam-gamescope-policy.md"
-        ],
-        "backup_existing": true,
-        "owner": "root",
-        "group": "root",
-        "receipt_name": "tv-desktop-config-game-launcher"
       }
     }
   ]

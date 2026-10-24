@@ -8,7 +8,7 @@ The ten execution bands are entered in charter order, with `restart-services` be
 
 The profile and module paths are checkable in the repository, for example `profiles/homeconsole/index.json` and `profiles/homeconsole/modules/`.
 
-HomeConsole selects an exact `debian`/`apt`, `ubuntu`/`apt`, or `arch`/`pacman` authority from the body's OS identity. Debian platform payloads sit beside their preserved Ubuntu twins; Netplan is `authority-excluded` outside Ubuntu. The TV profile uses `debian`/`apt` with its existing `tv` dotfile pool. Both profiles include the files-only `gamescope-backports-pin` module.
+HomeConsole selects an exact `debian`/`apt`, `ubuntu`/`apt`, or `arch`/`pacman` authority from the body's OS identity. Debian platform payloads sit beside their preserved Ubuntu twins; Netplan is `authority-excluded` outside Ubuntu. The TV profile uses `debian`/`apt` with its existing `tv` dotfile pool.
 
 ## One-level overlays
 

@@ -34,7 +34,6 @@
     "caduceus",
     "keyman-runtime",
     "sudoers",
-    "gamescope-backports-pin",
     "grub-branding"
   ],
   "identity": "tv",

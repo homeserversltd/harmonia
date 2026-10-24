@@ -8,5 +8,4 @@ TV baseline changes applied before module packaging:
 - removed `openwhispr` autostart;
 - removed laptop instant-DPMS `swayidle timeout 0` autostart;
 - restored provided `alt-tab.sh` global window cycler and Alt-Tab/Alt-Shift-Tab bindings;
-- replaced old `/home/anon` references with non-broken `/home/owner` or `git push` equivalents;
-- left Gamescope only in the optional Steam game lane, not in SDDM autologin.
+- replaced old `/home/anon` references with non-broken `/home/owner` or `git push` equivalents.
