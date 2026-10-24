@@ -577,10 +577,11 @@ pub(crate) fn execute_manifest_band(
                     .unwrap_or(&[]),
             )?
         } else {
-            crate::tools::routine::execute_validated_step(
+            crate::tools::routine::execute_validated_step_with_source(
                 step,
                 manifest,
                 module_dir,
+                &manifest.base_dir,
                 auth,
                 pa,
                 module_changed_before_band,
