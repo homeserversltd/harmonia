@@ -387,7 +387,9 @@ fn declared_members(config: &Value) -> Vec<String> {
     members
         .iter()
         .filter_map(Value::as_str)
-        .filter(|member| MEMBERS.contains(member))
+        // Appliance enrollment is wider than the signed pool's seven-term grant.
+        // An unstamped face follows its own release flag (HarmoniaReads).
+        .filter(|member| MEMBERS.contains(member) || *member == "noesis")
         .map(str::to_owned)
         .collect()
 }
