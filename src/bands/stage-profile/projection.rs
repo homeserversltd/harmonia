@@ -323,6 +323,7 @@ fn projection_component_face(component: &str) -> Option<&'static str> {
     match component {
         "arcadia" => Some("Arcadia"),
         "coronatio" => Some("Coronatio"),
+        "noesis" => Some("Noesis"),
         _ => None,
     }
 }

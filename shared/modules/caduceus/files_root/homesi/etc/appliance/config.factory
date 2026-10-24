@@ -3,6 +3,11 @@
     "bind": "0.0.0.0:8787",
     "seat_port": 3014
   },
+  "syzygy": {
+    "schema": "appliance.syzygy.v1",
+    "members": ["harmonia", "caduceus", "sbin", "documentation", "sudoers", "keyman", "noesis"],
+    "gui_face": "Noesis"
+  },
   "global": {
     "admin": {
       "pin_required": false,

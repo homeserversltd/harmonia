@@ -424,6 +424,7 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
         let gui_member = receipt.gui_member.as_deref().or(match receipt.gui.as_deref() {
             Some("Arcadia") => Some("arcadia"),
             Some("Coronatio") => Some("coronatio"),
+            Some("Noesis") => Some("noesis"),
             _ => None,
         });
         if let Some(member) = gui_member {
@@ -431,6 +432,8 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                 "arcadia"
             } else if member.eq_ignore_ascii_case("coronatio") {
                 "coronatio"
+            } else if member.eq_ignore_ascii_case("noesis") {
+                "noesis"
             } else {
                 member
             };
@@ -637,7 +640,7 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                     ),
                     "routine-child.outputs.resolved_commit",
                 ),
-                "coronatio" | "arcadia" => (
+                "coronatio" | "arcadia" | "noesis" => (
                     committed_routine_source_sha(
                         dir,
                         receipt,
