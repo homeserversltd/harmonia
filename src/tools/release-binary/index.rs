@@ -296,6 +296,15 @@ pub(crate) fn execute(
     if !safe_asset(asset) {
         return Err("release-binary-asset-invalid".into());
     }
+    let pinned_release_sha = match args.get("pinned_release_sha") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|value| crate::atoms::ask::fetch_artifact::validate_source_sha(value))
+                .ok_or_else(|| "release-binary-pinned-release-sha-invalid".to_string())?,
+        ),
+    };
     let path = Path::new(required_string(args, "path")?);
     validate_destination_path(path)?;
     let mode = args
@@ -354,8 +363,12 @@ pub(crate) fn execute(
         .release_flag
         .as_ref()
         .map_err(|error| format!("release-binary-release-flag-seat-unavailable: {error}"))?;
-    let binary_observation =
-        crate::atoms::ask::member_flag::resolve_binary_component(component, asset, seat);
+    let binary_observation = crate::atoms::ask::member_flag::resolve_binary_component(
+        component,
+        asset,
+        pinned_release_sha,
+        seat,
+    );
     let release_evidence = binary_observation.evidence();
     let post_resolution_observed = stable_installed_observation(path)?;
     if post_resolution_observed != observed {
@@ -436,6 +449,13 @@ pub(crate) fn execute(
         .and_then(Value::as_str)
         .filter(|value| crate::atoms::ask::fetch_artifact::validate_source_sha(value))
         .ok_or_else(|| "release-binary-release-flag-source-sha-invalid".to_string())?;
+    if let Some(expected) = pinned_release_sha {
+        if source_sha != expected {
+            return Err(format!(
+                "release-binary-pinned-release-sha-mismatch expected={expected} observed={source_sha}"
+            ));
+        }
+    }
     let flag_sha256 = flag
         .get("sha256")
         .and_then(Value::as_str)

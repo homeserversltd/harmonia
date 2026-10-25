@@ -14,7 +14,7 @@
   "modules": [
     "system-packages",
     "dot-files",
-    "keyman-runtime",
+    "keyman",
     "homesi-update-runtime",
     "household-time",
     "caduceus",

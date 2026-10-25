@@ -23,7 +23,7 @@
   "modules": [
     "system-packages",
     "dot-files",
-    "keyman-runtime",
+    "keyman",
     "rust-build-toolchain",
     "homeconsole-network",
     "arcadia-gui-runtime",
