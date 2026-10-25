@@ -21,12 +21,10 @@
       "args": {
         "program": "/usr/bin/python3",
         "args": ["${module_dir}/owner-group.py", "apply"],
-        "bearer": "root",
         "timeout_secs": 20,
         "observation": {
           "program": "/usr/bin/python3",
           "args": ["${module_dir}/owner-group.py", "check"],
-          "bearer": "root",
           "expected_exit_code": 0,
           "expected_stdout": "current"
         }
