@@ -565,9 +565,6 @@ fn interactable_run(
         return Err(format!("interactable-unknown-id {}", args[0]));
     };
     let item = feed.interactables[position].clone();
-    if item.kind == "hard-stamp" && item.extra.contains_key("json_key_proposal") {
-        return json_key::run(&path, &item, invocation);
-    }
     if item.id == homeserver_clock_utc::INTERACTABLE_ID {
         return homeserver_clock_utc::run(&path, &item, invocation);
     }
@@ -625,6 +622,11 @@ fn run_file_config_proposal(
         };
         if item.kind != "hard-stamp" || item.extra.contains_key("command_proposal") {
             return Err("config-file-proposal-kind-stale".into());
+        }
+        if item.extra.contains_key("json_key_proposal")
+            && invocation.and_then(crate::Invocation::key).is_none()
+        {
+            return Err("json-key-owner-acceptance-required".into());
         }
         let continuation = prepare_config_act_continuation(&item)?;
         if continuation
@@ -809,6 +811,8 @@ fn config_step_owns_target(
     }
     if step.tool != "files" { return Ok(false); }
     match step.permutation.as_str() {
+        "json-key-proposal" => Ok(step.args.get("target").and_then(Value::as_str)
+            .map(Path::new) == Some(target)),
         "managed-files" => Ok(crate::tools::files::materialize_managed_files(step, manifest)?
             .iter().any(|file| Path::new(&file.path) == target)),
         "compile-fragments" => Ok(step.args.get("target_path").or_else(|| step.args.get("output_path"))
@@ -920,6 +924,9 @@ fn accept_config_file_locked(
     path: &Path,
     item: &Interactable,
 ) -> Result<Value, String> {
+    if item.extra.contains_key("json_key_proposal") {
+        return json_key::accept_locked(path, item);
+    }
     let path = path.to_path_buf();
     let backup_root = path
         .parent()

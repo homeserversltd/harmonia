@@ -1,6 +1,6 @@
 //! One-key ConfigPlane proposals. Values stay in the declaration, not the feed.
 use super::{DriftSummary, Interactable};
-use crate::bands::propose_edits::{persist_feed_with_intent, FeedPersistenceIntent};
+use crate::bands::propose_edits::{persist_feed_with_config, FeedPersistenceIntent};
 use crate::tools::ladder::LadderManifest;
 use crate::tools::routine::ValidatedStep;
 use serde::{Deserialize, Serialize};
@@ -44,18 +44,21 @@ struct Marker {
     manifest_sha256: String,
     #[serde(default)]
     profile_index: Option<PathBuf>,
+}
+
+// Backing services: one private state per live proposal in proposal_config.
+// Acceptance and satisfaction read it by key; resolving the proposal deletes it.
+// These comparisons never cross into the feed, a diff, a plan or a receipt.
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+struct PendingState {
     before: KeyState,
     after: KeyState,
 }
 
-pub(crate) fn planned_args(args: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-    let mut planned = args.clone();
-    let value = planned.remove("value");
-    planned.insert(
-        "desired_key_state".into(),
-        json!(KeyState::of(value.as_ref())),
-    );
-    planned
+fn pending_state(path: &Path, id: &str) -> Result<PendingState, String> {
+    let value = crate::ledger::config_state(path, id)?
+        .ok_or("json-key-proposal-preimage-absent")?;
+    serde_json::from_value(value).map_err(|_| "json-key-proposal-preimage-invalid".into())
 }
 
 fn target_allowed(target: &Path) -> Result<(), String> {
@@ -325,8 +328,10 @@ pub(crate) fn is_satisfied(item: &Interactable) -> bool {
     };
     item.kind == "hard-stamp"
         && item.id == proposal_id(target, &marker.key)
-        && observe(target).is_ok_and(|(document, _)| {
-            KeyState::of(document.object.get(&marker.key)) == marker.after
+        && pending_state(&super::feed_path(), &item.id).is_ok_and(|pending| {
+            observe(target).is_ok_and(|(document, _)| {
+                KeyState::of(document.object.get(&marker.key)) == pending.after
+            })
         })
 }
 
@@ -358,6 +363,8 @@ pub(crate) fn propose(
     let before = KeyState::of(document.object.get(key));
     let after = KeyState::of(step.args.get("value"));
     let current = document.object.get(key) == step.args.get("value");
+    let id = proposal_id(target, key);
+    crate::bands::propose_edits::remember_config_proposal(&id);
     if current {
         return Ok(crate::OperationOutcome {
             ok: true,
@@ -367,7 +374,6 @@ pub(crate) fn propose(
             command: None,
         });
     }
-    let id = proposal_id(target, key);
     let path = super::feed_path();
     let feed = super::load_feed(&path)?;
     let prior = feed.interactables.iter().find(|item| item.id == id);
@@ -384,16 +390,26 @@ pub(crate) fn propose(
         step_id: step.step_id.clone(),
         manifest_sha256: source_sha.clone(),
         profile_index: manifest.selected_profile_index.clone(),
-        before: before.clone(),
-        after: after.clone(),
     };
+    let pending = PendingState { before, after };
     let mut extra = prior.map(|item| item.extra.clone()).unwrap_or_default();
-    let marker_value = merge_marker(extra.get(MARKER), &json!(marker));
+    let mut old_marker = extra.get(MARKER).cloned();
+    if let Some(Value::Object(fields)) = old_marker.as_mut() {
+        // Withdraw the old public fingerprints without dropping unknown fields.
+        fields.remove("before");
+        fields.remove("after");
+    }
+    let marker_value = merge_marker(old_marker.as_ref(), &json!(marker));
+    let binding = crate::bands::propose_edits::config_act_binding(manifest, &step.step_id)?;
+    let binding = merge_marker(extra.get("config_act_binding"), &binding);
     let unchanged = prior.is_some_and(|item| {
         item.reference_source_path.as_deref() == Some(manifest_path.as_path())
             && item.extra.get(MARKER) == Some(&marker_value)
+            && item.extra.get("config_act_binding") == Some(&binding)
+            && pending_state(&path, &id).is_ok_and(|stored| stored == pending)
     });
     extra.insert(MARKER.into(), marker_value);
+    extra.insert("config_act_binding".into(), binding);
     if !unchanged {
         let now = crate::bands::propose_edits::iso8601_now();
         let item = Interactable {
@@ -407,25 +423,37 @@ pub(crate) fn propose(
             has_run: false, mode: None, owner: None, group: None,
             source_sha: None, target_sha: None, commits_behind: None, live_sha: None,
             reference_sha: Some(source_sha), recognition_score: None,
-            diff: Some(json!({"key":key,"before":before,"after":after}).to_string()),
+            diff: Some(json!({"key":key,"change_proposed":true}).to_string()),
             script: String::new(), show_only_if: String::new(), completion_check: String::new(),
             evidence: Value::Null, extra,
         };
-        persist_feed_with_intent(
+        let stored = persist_feed_with_config(
             &path,
             FeedPersistenceIntent::Upsert {
                 entries: vec![item],
                 remove_ids: BTreeSet::new(),
                 sort_by_id: true,
             },
+            &[crate::ledger::ConfigProposal {
+                id: id.clone(),
+                state: serde_json::to_value(&pending).map_err(|error| error.to_string())?,
+                // Desired values are read from the bound declaration, not copied.
+                source: Vec::new(),
+            }],
         )?;
+        if stored.is_none() {
+            return Ok(crate::OperationOutcome {
+                ok: true, changed: false, skipped: true,
+                message: "json-key-proposal-state-unavailable".into(), command: None,
+            });
+        }
     }
     let outcome = crate::OperationOutcome {
         ok: true,
         changed: false,
         skipped: false,
         message: json!({"config_state":"interactable","proposal_id":id,"target":target,
-            "key":key,"before":before,"after":after,"changed":false})
+            "key":key,"change_proposed":true,"changed":false})
         .to_string(),
         command: None,
     };
@@ -441,14 +469,12 @@ pub(crate) fn propose(
     Ok(outcome)
 }
 
-pub(crate) fn run(
+/// The shared Config acceptance path holds the projection lock for this act.
+/// Return evidence to that path so it can run the owning module continuation.
+pub(super) fn accept_locked(
     path: &Path,
     item: &Interactable,
-    invocation: Option<&crate::Invocation>,
-) -> Result<(), String> {
-    invocation
-        .and_then(crate::Invocation::key)
-        .ok_or("json-key-owner-acceptance-required")?;
+) -> Result<Value, String> {
     let marker: Marker = serde_json::from_value(
         item.extra
             .get(MARKER)
@@ -463,6 +489,7 @@ pub(crate) fn run(
     if item.kind != "hard-stamp" || item.id != proposal_id(target, &marker.key) {
         return Err("json-key-proposal-id-binding-invalid".into());
     }
+    let pending = pending_state(path, &item.id)?;
     let source_path = item
         .reference_source_path
         .as_deref()
@@ -499,7 +526,7 @@ pub(crate) fn run(
         .map(Path::new)
         != Some(target)
         || step.args.get("key").and_then(Value::as_str) != Some(marker.key.as_str())
-        || KeyState::of(step.args.get("value")) != marker.after
+        || KeyState::of(step.args.get("value")) != pending.after
     {
         return Err("json-key-proposal-declaration-stale".into());
     }
@@ -510,7 +537,7 @@ pub(crate) fn run(
     // existing-value replacement (or a no-op) preserves all outside-value bytes.
     let formatting_preserved =
         !changed || (document.object.contains_key(&marker.key) && step.args.contains_key("value"));
-    if changed && before != marker.before {
+    if changed && before != pending.before {
         return Err("json-key-proposal-preimage-stale".into());
     }
     let mut backup_path = None;
@@ -565,52 +592,34 @@ pub(crate) fn run(
     }
     let (readback, _) = observe(target)?;
     let after = KeyState::of(readback.object.get(&marker.key));
-    if after != marker.after {
+    if after != pending.after {
         return Err("json-key-readback-mismatch".into());
     }
     let before_other: BTreeMap<_, _> = document
         .object
         .iter()
         .filter(|(name, _)| name.as_str() != marker.key)
-        .map(|(name, value)| (name.clone(), KeyState::of(Some(value))))
+        .map(|(name, value)| (name.clone(), value))
         .collect();
     let after_other: BTreeMap<_, _> = readback
         .object
         .iter()
         .filter(|(name, _)| name.as_str() != marker.key)
-        .map(|(name, value)| (name.clone(), KeyState::of(Some(value))))
+        .map(|(name, value)| (name.clone(), value))
         .collect();
     if before_other != after_other {
         return Err("json-key-unowned-values-readback-mismatch".into());
     }
-    let untouched_key_digests: BTreeMap<_, _> = before_other
-        .iter()
-        .map(|(name, state)| {
-            (
-                name.clone(),
-                json!({"before":state,"after":after_other.get(name),"unchanged":true}),
-            )
-        })
-        .collect();
-    persist_feed_with_intent(
-        path,
-        FeedPersistenceIntent::Remove {
-            ids: [item.id.clone()].into_iter().collect(),
-            receipts: Vec::new(),
-        },
-    )?;
+    let untouched_keys: Vec<_> = before_other.keys().cloned().collect();
+    crate::bands::propose_edits::resolve_config_proposal_locked(path, &item.id, Vec::new())?;
     // Receipts go home; no completed receipt or value is cached in the feed.
-    println!(
-        "{}",
-        json!({"schema":"harmonia.interactables.hard_stamp.receipt.v1",
+    Ok(json!({"schema":"harmonia.interactables.hard_stamp.receipt.v1",
         "ok":true,"id":item.id,"kind":"hard-stamp","config_state":"interactable",
-        "target":target,"key":marker.key,"before":before,"after":after,
+        "target":target,"key":marker.key,
         "changed":changed,"has_run":true,"formatting_preserved":formatting_preserved,
         "untouched_values_preserved":true,"key_order_preserved":true,
-        "untouched_key_digests":untouched_key_digests,
+        "untouched_keys":untouched_keys,"untouched_key_count":untouched_keys.len(),
         "formatting_scope":"outside-owned-value","backup_path":backup_path,
         "mode":metadata.mode() & 0o7777,"uid":metadata.uid(),"gid":metadata.gid(),
-        "first_missing_signal":"none"})
-    );
-    Ok(())
+        "first_missing_signal":"none"}))
 }

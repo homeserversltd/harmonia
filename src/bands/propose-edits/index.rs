@@ -62,6 +62,14 @@ pub(crate) fn take_config_state_recognitions() -> BTreeMap<String, Value> {
     CURRENT_CONFIG_RECOGNITIONS.with(|state| std::mem::take(&mut *state.borrow_mut()))
 }
 
+/// A key-level offer was observed by this invocation. Keep its identity for
+/// pruning, never its private preimage in the public config-surface reply.
+pub(crate) fn remember_config_proposal(id: &str) {
+    CURRENT_CONFIG_RECOGNITIONS.with(|state| {
+        state.borrow_mut().entry(id.to_owned()).or_insert(Value::Null);
+    });
+}
+
 pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Result<(), String> {
     enter(Band::ProposeEdits)
 }
@@ -392,7 +400,7 @@ pub(crate) fn persist_feed_with_intent(
     persist_feed_with_config(path, intent, &[]).map(|writes| writes.unwrap_or(0))
 }
 
-fn persist_feed_with_config(
+pub(crate) fn persist_feed_with_config(
     path: &Path,
     intent: FeedPersistenceIntent,
     config: &[crate::ledger::ConfigProposal],
@@ -930,7 +938,7 @@ fn refresh_interactables_at_path_with_policy_and_step(
     Ok(recognitions)
 }
 
-fn config_act_binding(
+pub(crate) fn config_act_binding(
     manifest: &LadderManifest,
     step_id: &str,
 ) -> Result<Value, String> {
