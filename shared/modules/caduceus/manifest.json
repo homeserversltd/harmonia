@@ -5,7 +5,7 @@
   "summary": "Maintains the Caduceus service and its declared appliance configuration.",
   "category": "known-good",
   "config_deploy": "interactable",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Shared appliance-neutral module that synchronizes Caduceus source, maintains its service, and selects declared profile inputs.",
   "files_root": "files_root",
   "profile_input": {
@@ -14,6 +14,25 @@
     "fallback": "specula"
   },
   "ladder": [
+    {
+      "step_id": "caduceus-owner-group",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": ["${module_dir}/owner-group.py", "apply"],
+        "bearer": "root",
+        "timeout_secs": 20,
+        "observation": {
+          "program": "/usr/bin/python3",
+          "args": ["${module_dir}/owner-group.py", "check"],
+          "bearer": "root",
+          "expected_exit_code": 0,
+          "expected_stdout": "current"
+        }
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "caduceus-source-sync",
       "tool": "git-artifact",
