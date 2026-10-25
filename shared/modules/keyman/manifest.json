@@ -5,7 +5,7 @@
   "summary": "Keeps approved household access and recovery features available.",
   "category": "known-good",
   "version": "3.8.0",
-  "description": "Synchronize compatibility source and update the Keyman binary from its digest-verified pinned release; birth and key custody remain outside Harmonia.",
+  "description": "Synchronize compatibility source and update the Keyman binary by following its digest-verified release flag; birth and key custody remain outside Harmonia.",
   "constants": {},
   "ladder": [
     {
@@ -25,7 +25,6 @@
       "args": {
         "component": "keyman",
         "asset": "keyman-x86_64",
-        "pinned_release_sha": "6d91637143dea192824f45d72b02e3d652afd456",
         "path": "/vault/keyman/keyman",
         "mode": 493
       }

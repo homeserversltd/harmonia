@@ -2408,7 +2408,6 @@ pub(crate) fn probe_member_release_candidates(
     component: &str,
     resolution: &crate::bands::pull_source::SourceResolution,
     asset: Option<&str>,
-    pinned_release_sha: Option<&str>,
     seat: &crate::atoms::ask::mint_seats::Seat,
 ) -> MemberReleaseProbe {
     let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
@@ -2426,7 +2425,7 @@ pub(crate) fn probe_member_release_candidates(
         asset_name,
         &sidecar_name,
         None,
-        pinned_release_sha,
+        None,
         None,
         if asset.is_some() {
             ReleaseCandidateReceiptMode::MemberFlagBinary

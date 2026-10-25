@@ -129,7 +129,7 @@ pub(crate) fn resolve_sbin(seat: &super::mint_seats::Seat) -> Observation {
 }
 
 pub(crate) fn resolve_component(component: &str, seat: &super::mint_seats::Seat) -> Observation {
-    resolve_configured_component(component, None, None, seat)
+    resolve_configured_component(component, None, seat)
 }
 
 /// Resolve the member's configured release flag and, when requested, acquire
@@ -137,16 +137,14 @@ pub(crate) fn resolve_component(component: &str, seat: &super::mint_seats::Seat)
 pub(crate) fn resolve_binary_component(
     component: &str,
     asset: &str,
-    pinned_release_sha: Option<&str>,
     seat: &super::mint_seats::Seat,
 ) -> Observation {
-    resolve_configured_component(component, Some(asset), pinned_release_sha, seat)
+    resolve_configured_component(component, Some(asset), seat)
 }
 
 fn resolve_configured_component(
     component: &str,
     asset: Option<&str>,
-    pinned_release_sha: Option<&str>,
     seat: &super::mint_seats::Seat,
 ) -> Observation {
     let config_path = crate::bands::pull_source::appliance_config_path();
@@ -189,7 +187,6 @@ fn resolve_configured_component(
         component,
         &source_resolution,
         asset,
-        pinned_release_sha,
         seat,
     );
     Observation {

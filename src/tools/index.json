@@ -1785,8 +1785,7 @@
             {"name": "component", "kind": "string", "required": true},
             {"name": "asset", "kind": "string", "required": true},
             {"name": "path", "kind": "string", "required": true},
-            {"name": "mode", "kind": "integer", "required": true},
-            {"name": "pinned_release_sha", "kind": "string", "required": false}
+            {"name": "mode", "kind": "integer", "required": true}
           ],
           "placement": "RatchetBinaries"
         }
