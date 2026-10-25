@@ -1,8 +1,6 @@
-# Arch TV payload sanitization
+# TV desktop configuration
 
-The source desktop payload came from `/var/opt/workspace/deployable-tv-desktop-config-20260615-164414`.
-
-TV baseline changes applied before module packaging:
+TV desktop defaults:
 
 - removed Waybar `custom/clipboard`, `custom/printer`, `backlight`, and `battery` from active module lists;
 - removed `openwhispr` autostart;

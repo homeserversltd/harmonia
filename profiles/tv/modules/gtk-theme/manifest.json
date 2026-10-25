@@ -13,7 +13,7 @@
       ".config/gtk-3.0/settings.ini",
       ".config/gtk-4.0/settings.ini"
     ],
-    "phase": 5,
+
     "receipt_schema": "harmonia.tv.gtk_theme.v1",
     "meaning": "TV GTK theme settings are converged from this module into the owner home."
   },

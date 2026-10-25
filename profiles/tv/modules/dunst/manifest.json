@@ -17,7 +17,7 @@
     "user_services": [
       "hs-dunst.service"
     ],
-    "phase": 6,
+
     "receipt_schema": "harmonia.tv.dunst.v1",
     "meaning": "TV Dunst notification service owns its configuration and user service"
   },

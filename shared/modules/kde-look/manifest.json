@@ -35,7 +35,7 @@
       ".config/kdeglobals",
       ".config/konsolerc"
     ],
-    "phase": 5,
+
     "receipt_schema": "harmonia.kde_look.v1",
     "meaning": "KDE application appearance and preferences stay together in one shared module."
   },

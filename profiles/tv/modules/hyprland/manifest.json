@@ -19,7 +19,7 @@
       ".config/hypr/monitors.conf",
       ".config/hypr/windows.conf"
     ],
-    "phase": 5,
+
     "receipt_schema": "harmonia.tv.hyprland.v1",
     "meaning": "TV Hyprland configuration is converged from this module into the owner home.",
     "unmanaged_operator_seed": ".config/hypr/input-overrides.conf"

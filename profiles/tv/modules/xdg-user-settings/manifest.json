@@ -17,7 +17,7 @@
       ".local/share/applications/mimeapps.list",
       ".local/share/applications/org.kde.kate.desktop"
     ],
-    "phase": 5,
+
     "receipt_schema": "harmonia.tv.xdg_user_settings.v1",
     "meaning": "TV KDE/application associations and portal configuration are converged from this module into the owner home."
   },

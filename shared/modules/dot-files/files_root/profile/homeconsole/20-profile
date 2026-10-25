@@ -1,5 +1,5 @@
 # Arch Gaming Console login banner
-# ASCII-only, deployable-owned. Sourced by .bash_profile for TTY/SSH login shells.
+# ASCII-only, appliance-owned. Sourced by .bash_profile for TTY/SSH login shells.
 case "$-" in
   *i*) ;;
   *) return 0 2>/dev/null || exit 0 ;;

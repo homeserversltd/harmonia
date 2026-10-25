@@ -14,7 +14,7 @@
       "SANITIZATION.md",
       "omp.json"
     ],
-    "phase": 5,
+
     "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
     "meaning": "TV residual manifest/prompt payload is converged from this module."
   },

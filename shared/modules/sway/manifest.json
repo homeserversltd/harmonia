@@ -24,7 +24,7 @@
       ".config/systemd/user/hometv-sway-environment.service",
       ".config/systemd/user/graphical-session.target.d/10-hometv-sway-environment.conf"
     ],
-    "phase": 5,
+
     "receipt_schema": "harmonia.tv.sway.v1",
     "meaning": "TV Sway configuration is converged from this module into the owner home.",
     "unmanaged_operator_seed": ".config/sway/input-overrides.conf"
