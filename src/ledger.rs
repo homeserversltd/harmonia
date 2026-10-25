@@ -1,6 +1,8 @@
 //! Harmonia's keyed application state. No receipt or envelope is stored here.
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -8,6 +10,7 @@ use std::time::Duration;
 pub(crate) const DATABASE: &str = "/var/lib/harmonia/harmonia.sqlite3";
 const ENTRY: &str = "harmonia.ledger.entry.v1";
 const PAGE: &str = "caduceus.receipts.ledger.v1";
+const PROPOSAL_IDENTITY_MIGRATION: &str = "proposal-product-identity-v1";
 const PROPOSALS_TABLE: &str = "CREATE TABLE IF NOT EXISTS proposals (
     feed_id TEXT NOT NULL, id TEXT NOT NULL, module_id TEXT NOT NULL,
     kind TEXT NOT NULL, target_path TEXT, reference_source_path TEXT,
@@ -70,6 +73,7 @@ pub(crate) fn writer() -> Result<Connection, String> {
         _ => {}
     }
     let mut connection = Connection::open(DATABASE).map_err(database_error)?;
+    connection.pragma_update(None, "secure_delete", "ON").map_err(database_error)?;
     public_mode(Path::new(DATABASE), 0o644)?;
     connection.busy_timeout(Duration::from_secs(5)).map_err(database_error)?;
     // The entire schema becomes visible in one transaction.
@@ -90,8 +94,72 @@ pub(crate) fn writer() -> Result<Connection, String> {
     ).map_err(database_error)?;
     transaction.execute_batch(PROPOSALS_TABLE).map_err(database_error)?;
     transaction.execute_batch(CONFIG_PROPOSALS_TABLE).map_err(database_error)?;
+    let migrated = migrate_proposal_identity(&transaction)?;
     transaction.commit().map_err(database_error)?;
+    if migrated {
+        // Erase bytes freed before secure deletion was enabled too. Record the
+        // migration only after scrubbing succeeds, so interruption is retryable.
+        connection.execute_batch("VACUUM").map_err(database_error)?;
+        let busy: i64 = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .map_err(database_error)?;
+        if busy != 0 { return Err("harmonia-state-checkpoint-busy".into()); }
+        connection.execute("INSERT OR IGNORE INTO migrations(id) VALUES(?1)", [PROPOSAL_IDENTITY_MIGRATION])
+            .map_err(database_error)?;
+    }
     Ok(connection)
+}
+
+fn proposal_feed_id(path: &Path) -> String {
+    format!("harmonia-feed-{:x}", Sha256::digest(path.as_os_str().as_bytes()))
+}
+
+fn stored_reference(item: &crate::interactables::Interactable) -> Option<String> {
+    item.reference_source_path.as_ref().map(|_| {
+        format!("/var/lib/harmonia/proposal-sources/{}.source", item.id)
+    })
+}
+
+/// Move caller locations to opaque product keys once. Both halves of each
+/// pending proposal move in one transaction; source bytes stay available.
+fn migrate_proposal_identity(connection: &Connection) -> Result<bool, String> {
+    let complete: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE id=?1)", [PROPOSAL_IDENTITY_MIGRATION], |row| row.get(0),
+    ).map_err(database_error)?;
+    if complete { return Ok(false); }
+    let mut after: Option<String> = None;
+    loop {
+        let next: Option<String> = connection.query_row(
+            "SELECT feed_id FROM (SELECT feed_id FROM proposals UNION SELECT feed_id FROM proposal_config)
+             WHERE (?1 IS NULL OR feed_id>?1) ORDER BY feed_id LIMIT 1",
+            [&after], |row| row.get(0),
+        ).optional().map_err(database_error)?;
+        let Some(old) = next else { break; };
+        if !old.starts_with("harmonia-feed-") {
+            let new = proposal_feed_id(Path::new(&old));
+            connection.execute(
+                "INSERT INTO proposals SELECT ?1,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run FROM proposals WHERE feed_id=?2",
+                params![new,old],
+            ).map_err(database_error)?;
+            connection.execute(
+                "INSERT INTO proposal_config SELECT ?1,id,config_state,source FROM proposal_config WHERE feed_id=?2",
+                params![new,old],
+            ).map_err(database_error)?;
+            connection.execute("DELETE FROM proposal_config WHERE feed_id=?1", [&old]).map_err(database_error)?;
+            connection.execute("DELETE FROM proposals WHERE feed_id=?1", [&old]).map_err(database_error)?;
+        }
+        after = Some(old);
+    }
+    connection.execute(
+        "UPDATE proposals SET reference_source_path='/var/lib/harmonia/proposal-sources/' || id || '.source' WHERE reference_source_path IS NOT NULL",
+        [],
+    ).map_err(database_error)?;
+    connection.execute(
+        "UPDATE proposal_config SET config_state=json_remove(json_set(config_state,
+         '$.reference','/var/lib/harmonia/proposal-sources/' || id || '.source',
+         '$.reference_id','/var/lib/harmonia/proposal-sources/' || id || '.source'),'$.run_id')",
+        [],
+    ).map_err(database_error)?;
+    Ok(true)
 }
 
 struct LedgerSeats {
@@ -331,12 +399,13 @@ fn config_reader() -> Result<Option<Connection>, String> {
     Ok(present.then_some(connection))
 }
 
-/// Old stores and absent keys are null. Queries never create or repair state.
+/// Reads can consume a pending proposal before its producer next writes and
+/// migrates the store. They never create or repair persistent state.
 pub(crate) fn config_state(path: &Path, id: &str) -> Result<Option<Value>, String> {
     let Some(connection) = config_reader()? else { return Ok(None); };
     let state: Option<String> = connection.query_row(
-        "SELECT config_state FROM proposal_config WHERE feed_id=?1 AND id=?2",
-        params![path.to_string_lossy(),id], |row| row.get(0),
+        "SELECT config_state FROM proposal_config WHERE (feed_id=?1 OR feed_id=?3) AND id=?2 ORDER BY feed_id=?1 DESC LIMIT 1",
+        params![proposal_feed_id(path),id,path.to_string_lossy()], |row| row.get(0),
     ).optional().map_err(database_error)?;
     state.map(|state| serde_json::from_str(&state).map_err(|error| error.to_string())).transpose()
 }
@@ -344,16 +413,16 @@ pub(crate) fn config_state(path: &Path, id: &str) -> Result<Option<Value>, Strin
 pub(crate) fn proposal_source(path: &Path, id: &str) -> Result<Option<Vec<u8>>, String> {
     let Some(connection) = config_reader()? else { return Ok(None); };
     connection.query_row(
-        "SELECT source FROM proposal_config WHERE feed_id=?1 AND id=?2",
-        params![path.to_string_lossy(),id], |row| row.get(0),
+        "SELECT source FROM proposal_config WHERE (feed_id=?1 OR feed_id=?3) AND id=?2 ORDER BY feed_id=?1 DESC LIMIT 1",
+        params![proposal_feed_id(path),id,path.to_string_lossy()], |row| row.get(0),
     ).optional().map_err(database_error)
 }
 
 pub(crate) fn has_proposal_source(path: &Path, id: &str) -> Result<bool, String> {
     let Some(connection) = config_reader()? else { return Ok(false); };
     connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM proposal_config WHERE feed_id=?1 AND id=?2)",
-        params![path.to_string_lossy(),id], |row| row.get(0),
+        "SELECT EXISTS(SELECT 1 FROM proposal_config WHERE (feed_id=?1 OR feed_id=?3) AND id=?2)",
+        params![proposal_feed_id(path),id,path.to_string_lossy()], |row| row.get(0),
     ).map_err(database_error)
 }
 
@@ -365,8 +434,8 @@ pub(crate) fn prepare_config_proposals(
 ) -> Result<(), String> {
     if config.is_empty() { return Ok(()); }
     if let Some(connection) = reader()? {
-        if proposal_rows_match(&connection, &path.to_string_lossy(), feed)?
-            && config_rows_match(&connection, &path.to_string_lossy(), feed, config)?
+        if proposal_rows_match(&connection, &proposal_feed_id(path), feed)?
+            && config_rows_match(&connection, &proposal_feed_id(path), feed, config)?
         { return Ok(()); }
     }
     if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
@@ -374,7 +443,7 @@ pub(crate) fn prepare_config_proposals(
     }
     let mut connection = writer()?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
-    let feed_id = path.to_string_lossy();
+    let feed_id = proposal_feed_id(path);
     for proposal in config {
         if let Some(item) = feed.interactables.iter().find(|item| item.id==proposal.id && !item.has_run) {
             upsert_proposal_row(&transaction, &feed_id, item)?;
@@ -390,7 +459,7 @@ pub(crate) fn prepare_config_proposals(
 pub(crate) fn sync_proposals(
     path: &Path, feed: &crate::interactables::InteractablesFeed, config: &[ConfigProposal],
 ) -> Result<(), String> {
-    let feed_id = path.to_string_lossy();
+    let feed_id = proposal_feed_id(path);
     let observed = reader()?;
     if observed.is_none() && feed.interactables.is_empty() { return Ok(()); }
     if let Some(connection) = observed.as_ref() {
@@ -474,7 +543,7 @@ fn upsert_proposal_row(connection: &Connection, feed_id: &str, item: &crate::int
            IS NOT (excluded.module_id,excluded.kind,excluded.target_path,excluded.reference_source_path,
                    excluded.live_sha,excluded.reference_sha,excluded.silenced,excluded.has_run)",
         params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
-            item.reference_source_path.as_ref().map(|p|p.to_string_lossy()),item.live_sha,item.reference_sha,item.silenced,item.has_run],
+            stored_reference(item),item.live_sha,item.reference_sha,item.silenced,item.has_run],
     ).map_err(database_error)?;
     Ok(())
 }
@@ -487,7 +556,7 @@ fn proposal_rows_match(connection: &Connection, feed_id: &str, feed: &crate::int
             "SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1 AND id=?2
              AND (module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run) IS (?3,?4,?5,?6,?7,?8,?9,?10))",
             params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
-                item.reference_source_path.as_ref().map(|p|p.to_string_lossy()),item.live_sha,item.reference_sha,item.silenced,item.has_run],
+                stored_reference(item),item.live_sha,item.reference_sha,item.silenced,item.has_run],
             |row| row.get(0)).map_err(database_error)?;
         if !same { return Ok(false); }
     }
@@ -498,7 +567,7 @@ pub(crate) fn filter_open_proposals(path: &Path, feed: &mut crate::interactables
     if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
         seat.validate_ruyi(&serde_json::to_value(&*feed).map_err(|error| error.to_string())?)?;
     }
-    let feed_id = path.to_string_lossy();
+    let feed_id = proposal_feed_id(path);
     let observed = reader().ok().flatten();
     let connection = match observed {
         Some(connection) if proposal_rows_match(&connection, &feed_id, feed).unwrap_or(false) => connection,

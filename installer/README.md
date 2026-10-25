@@ -1,7 +1,7 @@
 # Harmonia control surface
 
-Harmonia does not install or uninstall itself. The deployables organ owns the
-Harmonia installation and uninstallation lifecycle.
+Harmonia does not install or uninstall itself. Appliance installation and
+removal are separate from its runtime control surface.
 
 Harmonia retains the narrow systemd control surface for its own units:
 
@@ -18,6 +18,6 @@ The timer commands install, enable, disable, and remove only `harmonia.service`
 and `harmonia.timer`. They do not install the binary, configuration, profiles,
 state, logs, or receipts.
 
-Deployables is responsible for placing and removing those installation
+The appliance installer places and removes those installation
 surfaces. Harmonia owns runtime convergence and its own systemd unit control;
 these responsibilities are intentionally separate.

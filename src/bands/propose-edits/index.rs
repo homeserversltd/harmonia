@@ -128,24 +128,13 @@ fn read_regular_file_no_follow(path: &Path, context: &str) -> Result<Vec<u8>, St
     Ok(bytes)
 }
 
-fn proposal_reference(feed_path: &Path, id: &str) -> Result<PathBuf, String> {
+fn proposal_reference(id: &str) -> Result<PathBuf, String> {
     if !is_config_proposal_id(id) {
         return Err("config-proposal-source-id-invalid".to_string());
     }
-    let parent = feed_path.parent().unwrap_or_else(|| Path::new("."));
-    let absolute_parent = if parent.is_absolute() {
-        parent.to_path_buf()
-    } else if parent.as_os_str().is_empty() || parent == Path::new(".") {
-        std::env::current_dir().map_err(|error| format!("config-proposal-source-cwd-failed: {error}"))?
-    } else {
-        std::env::current_dir()
-            .map_err(|error| format!("config-proposal-source-cwd-failed: {error}"))?
-            .join(parent)
-    };
-    let parent = crate::atoms::attest::convergence_receipts::validate_receipt_directory_root(&absolute_parent)?;
-    // Preserve the public reference string. The snapshot itself is now keyed
-    // SQLite state; this path is never created or followed for a row-backed item.
-    Ok(parent.join("proposal-sources").join(format!("{id}.source")))
+    // This is a product reference, not a caller's staging location. The source
+    // bytes live in keyed SQLite state; no snapshot file is created here.
+    Ok(Path::new("/var/lib/harmonia/proposal-sources").join(format!("{id}.source")))
 }
 
 pub(crate) fn persist_feed(
@@ -744,7 +733,7 @@ fn refresh_interactables_at_path_with_policy_and_step(
         } else {
             stable_id(&entry.target, live_sha.as_deref().unwrap_or_default(), &reference_sha)
         };
-        let reference_source = proposal_reference(path, &id)?;
+        let reference_source = proposal_reference(&id)?;
         let reference_source_id = reference_source.to_string_lossy().into_owned();
         let target_proposal_count = feed
             .interactables
@@ -791,24 +780,13 @@ fn refresh_interactables_at_path_with_policy_and_step(
         } else {
             "refused-unrecognized"
         };
-        let state_receipt = path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!(
-                "config-state-{}.json",
-                id.strip_prefix("config-proposal-").unwrap_or(&id)
-            ));
-        let mut config_state = serde_json::json!({
+        let config_state = serde_json::json!({
                 "schema": "harmonia.config_state.v1", "config_state": state, "id": id.clone(),
                 "target": entry.target.clone(), "reference": reference_source.clone(), "score": score,
                 "live_sha": live_sha.clone(), "compiled_target_absent": target_absent,
                 "reference_sha": reference_sha.clone(), "threshold": threshold,
                 "reference_id": reference_source.clone()
             });
-        // Match the atomic JSON writer's run identity without creating a file.
-        if let Some(run_id) = crate::receipts::receipt_run_id(&state_receipt) {
-            config_state["run_id"] = serde_json::json!(run_id);
-        }
         // Refused recognition has no live proposal. Its evidence belongs only
         // to this invocation's reply, never an orphan row or a stale sidecar.
         CURRENT_CONFIG_RECOGNITIONS.with(|state| {

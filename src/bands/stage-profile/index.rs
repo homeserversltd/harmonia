@@ -651,14 +651,7 @@ fn materialize_from_source(
         &subscription_path(),
         SubscriptionUpdate {
             lane: preserve_existing_lane_or_default(&subscription_path()),
-            source: match source_kind {
-                MaterializationSource::EngineSource => source_root.display().to_string(),
-                MaterializationSource::StandingProfile => source_root
-                    .join("profiles")
-                    .join(&refreshed.id)
-                    .display()
-                    .to_string(),
-            },
+            source: format!("harmonia:profile:{}", refreshed.id),
             ref_name: match source_kind {
                 MaterializationSource::EngineSource => source_head,
                 MaterializationSource::StandingProfile => source_kind.as_str().to_string(),

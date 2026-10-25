@@ -44,17 +44,6 @@ impl MoltSourceKind {
         }
     }
 
-    fn subscription_source(self, harmonia_root: &Path, profile_id: &str) -> String {
-        match self {
-            Self::EngineSource => harmonia_root.display().to_string(),
-            Self::StandingProfile => harmonia_root
-                .join("profiles")
-                .join(profile_id)
-                .display()
-                .to_string(),
-        }
-    }
-
     fn ref_name(self) -> &'static str {
         match self {
             Self::EngineSource => "molt",
@@ -561,7 +550,7 @@ fn molt_from_source_kind_inner(
         &subscription_path,
         SubscriptionUpdate {
             lane,
-            source: source_kind.subscription_source(harmonia_root, &profile.id),
+            source: format!("harmonia:profile:{}", profile.id),
             ref_name,
             selected_profile: profile.id.clone(),
             engine_version_received: VERSION.to_string(),

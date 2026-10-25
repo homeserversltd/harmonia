@@ -666,7 +666,7 @@ pub(crate) fn capsule_install_with_invocation(
             &subscription_path,
             SubscriptionUpdate {
                 lane,
-                source: format!("capsule:{}", capsule_dir.display()),
+                source: format!("harmonia:profile:{}", manifest.profile_id),
                 ref_name: manifest.created_from.clone(),
                 selected_profile: manifest.profile_id.clone(),
                 engine_version_received: manifest.engine_version.clone(),

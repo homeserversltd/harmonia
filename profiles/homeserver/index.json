@@ -19,7 +19,6 @@
   "folder_groups": {
     "modules": [
       "harmonia",
-      "deployables",
       "caduceus",
       "dot-files",
       "nginx",

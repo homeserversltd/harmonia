@@ -146,8 +146,8 @@ authorize an engine change.
 
 ## Product and operator boundary
 
-Deployables owns installation and uninstallation. Harmonia owns runtime
-convergence and control of `harmonia.service` and `harmonia.timer`. Chrysalis’
-release-publish tool owns publication and mirroring. The local ratchet lock
+Appliance installation and removal are separate from Harmonia's runtime
+convergence and control of `harmonia.service` and `harmonia.timer`. Release
+publication and mirroring are handled by the publisher. The local ratchet lock
 records the last converged engine identity; verified published Releases provide
 the artifact selection authority in artifact mode.

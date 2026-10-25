@@ -1,8 +1,4 @@
-# Managed by harmonia-monad operator-rc-profile.
-case ":$PATH:" in
-  *:/fulcrum:*) ;;
-  *) export PATH="/fulcrum:$PATH" ;;
-esac
+# Managed by Harmonia dot-files.
 case ":$PATH:" in
   *:$HOME/.local/bin:*) ;;
   *) export PATH="$HOME/.local/bin:$PATH" ;;

@@ -24,9 +24,7 @@ fi
 export TERM=xterm-256color
 export LOCAL_IP=$(ip route get 1 | awk '{print $7}')
 export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/sbin:/usr/sbin:/opt/android-studio/bin:$HOME/.atuin/bin:$PATH"
-# Fulcrum front door native on PATH — cli.py exposed everywhere; `cli.py pali ...` etc.
-# Appended at END so repo scripts do not shadow system commands (operator ruling 2026-07-13).
-export PATH="$PATH:/fulcrum"
+
 # Check for 'moar' first; if not found, check for 'less'; if neither, default to 'more'
 if command -v moar &> /dev/null; then
     alias moar="moar -colors auto -wrap -mousemode auto"

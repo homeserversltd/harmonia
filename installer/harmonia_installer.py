@@ -87,7 +87,7 @@ Common paths:
   sudo ./cli.py uninstall-timer --apply  Disable and remove only the Harmonia timer units.
 
 Installation contract:
-  deployables owns Harmonia installation and uninstallation. Harmonia retains
+  The appliance installer owns installation and removal. Harmonia retains
   control of its own systemd service and timer units.
 """.strip(),
     )
