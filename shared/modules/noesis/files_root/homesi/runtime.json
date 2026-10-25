@@ -1,5 +1,5 @@
 {
   "unit_environment": {
-    "NOESIS_CADUCEUS_URL": "http://127.0.0.1:3014"
+    "NOESIS_CADUCEUS_URL": {"from": "appliance.caduceus.bind"}
   }
 }
