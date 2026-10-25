@@ -2,10 +2,16 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "noesis",
   "title": "HomeSI controls",
-  "summary": "Keeps the HomeSI control website available on port 3015.",
+  "summary": "Keeps the Noesis control website available on port 3015.",
   "category": "known-good",
-  "version": "1.0.0",
-  "description": "Noesis HomeSI face runtime: fetch its own repository release artifact, promote the binary, place its unit, restart only for changed material, and check HTTP health. Noesis defaults to 0.0.0.0:3015.",
+  "version": "1.1.0",
+  "description": "Shared Noesis face runtime: fetch its own repository release artifact, promote the binary, place its unit with the selected Caduceus origin, restart only for changed material, and check HTTP health. Noesis defaults to 0.0.0.0:3015.",
+  "files_root": "files_root",
+  "profile_input": {
+    "axis": "profile",
+    "fragment": "runtime.json",
+    "fallback": "specula"
+  },
   "constants": {},
   "ladder": [
     {
@@ -24,6 +30,7 @@
         "retries": 30,
         "binary_name": "noesis",
         "release_repo": "HOMESERVERSLTD/noesis",
+        "profile_axis": "profile",
         "identity": "embedded-sha",
         "op_prefix": "noesis",
         "run_schema": "harmonia.noesis_runtime.v1",
@@ -36,7 +43,7 @@
           {
             "path": "/etc/systemd/system/noesis.service",
             "mode": 420,
-            "content": "[Unit]\nDescription=Noesis HomeSI face\n\n[Service]\nType=simple\nUser=root\nGroup=root\nExecStart=/usr/local/bin/noesis\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
+            "content": "[Unit]\nDescription=Noesis HomeSI face\n\n[Service]\nType=simple\nUser=root\nGroup=root\nEnvironment=NOESIS_CADUCEUS_URL=${unit_environment.NOESIS_CADUCEUS_URL}\nExecStart=/usr/local/bin/noesis\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
           }
         ],
         "expected_unit_properties": {

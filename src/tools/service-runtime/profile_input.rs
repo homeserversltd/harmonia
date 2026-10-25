@@ -239,5 +239,39 @@ pub(crate) fn apply(
             args.insert(key.to_string(), value);
         }
     }
+
+    // Optional profile values render only explicit unit-environment tokens;
+    // they cannot replace component, artifact, or installation metadata.
+    if let Some(environment) = selected_fragment
+        .get("unit_environment")
+        .filter(|value| !value.is_null())
+    {
+        let environment = environment
+            .as_object()
+            .ok_or_else(|| "profile-input-unit-environment-invalid".to_string())?;
+        let mut replacements = Vec::new();
+        for (name, value) in environment {
+            let origin = if value.get("from").and_then(Value::as_str)
+                == Some("appliance.caduceus.bind")
+            {
+                crate::atoms::ask::caduceus_door::base_url()
+                    .map_err(str::to_string)?
+            } else {
+                value.as_str().ok_or_else(|| {
+                    format!("profile-input-unit-environment-value-invalid {name}")
+                })?
+            };
+            replacements.push((format!("${{unit_environment.{name}}}"), origin.to_owned()));
+        }
+        if let Some(files) = args.get_mut("managed_files").and_then(Value::as_array_mut) {
+            for file in files {
+                if let Some(Value::String(content)) = file.get_mut("content") {
+                    for (token, value) in &replacements {
+                        *content = content.replace(token, value);
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }

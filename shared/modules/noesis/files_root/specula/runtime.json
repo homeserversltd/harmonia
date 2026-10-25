@@ -1,0 +1,5 @@
+{
+  "unit_environment": {
+    "NOESIS_CADUCEUS_URL": {"from": "appliance.caduceus.bind"}
+  }
+}
