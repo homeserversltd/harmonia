@@ -1,19 +1,6 @@
 {
   "url": "http://127.0.0.1:3014/health",
-  "managed_files": [
-    {
-      "path": "/var/lib/caduceus/state.json",
-      "operation": "place",
-      "xattrs": {},
-      "no_follow": true,
-      "collision_policy": "refuse",
-      "rollback_policy": "exact",
-      "mode": 420,
-      "owner": "caduceus",
-      "group": "caduceus",
-      "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"profile\": \"homeserver\"\n  },\n  \"caduceus\": {\n    \"household\": {\n      \"tls\": {\n        \"schema\": \"caduceus.household.tls.v1\",\n        \"root\": {},\n        \"leaves\": {},\n        \"bundles\": {},\n        \"constituents\": {},\n        \"trust\": {}\n      }\n    }\n  }\n}\n"
-    }
-  ],
+  "managed_files": [],
   "caduceus_profile_source": {
     "source": "profiles/homeserver/index.yaml",
     "path": "/etc/caduceus/profile.yaml",

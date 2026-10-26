@@ -5,11 +5,6 @@
       "path": "/var/lib/caduceus/venv/lib/python3.13/site-packages/caduceus-staff.pth",
       "mode": 420,
       "content": "/usr/local/sbin\n"
-    },
-    {
-      "path": "/var/lib/caduceus/state.json",
-      "mode": 420,
-      "content": "{\n  \"schema\": \"caduceus.state.v1\",\n  \"services\": {\n    \"update\": {\n      \"timer\": \"harmonia.timer\"\n    }\n  }\n}\n"
     }
   ],
   "caduceus_profile_source": {
