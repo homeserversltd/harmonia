@@ -11,7 +11,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const REGISTER_PATH: &str = "/etc/appliance/xenia.json";
 const UNIT_ROOT: &str = "/etc/systemd/system";
@@ -1336,19 +1336,86 @@ pub(crate) fn execute_routine_child(
     match permutation {
         "seat-present" => xenia_seat_present(args, apply),
         "observe-stamp" => {
+            if !apply {
+                return Ok((
+                    OperationOutcome {
+                        ok: true,
+                        changed: false,
+                        skipped: true,
+                        message: "xenia-observe-planned".into(),
+                        command: None,
+                    },
+                    BTreeMap::new(),
+                ));
+            }
             let id = args
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or("xenia-id-missing")?;
+            let source_sha = args.get("source_sha").cloned().unwrap_or(Value::Null);
+            let health = args.get("health").cloned().unwrap_or(Value::Null);
+            let version = args.get("version").cloned().unwrap_or(Value::Null);
+            let endpoint = args.get("endpoint").cloned().unwrap_or(Value::Null);
+            let proved_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| format!("xenia-observe-clock-failed: {error}"))?
+                .as_secs();
+            let base = crate::atoms::ask::caduceus_door::base_url().map_err(str::to_owned)?;
+            let post_observation = |payload: &Value| -> Result<bool, String> {
+                let (status, value) = http(
+                    "POST",
+                    &format!("{base}/api/v1/xenia/{id}/observe"),
+                    Some(payload),
+                    Duration::from_secs(5),
+                )
+                .map_err(|_| "xenia-observe-unreachable".to_string())?;
+                if status >= 500 {
+                    return Err("xenia-observe-unreachable".into());
+                }
+                if (400..500).contains(&status)
+                    || value.get("schema").and_then(Value::as_str)
+                        != Some("caduceus.xenia.verdict.v1")
+                    || value.get("ok").and_then(Value::as_bool) != Some(true)
+                    || value.get("verdict").and_then(Value::as_str) != Some("admissible")
+                {
+                    let check = value
+                        .get("check")
+                        .or_else(|| value.get("verdict"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("invalid-verdict");
+                    return Err(format!("xenia-observe-refused {check}"));
+                }
+                if status != 200 {
+                    return Err("xenia-observe-unreachable".into());
+                }
+                Ok(value.get("changed").and_then(Value::as_bool).unwrap_or(false))
+            };
+            let installed_changed = post_observation(&json!({
+                "installed": {
+                    "version": version,
+                    "source_sha": source_sha,
+                    "kit_band": null,
+                    "proved_at": proved_at,
+                    "health": health
+                }
+            }))?;
+            let discovered_changed = post_observation(&json!({
+                "discovered": {
+                    "endpoint": endpoint,
+                    "content_kind": null,
+                    "rung": "probe",
+                    "at": proved_at
+                }
+            }))?;
             Ok((
                 OperationOutcome {
                     ok: true,
-                    changed: false,
-                    skipped: true,
-                    message: format!("xenia-observe-skipped-register-read-only id={id}"),
+                    changed: installed_changed || discovered_changed,
+                    skipped: false,
+                    message: "xenia-observed".into(),
                     command: None,
                 },
-                BTreeMap::new(),
+                BTreeMap::from([("verdict".into(), json!("admissible"))]),
             ))
         }
         _ => Err(format!(
