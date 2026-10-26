@@ -389,8 +389,21 @@ fn molt_from_source_kind_inner(
         let sidecar = module_dir.join("sidecar.json");
         let manifest = module_dir.join("manifest.json");
         let module_output_dir = output_dir.join("modules").join(module);
+        let output_is_replaceable = match fs::symlink_metadata(&module_output_dir) {
+            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => true,
+            Ok(metadata) if metadata.is_dir() => false,
+            Ok(_) => {
+                return Err(format!(
+                    "molt-output-kind-collision {}",
+                    module_output_dir.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.to_string()),
+        };
         let source_tree_sha256 = staging_tree_sha256(&module_dir)?;
         let installed_clean = !forced_modules.contains(module)
+            && !output_is_replaceable
             && module_output_dir.is_dir()
             && {
                 let installed_tree_sha256 =
@@ -406,12 +419,23 @@ fn molt_from_source_kind_inner(
             continue;
         }
         refreshed_modules.push(module.clone());
+        if output_is_replaceable {
+            replace_export_directory_entry(
+                key,
+                &module_dir,
+                &module_output_dir,
+                mode,
+                &mut artifacts,
+                link_rollback_journal,
+            )?;
+        }
         if mode == MoltMode::Copy && forced_modules.contains(module) {
+            // A replaced file/link root already has a journaled directory postimage.
             crate::tools::comparison::execute(
                 "molt-forced-module-root-replace",
                 || Ok(fs::symlink_metadata(&module_output_dir).is_ok()),
                 |present| {
-                    if *present {
+                    if *present && !output_is_replaceable {
                         crate::tools::comparison::DiffDecision::Different
                     } else {
                         crate::tools::comparison::DiffDecision::Empty
@@ -438,21 +462,7 @@ fn molt_from_source_kind_inner(
             )?;
             continue;
         }
-        let output_is_replaceable = match fs::symlink_metadata(&module_output_dir) {
-            Ok(metadata) => metadata.file_type().is_symlink() || metadata.is_file(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error.to_string()),
-        };
-        if output_is_replaceable {
-            replace_export_directory_entry(
-                key,
-                &module_dir,
-                &module_output_dir,
-                mode,
-                &mut artifacts,
-                link_rollback_journal,
-            )?;
-        } else if ensure_dir(key, &module_dir, &module_output_dir)? {
+        if !output_is_replaceable && ensure_dir(key, &module_dir, &module_output_dir)? {
             artifacts.push(MoltArtifact {
                 kind: "export-directory",
                 source: module_dir.display().to_string(),
