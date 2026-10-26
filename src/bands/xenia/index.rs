@@ -1395,7 +1395,7 @@ pub(crate) fn execute_routine_child(
             );
             let discovered_due = snapshot_differs(
                 "discovered",
-                &["endpoint", "rung", "content_kind"],
+                &["endpoint"],
                 &discovered,
             );
             if !installed_due && !discovered_due {
