@@ -62,6 +62,19 @@
         "group": "root"
       },
       "on_failure": "stop"
+    },
+    {
+      "step_id": "linker-front-door-link",
+      "tool": "files",
+      "permutation": "symlink-converge",
+      "args": {
+        "source": "/usr/local/sbin/agathodaimon/linker/linker",
+        "target": "/usr/local/bin/linker",
+        "required_source_kind": "regular-executable",
+        "owner": "root",
+        "group": "root"
+      },
+      "on_failure": "stop"
     }
   ]
 }
