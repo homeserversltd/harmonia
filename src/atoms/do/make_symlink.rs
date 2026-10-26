@@ -196,12 +196,14 @@ fn restore_link(
     path: &Path,
     saved: &SavedLink,
 ) -> Result<(), String> {
-    remove_link(authorization, invocation, path).map_err(|e| {
-        format!(
-            "validated-file-symlink-restore-link-remove-failed {}: {e}",
-            path.display()
-        )
-    })?;
+    if atoms::ask::path_kind(path)?.is_some() {
+        atoms::r#do::remove_file::remove_file(authorization, invocation, path).map_err(|e| {
+            format!(
+                "validated-file-symlink-restore-link-remove-failed {}: {e}",
+                path.display()
+            )
+        })?;
+    }
     if saved.exists {
         let link = saved
             .target
@@ -264,6 +266,9 @@ pub(crate) struct ValidatedFileSymlinkRequest<'a> {
     pub reload_args: &'a [String],
     pub timeout_secs: u64,
     pub apply: bool,
+    /// Owner acceptance returns the native witness directly, without retaining
+    /// a second receipt tree. Ordinary update receipts keep their existing seat.
+    pub returned_receipt: Option<&'a std::cell::RefCell<Option<serde_json::Value>>>,
 }
 
 #[derive(Default)]
@@ -357,10 +362,7 @@ pub(crate) fn execute(
         |authorization, observation| {
             let authorization = &authorization;
             if !request.apply {
-                return write_receipt(
-                    &request,
-                    TerminalReceipt::refusal("validated-file-symlink-report-only-unseated"),
-                );
+                return write_receipt(&request, TerminalReceipt::no_change(true));
             }
             let Some(invocation) = invocation else {
                 return write_receipt(
@@ -389,9 +391,12 @@ pub(crate) fn execute(
                 ..
             } = observation;
             let path = request.receipt_dir.join(format!("{}.json", request.name));
-            let mut receipt: serde_json::Value =
+            let mut receipt: serde_json::Value = if let Some(returned) = request.returned_receipt {
+                returned.borrow().clone().ok_or("validated-symlink-native-receipt-absent")?
+            } else {
                 serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.to_string())?
+            };
             let object = receipt
                 .as_object_mut()
                 .ok_or_else(|| "validated-file-symlink-receipt-not-object".to_string())?;
@@ -410,7 +415,11 @@ pub(crate) fn execute(
             );
             object.insert("diff_decision".into(), json!("different"));
             object.insert("truthful_changed".into(), json!(movement.changed));
-            crate::write_json(&path, &receipt)?;
+            if let Some(returned) = request.returned_receipt {
+                returned.replace(Some(receipt));
+            } else {
+                crate::write_json(&path, &receipt)?;
+            }
             Ok(movement)
         }
     }
@@ -752,9 +761,7 @@ fn write_receipt(
         "empty"
     };
     let receipt_path = request.receipt_dir.join(format!("{}.json", request.name));
-    crate::write_json(
-        &receipt_path,
-        &json!({
+    let value = json!({
             "schema":"harmonia.files.validated_file_symlink.v1",
             "ok":receipt.ok,
             "apply":request.apply,
@@ -769,8 +776,12 @@ fn write_receipt(
             "diff_decision":diff_decision,
             "movement": {"source": receipt.promotion.source, "link": receipt.promotion.link},
             "truthful_changed": receipt.changed,
-        }),
-    )?;
+        });
+    if let Some(returned) = request.returned_receipt {
+        returned.replace(Some(value));
+    } else {
+        crate::write_json(&receipt_path, &value)?;
+    }
     atoms::attest::attest(
         &request.receipt_dir.join("harmonia"),
         &atoms::Receipt {

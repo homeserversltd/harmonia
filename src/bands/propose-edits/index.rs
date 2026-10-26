@@ -938,6 +938,154 @@ fn refresh_interactables_at_path_with_policy_and_step(
     Ok(recognitions)
 }
 
+/// Observe the declared link without following its leaf. A file collision is
+/// not permission to replace it, even when the owner accepts a link proposal.
+pub(crate) fn validated_symlink_observation(step: &ValidatedStep) -> Result<Value, String> {
+    let path_arg = |key: &str| -> Result<PathBuf, String> {
+        let value = step.args.get(key).and_then(Value::as_str)
+            .ok_or_else(|| format!("validated-symlink-{key}-unresolved-{}", step.step_id))?;
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(format!("validated-symlink-{key}-not-absolute {}", path.display()));
+        }
+        if let crate::atoms::files::TargetClass::Refused(reason) =
+            crate::atoms::files::classify_target(&path)
+        {
+            return Err(format!("validated-symlink-{key}-refused-{reason}"));
+        }
+        Ok(path)
+    };
+    let source = path_arg("source")?;
+    let target = path_arg("target")?;
+    let source_bytes = read_regular_file_no_follow(&source, "validated-symlink-source")?;
+    let link_target = match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let link = fs::read_link(&target)
+                .map_err(|error| format!("validated-symlink-link-read-failed: {error}"))?;
+            Some(link.to_str().ok_or("validated-symlink-link-target-not-utf8")?.to_owned())
+        }
+        Ok(_) => return Err(format!("validated-symlink-link-not-link {}", target.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("validated-symlink-link-observe-failed: {error}")),
+    };
+    Ok(serde_json::json!({
+        "source": source, "target": target, "link_target": link_target,
+        "source_sha256": format!("{:x}", Sha256::digest(&source_bytes)),
+    }))
+}
+
+pub(crate) fn validated_symlink_proposal_id(
+    module_id: &str,
+    binding: &Value,
+    observed: &Value,
+) -> Result<String, String> {
+    let identity = serde_json::json!({
+        "module_id": module_id,
+        "manifest_path": binding.get("manifest_path"),
+        "manifest_sha256": binding.get("manifest_sha256"),
+        "target_step_id": binding.get("target_step_id"),
+        "source": observed.get("source"), "target": observed.get("target"),
+        "link_target": observed.get("link_target"),
+        "source_sha256": observed.get("source_sha256"),
+    });
+    let bytes = serde_json::to_vec(&identity).map_err(|error| error.to_string())?;
+    Ok(format!("config-proposal-{:x}", Sha256::digest(&bytes)))
+}
+
+/// Automatic presses project a pending configuration act, never the link.
+/// Keep observation and publication under the same lock as owner acceptance.
+pub(crate) fn refresh_validated_symlink(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+) -> Result<bool, String> {
+    let path = interactables::feed_path();
+    crate::atoms::attest::with_proposal_projection_lock(&path, || {
+        let observed = validated_symlink_observation(step)?;
+        let binding = config_act_binding(manifest, &step.step_id)?;
+        let feed = interactables::load_feed(&path)?;
+        let target = PathBuf::from(observed["target"].as_str()
+            .ok_or("validated-symlink-target-unresolved")?);
+        let matching_ids = feed.interactables.iter()
+            .filter(|item| item.module_id == manifest.id
+                && item.target_path.as_ref() == Some(&target)
+                && item.extra.get("validated_symlink").is_some_and(|value| !value.is_null()))
+            .map(|item| item.id.clone()).collect::<BTreeSet<_>>();
+        if observed["link_target"] == observed["source"] {
+            if !matching_ids.is_empty() {
+                let feed = compose_feed(feed, &FeedPersistenceIntent::Upsert {
+                    entries: Vec::new(), remove_ids: matching_ids, sort_by_id: true,
+                });
+                persist_feed_locked(&path, &feed, &[])?;
+            }
+            return Ok(false);
+        }
+        let id = validated_symlink_proposal_id(&manifest.id, &binding, &observed)?;
+        let prior = feed.interactables.iter().find(|item| item.id == id);
+        let prior_state = crate::ledger::config_state(&path, &id)?;
+        if prior.is_some_and(|item| {
+            item.extra.get("validated_symlink") == Some(&observed)
+                && item.extra.get("config_act_binding") == Some(&binding)
+        }) && prior_state.as_ref().is_some_and(|state| {
+            state.get("validated_symlink") == Some(&observed)
+                && state.get("config_act_binding") == Some(&binding)
+        }) {
+            return Ok(true);
+        }
+        let now = iso8601_now();
+        let mut extra = prior.map(|item| item.extra.clone()).unwrap_or_default();
+        extra.insert("validated_symlink".into(), observed.clone());
+        extra.insert("config_act_binding".into(), binding.clone());
+        let source = PathBuf::from(observed["source"].as_str()
+            .ok_or("validated-symlink-source-unresolved")?);
+        let item = Interactable {
+            id: id.clone(), module_id: manifest.id.clone(),
+            name: format!("{}: {}", manifest.id, step.step_id),
+            description: format!("Enable {} after validating its configuration.", target.display()),
+            kind: "hard-stamp".into(), target_path: Some(target.clone()),
+            reference_source_path: Some(source.clone()),
+            drift: DriftSummary { content: true, mode: false, ownership: false },
+            created_at: prior.map(|item| item.created_at.clone()).unwrap_or_else(|| now.clone()),
+            refreshed_at: now.clone(),
+            available_at: prior.and_then(|item| item.available_at.clone()).or_else(|| Some(now.clone())),
+            silenced: prior.is_some_and(|item| item.silenced),
+            silenced_at: prior.and_then(|item| item.silenced_at.clone()),
+            has_run: false, mode: None, owner: None, group: None,
+            source_sha: None, target_sha: None, commits_behind: None,
+            live_sha: observed["link_target"].as_str()
+                .map(|value| format!("{:x}", Sha256::digest(value.as_bytes()))),
+            reference_sha: observed["source_sha256"].as_str().map(str::to_owned),
+            recognition_score: None,
+            diff: Some(format!("{} -> {} (currently {})", target.display(), source.display(),
+                observed["link_target"].as_str().unwrap_or("absent"))),
+            script: format!("harmonia interactable run {id}"),
+            show_only_if: "link_state=drift".into(),
+            completion_check: format!("symlink:{}", source.display()),
+            evidence: Value::Null, extra,
+        };
+        let mut state = prior_state.unwrap_or_else(|| serde_json::json!({}));
+        let object = state.as_object_mut().ok_or("validated-symlink-state-not-object")?;
+        object.insert("validated_symlink".into(), observed);
+        object.insert("config_act_binding".into(), binding);
+        object.insert("updated_at".into(), Value::String(now));
+        let config = [crate::ledger::ConfigProposal {
+            id: id.clone(), state,
+            // A link acts on its declared source, not on a copied file snapshot.
+            source: Vec::new(),
+        }];
+        let feed = compose_feed(feed, &FeedPersistenceIntent::Upsert {
+            entries: vec![item],
+            remove_ids: matching_ids.into_iter().filter(|candidate| candidate != &id).collect(),
+            sort_by_id: true,
+        });
+        if let Err(error) = crate::ledger::prepare_config_proposals(&path, &feed, &config) {
+            report_proposal_row_failure(&error);
+            return Ok(false);
+        }
+        persist_feed_locked(&path, &feed, &config)?;
+        Ok(true)
+    })
+}
+
 pub(crate) fn config_act_binding(
     manifest: &LadderManifest,
     step_id: &str,

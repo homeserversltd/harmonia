@@ -188,6 +188,7 @@ pub(crate) fn validated_symlink(
             reload_args,
             timeout_secs,
             apply,
+            returned_receipt: None,
         },
         invocation,
     )

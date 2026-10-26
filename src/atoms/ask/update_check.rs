@@ -149,7 +149,7 @@ fn observe() -> Result<(bool, usize, usize, Vec<String>), String> {
                         config_proposals.extend(config_diff);
                     }
                     "validated-symlink" | "symlink-converge" | "validated-file-symlink" => {
-                        let (software_diff, config_diff) = observe_symlink(step)?;
+                        let (software_diff, config_diff) = observe_symlink(step, manifest)?;
                         if software_diff {
                             pending_steps.insert(format!("{module_id}:{}", step.step_id));
                         }
@@ -450,7 +450,7 @@ fn observe_step(
                 config_proposals.extend(config);
             }
             "validated-symlink" | "symlink-converge" | "validated-file-symlink" => {
-                let (software, config) = observe_symlink(step)?;
+                let (software, config) = observe_symlink(step, manifest)?;
                 if software {
                     pending_steps.insert(format!("{module_id}:{}", step.step_id));
                 }
@@ -506,12 +506,20 @@ fn observe_step(
     Ok(())
 }
 
-fn observe_symlink(step: &ValidatedStep) -> Result<(bool, BTreeSet<PathBuf>), String> {
-    let path = ["path", "link", "destination", "target_path"]
+fn observe_symlink(step: &ValidatedStep, manifest: &LadderManifest) -> Result<(bool, BTreeSet<PathBuf>), String> {
+    // The declared files form is source -> target; legacy aliases use target
+    // as the destination of the link, so do not mix the two interpretations.
+    let declared_form = step.args.get("source").and_then(Value::as_str).is_some()
+        && step.args.get("target").and_then(Value::as_str).is_some();
+    let path_keys: &[&str] = if declared_form { &["target"] }
+        else { &["path", "link", "destination", "target_path"] };
+    let desired_keys: &[&str] = if declared_form { &["source"] }
+        else { &["link_target", "target", "source"] };
+    let path = path_keys
         .iter()
         .find_map(|key| step.args.get(*key).and_then(Value::as_str))
         .ok_or_else(|| format!("update-check-symlink-path-missing-{}", step.step_id))?;
-    let desired = ["link_target", "target", "source"]
+    let desired = desired_keys
         .iter()
         .find_map(|key| step.args.get(*key).and_then(Value::as_str))
         .ok_or_else(|| format!("update-check-symlink-target-missing-{}", step.step_id))?;
@@ -541,12 +549,15 @@ fn observe_symlink(step: &ValidatedStep) -> Result<(bool, BTreeSet<PathBuf>), St
             ))
         }
     };
+    let owner_only = matches!(class, crate::atoms::files::TargetClass::Config)
+        || (step.permutation == "validated-symlink"
+            && crate::tools::files::validated_symlink_requires_owner(step, manifest)?);
     let mut config = BTreeSet::new();
-    if matches!(class, crate::atoms::files::TargetClass::Config) && !equal {
+    if owner_only && !equal {
         config.insert(path);
     }
     Ok((
-        matches!(class, crate::atoms::files::TargetClass::Software) && !equal,
+        !owner_only && !equal,
         config,
     ))
 }

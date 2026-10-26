@@ -587,10 +587,99 @@ fn interactable_run(
         "hard-stamp" => {}
         _ => return Err(format!("interactable-kind-unsupported {}", item.kind)),
     }
+    if item.extra.get("validated_symlink").is_some_and(|value| !value.is_null())
+        || crate::ledger::config_state(&path, &item.id)?.as_ref()
+            .and_then(|state| state.get("validated_symlink"))
+            .is_some_and(|value| !value.is_null())
+    {
+        return run_validated_symlink_proposal(&path, &item.id, invocation);
+    }
     if item.extra.contains_key("command_proposal") {
         return run_command_proposal(&path, &item, invocation);
     }
     run_file_config_proposal(&path, &item.id, invocation)
+}
+
+/// Accept exactly the selected bound link. Never recurse into a module/update
+/// press or into the file-stamping continuation that can act on later steps.
+fn run_validated_symlink_proposal(
+    path: &Path,
+    proposal_id: &str,
+    invocation: Option<&crate::Invocation>,
+) -> Result<(), String> {
+    let key = invocation.and_then(crate::Invocation::key)
+        .ok_or("validated-symlink-owner-invocation-absent")?;
+    let mut receipt = None;
+    let result = crate::atoms::attest::with_proposal_projection_lock(path, || {
+        let feed = load_feed(path)?;
+        let mut item = feed.interactables.iter().find(|item| item.id == proposal_id)
+            .cloned().ok_or_else(|| format!("interactable-unknown-id {proposal_id}"))?;
+        if item.kind != "hard-stamp" {
+            return Err("validated-symlink-proposal-kind-stale".into());
+        }
+        let state = crate::ledger::config_state(path, proposal_id)?;
+        let offered = state.as_ref().and_then(|state| state.get("validated_symlink"))
+            .filter(|value| !value.is_null())
+            .or_else(|| item.extra.get("validated_symlink").filter(|value| !value.is_null()))
+            .cloned().ok_or("validated-symlink-proposal-kind-stale")?;
+        if let Some(binding) = state.as_ref().and_then(|state| state.get("config_act_binding"))
+            .filter(|value| !value.is_null())
+        {
+            item.extra.insert("config_act_binding".into(), binding.clone());
+        }
+        let bound = prepare_config_act_continuation(&item)?
+            .ok_or("validated-symlink-manifest-binding-stale")?;
+        let binding = item.extra.get("config_act_binding")
+            .ok_or("validated-symlink-manifest-binding-stale")?;
+        let target_step = binding.get("target_step_id").and_then(Value::as_str)
+            .ok_or("validated-symlink-step-binding-stale")?;
+        let steps = crate::tools::ladder::validate_ladder(&bound.manifest)
+            .map_err(|error| format!("validated-symlink-manifest-invalid {}", error.first_missing_signal()))?;
+        let step = steps.iter().find(|step| step.step_id == target_step)
+            .filter(|step| step.tool == "files" && step.permutation == "validated-symlink")
+            .ok_or("validated-symlink-step-binding-stale")?;
+        if !crate::tools::files::validated_symlink_requires_owner(step, &bound.manifest)? {
+            return Err("validated-symlink-owner-disposition-stale".into());
+        }
+        let observed = crate::bands::propose_edits::validated_symlink_observation(step)?;
+        if ["source", "target", "source_sha256", "link_target"].iter()
+            .any(|field| offered.get(*field) != observed.get(*field))
+        {
+            return Err("validated-symlink-proposal-preimage-stale".into());
+        }
+        let target = observed["target"].as_str().ok_or("validated-symlink-target-unresolved")?;
+        let source = observed["source"].as_str().ok_or("validated-symlink-source-unresolved")?;
+        if item.target_path.as_deref() != Some(Path::new(target))
+            || item.reference_source_path.as_deref() != Some(Path::new(source))
+            || crate::bands::propose_edits::validated_symlink_proposal_id(
+                &item.module_id, binding, &observed,
+            )? != item.id
+        {
+            return Err("validated-symlink-proposal-binding-stale".into());
+        }
+        let returned = std::cell::RefCell::new(None);
+        let execution = crate::tools::files::validated_symlink_step_with_receipt(
+            step, Path::new("."), true, Some(key), Some(&returned),
+        );
+        receipt = returned.into_inner().map(|mut native| {
+            native["owner_proposal"] = serde_json::json!({
+                "id": item.id, "module_id": item.module_id, "step_id": step.step_id,
+                "target": target, "source": source,
+            });
+            native
+        });
+        let outcome = execution?;
+        if !outcome.ok {
+            return Err(format!("validated-symlink-owner-act-failed {}", outcome.message));
+        }
+        crate::bands::propose_edits::resolve_config_proposal_locked(path, proposal_id, Vec::new())?;
+        Ok(())
+    });
+    if let Some(mut native) = receipt {
+        native["owner_proposal"]["resolved"] = Value::Bool(result.is_ok());
+        println!("{}", serde_json::to_string_pretty(&native).map_err(|error| error.to_string())?);
+    }
+    result
 }
 
 struct ConfigActContinuation {

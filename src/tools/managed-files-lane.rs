@@ -24,6 +24,20 @@ pub(crate) fn execute_validated_step(
             execution.outcome
         }),
         "metadata" => files_metadata_step(step, module_dir, software_authorization, invocation),
+        "validated-symlink" if validated_symlink_requires_owner(step, manifest)? => {
+            let offered = crate::bands::propose_edits::refresh_validated_symlink(step, manifest)?;
+            Ok(crate::OperationOutcome {
+                ok: true,
+                changed: false,
+                skipped: true,
+                message: if offered {
+                    "validated-symlink-proposal-offered"
+                } else {
+                    "validated-symlink-current"
+                }.into(),
+                command: None,
+            })
+        }
         "validated-symlink" => validated_symlink_step(step, module_dir, apply, invocation),
         "symlink-converge" => symlink_converge_step(step, module_dir, apply, invocation),
         "validated-file-symlink" => {
@@ -58,6 +72,25 @@ pub(crate) fn execute_validated_step(
             "ladder-executor-missing tool=files permutation={}",
             step.permutation
         )),
+    }
+}
+
+pub(crate) fn validated_symlink_requires_owner(
+    step: &crate::tools::ladder::ValidatedStep,
+    manifest: &crate::tools::ladder::LadderManifest,
+) -> Result<bool, String> {
+    let target = step.args.get("target").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("validated-symlink-target-unresolved-{}", step.step_id))?;
+    let target = std::path::Path::new(target);
+    if !target.is_absolute() {
+        return Err(format!("validated-symlink-target-not-absolute {}", target.display()));
+    }
+    match crate::atoms::files::classify_target(target) {
+        crate::atoms::files::TargetClass::Refused(reason) => {
+            Err(format!("validated-symlink-target-refused-{reason}"))
+        }
+        class => Ok(manifest.category.as_deref() == Some("interactable")
+            || matches!(class, crate::atoms::files::TargetClass::Config)),
     }
 }
 
@@ -1349,17 +1382,33 @@ pub(crate) fn validated_symlink_step(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
-    crate::atoms::files::validated_symlink(
-        module_dir,
-        &step.step_id,
-        &PathBuf::from(string_arg(&step.args, "source")),
-        &PathBuf::from(string_arg(&step.args, "target")),
-        string_arg(&step.args, "validator_program"),
-        &string_array_arg(&step.args, "validator_args"),
-        optional_string_arg(&step.args, "reload_program"),
-        &string_array_arg(&step.args, "reload_args"),
-        integer_arg(&step.args, "timeout_secs", 30),
-        apply,
+    validated_symlink_step_with_receipt(step, module_dir, apply, invocation, None)
+}
+
+pub(crate) fn validated_symlink_step_with_receipt(
+    step: &ValidatedStep,
+    module_dir: &Path,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    returned_receipt: Option<&std::cell::RefCell<Option<serde_json::Value>>>,
+) -> Result<OperationOutcome, String> {
+    let source = PathBuf::from(string_arg(&step.args, "source"));
+    let target = PathBuf::from(string_arg(&step.args, "target"));
+    crate::tools::make_symlink::execute(
+        crate::tools::make_symlink::ValidatedFileSymlinkRequest {
+            receipt_dir: module_dir,
+            name: &step.step_id,
+            desired_source: &source,
+            source: &source,
+            target: &target,
+            validator_program: string_arg(&step.args, "validator_program"),
+            validator_args: &string_array_arg(&step.args, "validator_args"),
+            reload_program: optional_string_arg(&step.args, "reload_program"),
+            reload_args: &string_array_arg(&step.args, "reload_args"),
+            timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
+            apply,
+            returned_receipt,
+        },
         invocation,
     )
 }
@@ -1427,6 +1476,7 @@ pub(crate) fn validated_file_symlink_step(
             reload_args: &reload_args,
             timeout_secs: integer_arg(&step.args, "timeout_secs", 30),
             apply,
+            returned_receipt: None,
         },
         invocation,
     )
