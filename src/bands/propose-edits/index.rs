@@ -1020,6 +1020,19 @@ pub(crate) fn refresh_validated_symlink(
             return Ok(false);
         }
         let id = validated_symlink_proposal_id(&manifest.id, &binding, &observed)?;
+        // The final proposal prune retires row-backed offers not produced by
+        // this successful module observation. Link offers participate in that
+        // same per-run lifecycle; neither a new nor a quiet offer is stale.
+        let recognition = serde_json::json!({
+            "module_id": manifest.id,
+            "step_id": step.step_id,
+            "config_state": "interactable",
+            "target": observed["target"],
+            "target_absent": observed["link_target"].is_null(),
+            "reference_sha": observed["source_sha256"],
+            "interactable_id": id,
+            "validated_symlink": observed,
+        });
         let prior = feed.interactables.iter().find(|item| item.id == id);
         let prior_state = crate::ledger::config_state(&path, &id)?;
         if prior.is_some_and(|item| {
@@ -1029,6 +1042,9 @@ pub(crate) fn refresh_validated_symlink(
             state.get("validated_symlink") == Some(&observed)
                 && state.get("config_act_binding") == Some(&binding)
         }) {
+            CURRENT_CONFIG_RECOGNITIONS.with(|state| {
+                state.borrow_mut().insert(id.clone(), recognition.clone());
+            });
             return Ok(true);
         }
         let now = iso8601_now();
@@ -1082,6 +1098,9 @@ pub(crate) fn refresh_validated_symlink(
             return Ok(false);
         }
         persist_feed_locked(&path, &feed, &config)?;
+        CURRENT_CONFIG_RECOGNITIONS.with(|state| {
+            state.borrow_mut().insert(id, recognition);
+        });
         Ok(true)
     })
 }
