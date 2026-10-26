@@ -438,7 +438,21 @@ fn molt_from_source_kind_inner(
             )?;
             continue;
         }
-        if ensure_dir(key, &module_dir, &module_output_dir)? {
+        let output_is_replaceable = match fs::symlink_metadata(&module_output_dir) {
+            Ok(metadata) => metadata.file_type().is_symlink() || metadata.is_file(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.to_string()),
+        };
+        if output_is_replaceable {
+            replace_export_directory_entry(
+                key,
+                &module_dir,
+                &module_output_dir,
+                mode,
+                &mut artifacts,
+                link_rollback_journal,
+            )?;
+        } else if ensure_dir(key, &module_dir, &module_output_dir)? {
             artifacts.push(MoltArtifact {
                 kind: "export-directory",
                 source: module_dir.display().to_string(),
