@@ -1356,10 +1356,18 @@ pub(crate) fn execute_routine_child(
             let health = args.get("health").cloned().unwrap_or(Value::Null);
             let version = args.get("version").cloned().unwrap_or(Value::Null);
             let endpoint = args.get("endpoint").cloned().unwrap_or(Value::Null);
-            let register = load_register(&register_path(), debug_schema_base())?;
+            // Comparing local facts must not depend on an answering observe door.
+            let path = register_path();
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("xenia-register-read-failed {}: {error}", path.display()))?;
+            let register: Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("xenia-register-malformed: {error}"))?;
+            if register.get("schema").and_then(Value::as_str) != Some("appliance.xenia.v1") {
+                return Err("xenia-register-foreign-schema".into());
+            }
             let entry = register
-                .xenoi
-                .get(id)
+                .get("xenoi")
+                .and_then(|xenoi| xenoi.get(id))
                 .ok_or_else(|| format!("xenia-observe-entry-absent id={id}"))?;
             let mut installed = json!({
                 "version": version,
