@@ -4,7 +4,7 @@
   "title": "HomeSI controls",
   "summary": "Keeps the Noesis control website available on port 3015.",
   "category": "known-good",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Shared Noesis face runtime: fetch its own repository release artifact, promote the binary, place its unit with the selected Caduceus origin, restart only for changed material, and check HTTP health. Noesis defaults to 0.0.0.0:3015.",
   "files_root": "files_root",
   "profile_input": {
@@ -30,7 +30,6 @@
         "retries": 30,
         "binary_name": "noesis",
         "release_repo": "HOMESERVERSLTD/noesis",
-        "profile_axis": "profile",
         "identity": "embedded-sha",
         "op_prefix": "noesis",
         "run_schema": "harmonia.noesis_runtime.v1",
