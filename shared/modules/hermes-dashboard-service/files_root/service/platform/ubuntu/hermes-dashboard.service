@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes Agent Dashboard
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/opt/hermes/venv/bin/hermes dashboard --no-open --skip-build --host 0.0.0.0 --port 9119
+WorkingDirectory=/home/hermes/.hermes
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="HERMES_HOME=/home/hermes/.hermes"
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

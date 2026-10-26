@@ -37,6 +37,7 @@
     "hermes-sway-seat",
     "hermes-cua-driver-service",
     "hermes-gateway-service",
+    "hermes-dashboard-service",
     "model-shelf",
     "model-slots",
     "sunshine"
