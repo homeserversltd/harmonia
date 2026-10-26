@@ -1356,10 +1356,58 @@ pub(crate) fn execute_routine_child(
             let health = args.get("health").cloned().unwrap_or(Value::Null);
             let version = args.get("version").cloned().unwrap_or(Value::Null);
             let endpoint = args.get("endpoint").cloned().unwrap_or(Value::Null);
+            let register = load_register(&register_path(), debug_schema_base())?;
+            let entry = register
+                .xenoi
+                .get(id)
+                .ok_or_else(|| format!("xenia-observe-entry-absent id={id}"))?;
+            let mut installed = json!({
+                "version": version,
+                "source_sha": source_sha,
+                "kit_band": null,
+                "health": health
+            });
+            let mut discovered = json!({
+                "endpoint": endpoint,
+                "content_kind": null,
+                "rung": "probe"
+            });
+            let snapshot_differs = |name: &str, fields: &[&str], wanted: &Value| {
+                let Some(current) = entry.get(name).and_then(Value::as_object) else {
+                    return true;
+                };
+                fields.iter().any(|field| {
+                    current.get(*field).unwrap_or(&Value::Null) != &wanted[*field]
+                })
+            };
+            let installed_due = snapshot_differs(
+                "installed",
+                &["source_sha", "health", "version", "kit_band"],
+                &installed,
+            );
+            let discovered_due = snapshot_differs(
+                "discovered",
+                &["endpoint", "rung", "content_kind"],
+                &discovered,
+            );
+            if !installed_due && !discovered_due {
+                return Ok((
+                    OperationOutcome {
+                        ok: true,
+                        changed: false,
+                        skipped: false,
+                        message: "xenia-observe-current".into(),
+                        command: None,
+                    },
+                    BTreeMap::new(),
+                ));
+            }
             let proved_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|error| format!("xenia-observe-clock-failed: {error}"))?
                 .as_secs();
+            installed["proved_at"] = json!(proved_at);
+            discovered["at"] = json!(proved_at);
             let base = crate::atoms::ask::caduceus_door::base_url().map_err(str::to_owned)?;
             let post_observation = |payload: &Value| -> Result<bool, String> {
                 let (status, value) = http(
@@ -1390,23 +1438,16 @@ pub(crate) fn execute_routine_child(
                 }
                 Ok(value.get("changed").and_then(Value::as_bool).unwrap_or(false))
             };
-            let installed_changed = post_observation(&json!({
-                "installed": {
-                    "version": version,
-                    "source_sha": source_sha,
-                    "kit_band": null,
-                    "proved_at": proved_at,
-                    "health": health
-                }
-            }))?;
-            let discovered_changed = post_observation(&json!({
-                "discovered": {
-                    "endpoint": endpoint,
-                    "content_kind": null,
-                    "rung": "probe",
-                    "at": proved_at
-                }
-            }))?;
+            let installed_changed = if installed_due {
+                post_observation(&json!({"installed": installed}))?
+            } else {
+                false
+            };
+            let discovered_changed = if discovered_due {
+                post_observation(&json!({"discovered": discovered}))?
+            } else {
+                false
+            };
             Ok((
                 OperationOutcome {
                     ok: true,
