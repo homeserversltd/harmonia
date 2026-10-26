@@ -2,41 +2,22 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "desktop-config-payload",
   "title": "Desktop preferences",
-  "summary": "Keeps the TV's captured manifest and prompt preferences in place.",
+  "summary": "Presents changes to the TV's prompt preferences.",
   "category": "interactable",
   "version": "1.0.0",
-  "description": "TV residual manifest/prompt payload is converged from this module.",
+  "description": "HomeTV residual prompt preferences are compared and offered as per-item configuration interactables.",
   "optional": false,
   "constants": {
     "target_dir": "/home/owner",
     "expected_files": [
-      "MANIFEST.captured.txt",
-      "SANITIZATION.md",
       "omp.json"
     ],
 
     "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
-    "meaning": "TV residual manifest/prompt payload is converged from this module."
+    "meaning": "HomeTV residual prompt preferences are offered as configuration interactables."
   },
   "files_root": "files_root",
   "ladder": [
-    {
-      "step_id": "manifest",
-      "tool": "files",
-      "permutation": "converge",
-      "args": {
-        "source_root": "files_root/manifest",
-        "target_root": "$constants.target_dir",
-        "files": [
-          "MANIFEST.captured.txt",
-          "SANITIZATION.md"
-        ],
-        "backup_existing": true,
-        "owner": "owner",
-        "group": "owner",
-        "receipt_name": "tv-desktop-config-manifest"
-      }
-    },
     {
       "step_id": "prompt",
       "tool": "files",

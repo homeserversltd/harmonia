@@ -1,3 +1,3 @@
 # desktop-config-payload
 
-Retains only the TV residual payload: captured manifest records and the prompt theme. Desktop application configuration, launcher/Wofi state, and browser policy are owned by their dedicated modules.
+Owns HomeTV's residual prompt theme as a configuration interactable. Desktop application configuration, Wofi, and browser policy are owned by their dedicated modules.
