@@ -22,6 +22,7 @@
     "sbin",
     "documentation",
     "mkdocs",
+    "web-front",
     "sudoers",
     "grub-branding",
     "sway-seat",

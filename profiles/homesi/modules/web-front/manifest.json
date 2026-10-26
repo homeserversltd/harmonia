@@ -1,0 +1,40 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "web-front",
+  "title": "Website access",
+  "summary": "Keeps this box's website and its own manual available.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Maintain HomeSI's nginx web front for noesis at / and this box's own MkDocs manual at /manual/, using the birth-provided nginx service.",
+  "optional": false,
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "web-front-nginx-managed-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/nginx/sites-enabled/homesi-face"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "web-front-nginx-managed-files"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "web-front-nginx-restart",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "nginx.service",
+        "timeout_secs": 120
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
