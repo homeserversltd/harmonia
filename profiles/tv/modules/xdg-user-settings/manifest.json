@@ -4,7 +4,7 @@
   "title": "App defaults",
   "summary": "Chooses default apps for files and helps apps open links and dialogs.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TV KDE/application associations and portal configuration are converged from this module into the owner home.",
   "optional": false,
   "constants": {
