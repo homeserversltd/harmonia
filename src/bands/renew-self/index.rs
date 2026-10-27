@@ -2767,55 +2767,6 @@ pub(crate) fn run_engine_preflight(
                     first_missing_signal = "engine-content-seat-head-mismatch".into();
                 }
                 artifact_download = Some(download);
-            } else if let Some(target_sha) = stamp_target_sha.as_deref().filter(|_| {
-                !source_plan.candidates.is_empty()
-                    && release_candidate_receipts.len() == source_plan.candidates.len()
-                    && release_candidate_receipts.iter().all(|receipt| {
-                        receipt.pointer("/final-state/blocker").and_then(Value::as_str)
-                            == Some("fetch-artifact-pinned-release-missing")
-                    })
-            }) {
-                // Only an absent exact stamped Release selects source rebuild;
-                // refusals, unreachable providers, and invalid assets stay errors.
-                let pinned_plan = exact_source_fallback_plan(&resolution, target_sha);
-                lane = Some("source".into());
-                source_head = Some(target_sha.to_owned());
-                resolved_sha = Some(target_sha.to_owned());
-                let source = crate::bands::pull_source::execute_source(
-                    &pinned_plan,
-                    apply,
-                    invocation,
-                );
-                let content_seat = write_content_seat_observation(
-                    &pinned_plan,
-                    target_sha,
-                    apply,
-                    &source,
-                    &preflight_dir,
-                )?;
-                if let Some(candidate) = pinned_plan.candidates.first() {
-                    let source_command = CmdResult {
-                        ok: source.ok,
-                        code: if source.ok { 0 } else { -1 },
-                        stdout: source.receipt.promotion.clone(),
-                        stderr: if source.ok { String::new() } else { source.receipt.promotion.clone() },
-                    };
-                    write_source_possession_receipt(
-                        &preflight_dir,
-                        &source_command,
-                        &pinned_plan.destination,
-                        candidate,
-                        apply,
-                    )?;
-                }
-                operation_count += 1;
-                if !source.ok {
-                    first_missing_signal = "engine-content-seat-move-failed".into();
-                } else if !content_seat.matches {
-                    first_missing_signal = "engine-content-seat-head-mismatch".into();
-                } else {
-                    changed = source.changed;
-                }
             } else if source_plan.candidates.is_empty() {
                 blocked_target = Some("configured-source@newest-engine-release".into());
                 first_missing_signal =
