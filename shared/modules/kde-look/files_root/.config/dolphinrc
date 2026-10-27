@@ -2,9 +2,10 @@
 PreviewSize=32
 
 [DetailsMode]
-PreviewSize=160
+PreviewSize=32
 
 [General]
+GlobalViewProps=true
 Version=202
 
 [IconsMode]

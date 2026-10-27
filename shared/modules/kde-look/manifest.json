@@ -4,7 +4,7 @@
   "title": "KDE look",
   "summary": "Keeps KDE application appearance and preferences in one shared module.",
   "category": "interactable",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Shared KDE application look and preference files are presented from this module for operator disposition.",
   "optional": false,
   "constants": {
@@ -73,8 +73,10 @@
           ".config/katevirc",
           ".config/kdeglobals",
           ".config/konsolerc",
+          ".local/share/dolphin/view_properties/global/.directory",
           ".local/share/konsole/HomeTV.profile",
-          ".local/share/user-places.xbel"
+          ".local/share/user-places.xbel",
+          ".local/state/dolphinstaterc"
         ],
         "backup_existing": true,
         "owner": "owner",
