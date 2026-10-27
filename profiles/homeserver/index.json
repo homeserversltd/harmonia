@@ -8,7 +8,6 @@
   "visibility": "public",
   "categories_required": true,
   "installs_now": [
-    "rust-build-toolchain",
     "keyman",
     "caduceus",
     "synapse",
@@ -39,7 +38,6 @@
       "vaultwarden",
       "udev",
       "searx",
-      "rust-build-toolchain",
       "sudoers",
       "synapse",
       "element",
@@ -49,7 +47,6 @@
   "identity": "homeserver",
   "modules": [
     "harmonia",
-    "rust-build-toolchain",
     "nginx",
     "postgres",
     "coronatio",
@@ -84,7 +81,7 @@
     "xenia",
     "grub-branding"
   ],
-  "scaffold_status": "public product profile; executable Rust toolchain, Coronatio, Caduceus, git-host group, Jellyfin, Synapse and Element service modules, and the shared sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
+  "scaffold_status": "public product profile; executable Coronatio, Caduceus, git-host group, Jellyfin, Synapse and Element service modules, and the shared sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [
     "caduceus",
     "dot-files",
@@ -106,7 +103,6 @@
     "vaultwarden",
     "udev",
     "searx",
-    "rust-build-toolchain",
     "sudoers",
     "synapse",
     "element",
@@ -114,27 +110,6 @@
   ],
   "public_source_boundary": "public reusable product module concerns and non-secret configuration only",
   "runtime_values": "credentials, keys, tokens, passwords, and site-specific values are supplied outside public source",
-  "toolchain_contract": {
-    "schema": "harmonia.rust_toolchain_parity.v1",
-    "rustup_home": "/opt/rustup",
-    "cargo_home": "/opt/cargo",
-    "wrappers": [
-      "/usr/local/bin/rustc",
-      "/usr/local/bin/cargo",
-      "/usr/local/bin/rustup"
-    ],
-    "wrapper_environment": {
-      "RUSTUP_HOME": "/opt/rustup",
-      "CARGO_HOME": "/opt/cargo"
-    },
-    "maintained_for": [
-      "coronatio",
-      "keyman",
-      "caduceus",
-      "harmonia"
-    ],
-    "proof": "root PATH resolves /usr/local/bin wrappers and target-native cargo builds pass before binary promotion"
-  },
   "managed_file_update_contract": {
     "schema": "harmonia.managed_file_update_contract.v1",
     "meaning": "Managed-file modules own desired files directly in their module directory; Harmonia renders, compares desired bytes to installed bytes, writes only on drift, performs the domain reconcile step, and records receipts.",

@@ -1,6 +1,6 @@
 # HOMESERVER profile
 
-HOMESERVER is the public Harmonia profile for maintaining a HOMESERVERSLTD self-hosted appliance as a coherent product. It defines the reusable service, network, system integration, media, storage, search, toolchain, and control concerns that the appliance needs in order to stay current.
+HOMESERVER is the public Harmonia profile for maintaining a HOMESERVERSLTD self-hosted appliance as a coherent product. It defines the reusable service, network, system integration, media, storage, search, and control concerns that the appliance needs in order to stay current.
 
 Harmonia is a Rust appliance update manager. It keeps a selected appliance profile current by running ordered modules, applying safe configuration, and writing receipts that prove what changed and what still needs attention.
 
@@ -10,7 +10,6 @@ A profile names one appliance identity and the modules that maintain it. Each fo
 
 ## Current executable modules
 
-- `rust-build-toolchain` maintains the Rust build environment used for target-native service builds.
 - `coronatio` maintains the HOMESERVER crown service runtime.
 - `caduceus` maintains the local appliance control service used to request safe convergence.
 - `jellyfin` maintains the Jellyfin media service.
@@ -44,11 +43,9 @@ A UDEV update is not a blind copy. Harmonia renders the desired file, reads the 
 
 This same managed-file pattern applies to other HOMESERVER module files: the module owns the desired content, Harmonia compares desired state to installed state, and updates are performed only when the comparison proves drift.
 
-## Rust toolchain parity
+## Release artifacts
 
-HOMESERVER appliances require one maintained Rust toolchain contract across deployment, Harmonia updates, and live runtime repair. The profile module `rust-build-toolchain` maintains `/opt/rustup`, `/opt/cargo`, and `/usr/local/bin/{rustc,cargo,rustup}` wrappers that export `RUSTUP_HOME=/opt/rustup` and `CARGO_HOME=/opt/cargo`.
-
-Target-native Rust builds make appliance promotion predictable. Packaging problems collapse into the maintained Python bootstrap/control doorway plus the Harmonia Rust toolchain contract instead of per-host binary improvisation.
+HOMESERVER defaults to artifact mode: birth and updates use each component's own Release for Harmonia, Coronatio, and Caduceus, without a Rust build toolchain or local compilation. A body explicitly using developer mode builds from source and keeps its Rust toolchain through its own profile.
 
 ## Public boundary
 
