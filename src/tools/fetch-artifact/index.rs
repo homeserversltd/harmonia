@@ -248,7 +248,6 @@ fn execute_with_module_provenance(
     let mut release_digest = None;
     let mut native_download = None;
     let mut effective_source_sha = source_sha.to_owned();
-    let mut stamped_source_plan: Option<crate::tools::git_artifact::SourcePlan> = None;
     let mut module_release_candidates: Option<Vec<Value>> = None;
     if xenia_artifact {
         if !native_release {
@@ -405,90 +404,62 @@ fn execute_with_module_provenance(
                     component
                 ));
             }
-            let stamped_pruned_target = stamped_release_sha.as_deref().filter(|_| {
-                candidate_count > 0
-                    && module_release_candidates.as_ref().is_some_and(|candidates| {
-                        candidates.len() == candidate_count
-                            && candidates.iter().all(|candidate| {
-                                candidate
-                                    .pointer("/final-state/blocker")
-                                    .and_then(Value::as_str)
-                                    == Some("fetch-artifact-pinned-release-missing")
-                            })
-                    })
-            });
-            if let Some(target_sha) = stamped_pruned_target {
-                let declared_source_dir = source_dir.ok_or("fetch-artifact-source-dir-missing")?;
-                let mut pinned_resolution = resolution.clone();
-                pinned_resolution.requested_ref = target_sha.to_owned();
-                stamped_source_plan = Some(crate::bands::pull_source::bridge_acquisition_plan(
-                    &pinned_resolution,
-                    declared_source_dir.to_path_buf(),
-                    Some(target_sha.to_owned()),
-                ));
-                effective_source_sha = target_sha.to_owned();
-                release_fallback = Some((
-                    "stamped-release-pruned".into(),
-                    format!("source://{target_sha}"),
-                ));
-            } else {
-                if !apply {
-                    return Err(exhaustion_signal);
-                }
-                let before = read_standing_artifact_snapshot(installed_binary)?;
-                let after = read_standing_artifact_snapshot(installed_binary)?;
-                if before != after {
-                    return Err(format!(
-                        "fetch-artifact-standing-artifact-changed-during-observation path={}",
-                        installed_binary.display()
-                    ));
-                }
-                let mut witness = after;
-                witness["unchanged"] = Value::Bool(true);
-                let routine_id = receipt_dir
-                    .parent()
-                    .and_then(Path::file_name)
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("unknown-routine");
-                let debt = serde_json::json!({
-                    "schema": "harmonia.module_artifact_exhaustion.v1",
-                    "ok": false,
-                    "module_id": module_id.unwrap_or(component),
-                    "component": component,
-                    "routine_id": routine_id,
-                    "step_id": "fetch-artifact",
-                    "first_missing_signal": exhaustion_signal,
-                    "candidate_count": candidate_count,
-                    "candidates": module_release_candidates.as_ref().unwrap(),
-                    "standing_artifact": witness,
-                    "changed": false,
-                    "installed_artifact_preserved": true,
-                });
-                crate::write_json(
-                    &receipt_dir.join("module-artifact-exhaustion.json"),
-                    &debt,
-                )
-                .map_err(|error| format!("fetch-artifact-exhaustion-receipt-write: {error}"))?;
-                crate::atoms::attest::fetch_artifact::attest(
-                    &receipt_dir.join("harmonia-atoms.log"),
-                    true,
-                    false,
-                    &format!(
-                        "state=Drift; care=all configured Release candidates refused; after=Drift; reason={exhaustion_signal}; installed_artifact_preserved=true"
-                    ),
-                )?;
-                return Ok(FetchArtifactExecution {
-                    outcome: crate::OperationOutcome {
-                        ok: true,
-                        changed: false,
-                        skipped: true,
-                        message: exhaustion_signal,
-                        command: None,
-                    },
-                    source_sha: String::new(),
-                    artifact_path: installed_binary.to_path_buf(),
-                });
+            if !apply {
+                return Err(exhaustion_signal);
             }
+            let before = read_standing_artifact_snapshot(installed_binary)?;
+            let after = read_standing_artifact_snapshot(installed_binary)?;
+            if before != after {
+                return Err(format!(
+                    "fetch-artifact-standing-artifact-changed-during-observation path={}",
+                    installed_binary.display()
+                ));
+            }
+            let mut witness = after;
+            witness["unchanged"] = Value::Bool(true);
+            let routine_id = receipt_dir
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|value| value.to_str())
+                .unwrap_or("unknown-routine");
+            let debt = serde_json::json!({
+                "schema": "harmonia.module_artifact_exhaustion.v1",
+                "ok": false,
+                "module_id": module_id.unwrap_or(component),
+                "component": component,
+                "routine_id": routine_id,
+                "step_id": "fetch-artifact",
+                "first_missing_signal": exhaustion_signal,
+                "candidate_count": candidate_count,
+                "candidates": module_release_candidates.as_ref().unwrap(),
+                "standing_artifact": witness,
+                "changed": false,
+                "installed_artifact_preserved": true,
+            });
+            crate::write_json(
+                &receipt_dir.join("module-artifact-exhaustion.json"),
+                &debt,
+            )
+            .map_err(|error| format!("fetch-artifact-exhaustion-receipt-write: {error}"))?;
+            crate::atoms::attest::fetch_artifact::attest(
+                &receipt_dir.join("harmonia-atoms.log"),
+                true,
+                false,
+                &format!(
+                    "state=Drift; care=all configured Release candidates refused; after=Drift; reason={exhaustion_signal}; installed_artifact_preserved=true"
+                ),
+            )?;
+            return Ok(FetchArtifactExecution {
+                outcome: crate::OperationOutcome {
+                    ok: true,
+                    changed: false,
+                    skipped: true,
+                    message: exhaustion_signal,
+                    command: None,
+                },
+                source_sha: String::new(),
+                artifact_path: installed_binary.to_path_buf(),
+            });
         }
     } else if source_policy == "source" && native_release {
         let tag = args
@@ -727,46 +698,6 @@ fn execute_with_module_provenance(
             );
         }
         crate::write_json(&receipt_dir.join("fallback.json"), &fallback_receipt)?;
-        if let Some(plan) = stamped_source_plan.as_ref() {
-            let acquisition = crate::bands::pull_source::execute_source(plan, apply, invocation);
-            let observed_source_head = if apply {
-                let head = crate::atoms::ask::pull_repo::source_head(source_dir, "owner");
-                head.ok.then(|| head.stdout.trim().to_owned())
-            } else {
-                None
-            };
-            let acquisition_record = serde_json::json!({
-                "requested_ref": plan.reference,
-                "expected_commit": plan.expected_commit,
-                "destination": plan.destination.display().to_string(),
-                "apply": apply,
-                "ok": acquisition.ok,
-                "changed": acquisition.changed,
-                "resolved_commit": acquisition.receipt.resolved_commit,
-                "owner_checkout_head": observed_source_head,
-                "source_receipt": acquisition.receipt,
-            });
-            crate::write_json(
-                &receipt_dir.join("fallback-acquisition.json"),
-                &acquisition_record,
-            )?;
-            if apply {
-                if !acquisition.ok {
-                    return Err(format!(
-                        "fetch-artifact-stamped-source-acquisition-failed: {}",
-                        acquisition.receipt.promotion
-                    ));
-                }
-                if acquisition.receipt.resolved_commit.as_deref()
-                    != Some(effective_source_sha.as_str())
-                {
-                    return Err("fetch-artifact-stamped-source-acquisition-commit-mismatch".into());
-                }
-                if observed_source_head.as_deref() != Some(effective_source_sha.as_str()) {
-                    return Err("fetch-artifact-stamped-source-checkout-head-mismatch".into());
-                }
-            }
-        }
         if !apply {
             crate::atoms::attest::fetch_artifact::attest(
                 &receipt_dir.join("harmonia-atoms.log"),
