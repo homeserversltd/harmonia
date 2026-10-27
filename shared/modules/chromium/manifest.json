@@ -43,7 +43,7 @@
           "etc/chromium/policies/recommended/harmonia-chromium-policy.json",
           "etc/chromium/policies/managed/harmonia-chromium-extensions.json",
           "etc/chromium/policies/managed/harmonia-chromium-bookmarks.json",
-          "etc/chromium.d/harmonia-flags"
+          "etc/chromium.d/user-flags"
         ],
         "backup_existing": true,
         "owner": "root",
