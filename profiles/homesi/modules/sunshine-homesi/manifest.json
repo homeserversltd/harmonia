@@ -34,7 +34,7 @@
         "backup_existing": true,
         "owner": "root",
         "group": "root",
-        "receipt_name": "homeconsole-sunshine-device-access"
+        "receipt_name": "homesi-sunshine-device-access"
       },
       "on_failure": "stop"
     },
