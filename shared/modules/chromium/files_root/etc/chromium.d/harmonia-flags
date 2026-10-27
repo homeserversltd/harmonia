@@ -1,0 +1,5 @@
+# Debian's chromium wrapper sources /etc/chromium.d/*; Arch's reads ~/.config/chromium-flags.conf itself.
+# Carry the owner's one flags file into CHROMIUM_FLAGS so both platforms read the same flags.
+if [ -r "$HOME/.config/chromium-flags.conf" ]; then
+  CHROMIUM_FLAGS="$CHROMIUM_FLAGS $(grep -v '^[[:space:]]*#' "$HOME/.config/chromium-flags.conf" | tr '\n' ' ')"
+fi

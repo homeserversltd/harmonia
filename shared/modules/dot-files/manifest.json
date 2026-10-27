@@ -4,7 +4,7 @@
   "title": "Everyday shortcuts",
   "summary": "Keeps the owner's command shortcuts and sign-in preferences consistent.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "login_shell": "/usr/bin/zsh",
   "description": "Shared Harmonia dot-files compiled from ordered appliance fragments.",
   "optional": false,

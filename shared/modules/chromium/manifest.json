@@ -4,7 +4,7 @@
   "title": "Web browsing",
   "summary": "Sets browser preferences, extensions (Bitwarden, Enhancer for YouTube, uBlock Origin Lite), and bookmarks, and restores the session after updates.",
   "category": "known-good",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; profiles without the chromium module remain non-tenants; it does not install browsers; after a package upgrade replaces Chromium under a running desktop browser, it restarts that browser with its session restored.",
   "optional": false,
   "constants": {
@@ -42,7 +42,8 @@
         "files": [
           "etc/chromium/policies/recommended/harmonia-chromium-policy.json",
           "etc/chromium/policies/managed/harmonia-chromium-extensions.json",
-          "etc/chromium/policies/managed/harmonia-chromium-bookmarks.json"
+          "etc/chromium/policies/managed/harmonia-chromium-bookmarks.json",
+          "etc/chromium.d/harmonia-flags"
         ],
         "backup_existing": true,
         "owner": "root",

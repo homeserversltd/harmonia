@@ -46,10 +46,15 @@ setopt CORRECT
 #############################################
 
 # Load autosuggestions
-source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+for _plugin in /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh; do
+    [ -f "$_plugin" ] && { source "$_plugin"; break; }
+done
 
 # Load syntax highlighting
-source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+for _plugin in /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do
+    [ -f "$_plugin" ] && { source "$_plugin"; break; }
+done
+unset _plugin
 
 # Configure autosuggestions
 ZSH_AUTOSUGGEST_STRATEGY=(history completion)
@@ -197,7 +202,7 @@ if [[ -x "$(command -v zoxide)" ]]; then
     alias cd='z'
 fi
 eval "$(atuin init zsh)"  # Atuin initialization - made unconditional
-[[ -x "$(command -v oh-my-posh)" ]] && eval "$(oh-my-posh init zsh --config ~/.config/omp.json)"
+[[ -x "$(command -v oh-my-posh)" ]] && eval "$(oh-my-posh init zsh --config ~/omp.json)"
 
 
 #############################################
