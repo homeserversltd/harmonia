@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<oor:data xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:oor="http://openoffice.org/2001/registry">
+  <dependency file="main"/>
+  <oor:component-data oor:package="org.openoffice.Office" oor:name="Common">
+    <node oor:name="Appearance">
+      <prop oor:name="ApplicationAppearance" oor:op="fuse"><value>2</value></prop>
+    </node>
+    <node oor:name="Misc">
+      <prop oor:name="ShowTipOfTheDay" oor:op="fuse"><value>false</value></prop>
+    </node>
+  </oor:component-data>
+</oor:data>

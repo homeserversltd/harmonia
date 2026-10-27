@@ -133,6 +133,7 @@ ForegroundPositive=39,174,96
 ForegroundVisited=155,89,182
 
 [General]
+ColorScheme=BreezeDark
 ColorSchemeHash=0efb452114ece4d3338057cb89f434aff85d80d0
 XftAntialias=true
 XftHintStyle=hintnone
@@ -150,3 +151,6 @@ activeForeground=252,252,252
 inactiveBackground=32,36,40
 inactiveBlend=161,169,177
 inactiveForeground=161,169,177
+
+[Icons]
+Theme=breeze-dark

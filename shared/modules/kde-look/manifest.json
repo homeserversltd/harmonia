@@ -4,7 +4,7 @@
   "title": "KDE look",
   "summary": "Keeps KDE application appearance and preferences in one shared module.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Shared KDE application look and preference files are presented from this module for operator disposition.",
   "optional": false,
   "constants": {
@@ -78,6 +78,22 @@
         "owner": "owner",
         "group": "owner",
         "receipt_name": "kde-look-files"
+      }
+    },
+    {
+      "step_id": "libreoffice-appearance-files",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "usr/lib/libreoffice/share/registry/dark-appearance.xcd"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "libreoffice-appearance-files"
       }
     }
   ]
