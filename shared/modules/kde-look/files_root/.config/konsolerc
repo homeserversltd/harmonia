@@ -1,5 +1,11 @@
+[Desktop Entry]
+DefaultProfile=HomeTV.profile
+
 [General]
 ConfigVersion=1
+
+[KonsoleWindow]
+ShowMenuBarByDefault=false
 
 [UiSettings]
 ColorScheme=
