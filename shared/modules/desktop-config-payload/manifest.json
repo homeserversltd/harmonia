@@ -1,0 +1,38 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "desktop-config-payload",
+  "title": "Desktop preferences",
+  "summary": "Presents changes to the TV's prompt preferences.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "HomeTV residual prompt preferences are compared and offered as per-item configuration interactables.",
+  "optional": false,
+  "constants": {
+    "target_dir": "/home/owner",
+    "expected_files": [
+      "omp.json"
+    ],
+
+    "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
+    "meaning": "HomeTV residual prompt preferences are offered as configuration interactables."
+  },
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "prompt",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/prompt",
+        "target_root": "$constants.target_dir",
+        "files": [
+          "omp.json"
+        ],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner",
+        "receipt_name": "tv-desktop-config-prompt"
+      }
+    }
+  ]
+}

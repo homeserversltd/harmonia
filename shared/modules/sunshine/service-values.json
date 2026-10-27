@@ -1,8 +1,4 @@
 {
   "homeconsole": null,
-  "homesi": {
-    "desktop": "sway-seat.service",
-    "session": "hometv-sway-session.target",
-    "session_services": ["hs-waybar.service", "sunshine.service"]
-  }
+  "homesi": null
 }

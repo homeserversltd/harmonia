@@ -1,0 +1,14 @@
+[Unit]
+Description=Sunshine owner desktop stream (%i seat)
+After=hometv-sway-environment.service hometv-sway-session.target
+Requisite=hometv-sway-session.target
+PartOf=hometv-sway-session.target
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=%t
+ExecCondition=/usr/bin/test -n "${WAYLAND_DISPLAY}"
+ExecStartPre=/usr/bin/swaymsg --quiet --socket=${SWAYSOCK} --type=get_version
+ExecStart=/usr/bin/sunshine /home/owner/.config/sunshine/sunshine.conf
+Restart=on-failure
+RestartSec=2

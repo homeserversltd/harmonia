@@ -1,0 +1,78 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "sunshine",
+  "title": "Desktop streaming",
+  "summary": "Keeps the owner desktop streaming configuration ready for the boot-selected seat.",
+  "category": "known-good",
+  "version": "1.1.0",
+  "optional": false,
+  "description": "Maintains the HomeSI owner streaming template and session wiring; Caduceus selects and starts the seat.",
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "sunshine-user-config",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/config",
+        "target_path": "/home/owner/.config/sunshine/sunshine.conf",
+        "mode": 420,
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sunshine-device-access",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": ["etc/udev/rules.d/60-sunshine.rules"],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "homeconsole-sunshine-device-access"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "sunshine-owner-template",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/unit",
+        "target_path": "/home/owner/.config/systemd/user/sunshine@.service",
+        "mode": 420,
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "homesi-session-wiring",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/home/owner",
+        "files": [".config/systemd/user/hometv-sway-session.target.d/10-homesi-services.conf"],
+        "backup_existing": true,
+        "owner": "owner",
+        "group": "owner"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "owner-user-daemon-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {"user": "owner", "timeout_secs": 60},
+      "on_failure": "stop"
+    }
+  ],
+  "files_root": "files_root"
+}
