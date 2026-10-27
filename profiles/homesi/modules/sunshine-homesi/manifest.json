@@ -1,6 +1,6 @@
 {
   "schema": "harmonia.module.ladder.v1",
-  "id": "sunshine",
+  "id": "sunshine-homesi",
   "title": "Desktop streaming",
   "summary": "Keeps the owner desktop streaming configuration ready for the boot-selected seat.",
   "category": "known-good",

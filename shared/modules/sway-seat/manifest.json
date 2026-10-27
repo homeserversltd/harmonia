@@ -5,7 +5,7 @@
   "summary": "Keeps the selected owner desktop and support-screen definitions current.",
   "category": "known-good",
   "version": "1.0.1",
-  "description": "Preserves existing support-seat pools; the HomeSI pool links a Debian owner full-desktop unit. The shared Sunshine job owns HomeSI-only enablement; all Hermes seat modules remain separate.",
+  "description": "Preserves existing support-seat pools; the HomeSI pool links a Debian owner full-desktop unit. Caduceus selects the HomeSI desktop seat; all Hermes seat modules remain separate.",
   "optional": false,
   "config_deploy": "interactable",
   "constants": {
