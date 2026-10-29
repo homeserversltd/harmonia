@@ -13,7 +13,7 @@ The underlay offers these Ubuntu placements:
 | Software | `/usr/share/wayland-sessions/homeconsole-sway.desktop` | `0644 root:root` | `modules/homeconsole-sway-session/files_root/session/platform/ubuntu/homeconsole-sway.desktop` |
 | Software | `/usr/local/bin/hermes` | `0755 root:root` | Arch original and `modules/hermes-seat/files_root/fragments/hermes-wrapper/platform/ubuntu/hermes` |
 | Software | `/usr/local/libexec/sway-seat/sway-seat-wait-ready` | `0755 root:root` | Arch original and `modules/sway-seat/files_root/fragments/ready-helper/platform/ubuntu/sway-seat-wait-ready` |
-| Software | `/usr/local/libexec/sway-seat/sway-seat-screen-supervisor` | `0755 root:root` | Arch original and `modules/cua-driver/files_root/fragments/screen-supervisor/platform/ubuntu/sway-seat-screen-supervisor` |
+| Software | `/usr/local/libexec/sway-seat/sway-seat-screen-supervisor` | `0755 root:root` | `shared/modules/screen-supervisor/files_root/fragments/screen-supervisor/all/sway-seat-screen-supervisor` |
 | Config proposal | `/home/hermes/.config/sway/config` | `0644 hermes:hermes` when absent under the birth-owned home; preserve ownership when present | `modules/hermes-sway-config/files_root/config/platform/ubuntu/config` |
 | Config proposal | `/home/hermes/.config/wayvnc/config` | `0600 hermes:hermes` when absent under the birth-owned home; preserve ownership when present | `modules/hermes-wayvnc-config/files_root/config/platform/ubuntu/config` |
 | Config proposal | `/home/hermes/.config/systemd/user/sway-seat.service` | `0644 hermes:hermes` when absent under the birth-owned home; preserve ownership when present | `modules/hermes-sway-seat/files_root/sway-seat/platform/ubuntu/sway-seat.service` |

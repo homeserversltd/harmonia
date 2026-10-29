@@ -11,13 +11,15 @@ import time
 SWAYMSG = "/usr/bin/swaymsg"
 WAYVNC = "/usr/bin/wayvnc"
 WAYVNCCTL = "/usr/bin/wayvncctl"
-WAYVNC_CONFIG = "/home/hermes/.config/wayvnc/config"
+WAYVNC_CONFIG = os.environ.get("SCREEN_SUPERVISOR_WAYVNC_CONFIG", "/home/hermes/.config/wayvnc/config")
+FOLLOWER = os.environ.get("SCREEN_SUPERVISOR_FOLLOWER", "wayvnc")
 VIRTUAL_OUTPUT = "HEADLESS-1"
 SUPERVISE_WAYVNC = False
 POLL_SECONDS = 1.0
 COMPOSITOR_IPC_FAILURE_GRACE_SECONDS = 15.0
 wayvnc_process = None
 vnc_output = None
+sunshine_output = None
 last_error = None
 managed_disabled_outputs = set()
 selected_physical_output = None
@@ -175,7 +177,7 @@ def physical_outputs(outputs):
 
 
 def reconcile():
-    global managed_disabled_outputs, selected_physical_output
+    global managed_disabled_outputs, selected_physical_output, sunshine_output
     outputs = get_outputs()
     physical = physical_outputs(outputs)
     physical_names = {item["name"] for item in physical}
@@ -206,11 +208,12 @@ def reconcile():
     else:
         selected_physical_output = None
         target = VIRTUAL_OUTPUT
-    try:
-        ensure_wayvnc()
-        select_vnc_output(target)
-    except (OSError, subprocess.SubprocessError) as exc:
-        report_error("WayVNC attempt pending: " + type(exc).__name__)
+    if FOLLOWER == "wayvnc":
+        try:
+            ensure_wayvnc()
+            select_vnc_output(target)
+        except (OSError, subprocess.SubprocessError) as exc:
+            report_error("WayVNC attempt pending: " + type(exc).__name__)
     if not physical and VIRTUAL_OUTPUT not in active_names(outputs):
         sway("output " + quoted(VIRTUAL_OUTPUT) + " enable")
         outputs = get_outputs()
@@ -233,6 +236,16 @@ def reconcile():
                 managed_disabled_outputs.add(output)
     if not move_every_workspace_and_focus(target):
         return
+    if FOLLOWER == "sunshine" and sunshine_output != target:
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "sunshine@screen.service"],
+                check=True, capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            report_error("Sunshine restart pending: " + type(exc).__name__)
+            return
+        sunshine_output = target
 
 
 def start_subscription():
@@ -296,6 +309,8 @@ def stop_on_signal(_signum, _frame):
 
 def main():
     global last_compositor_success
+    if FOLLOWER not in ("wayvnc", "sunshine"):
+        raise RuntimeError("screen-supervisor-follower-invalid")
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime_dir:
         raise RuntimeError("XDG_RUNTIME_DIR-missing")

@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homesi",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "package_authority": {
     "os_family": "debian",
     "package_manager": "apt"
@@ -37,6 +37,7 @@
     "screenshot",
     "xdg-user-settings",
     "desktop-config-payload",
+    "screen-supervisor",
     "cua-driver",
     "hermes-seat",
     "hermes-sway-config",

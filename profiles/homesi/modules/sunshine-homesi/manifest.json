@@ -4,9 +4,9 @@
   "title": "Desktop streaming",
   "summary": "Keeps the owner desktop streaming configuration ready for the boot-selected seat.",
   "category": "known-good",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "optional": false,
-  "description": "Maintains the HomeSI owner streaming template and session wiring; Caduceus selects and starts the seat.",
+  "description": "Maintains the HomeSI owner session, streaming template and session wiring; birth and Caduceus own startup.",
   "constants": {},
   "ladder": [
     {
@@ -30,7 +30,7 @@
       "args": {
         "source_root": "files_root",
         "target_root": "/",
-        "files": ["etc/udev/rules.d/60-sunshine.rules"],
+        "files": ["etc/udev/rules.d/60-sunshine.rules", "usr/share/wayland-sessions/sway-owner-one-session.desktop"],
         "backup_existing": true,
         "owner": "root",
         "group": "root",
@@ -59,7 +59,7 @@
       "args": {
         "source_root": "files_root",
         "target_root": "/home/owner",
-        "files": [".config/systemd/user/hometv-sway-session.target.d/10-homesi-services.conf"],
+        "files": [".config/systemd/user/hometv-sway-session.target.d/10-homesi-services.conf", ".config/systemd/user/screen-supervisor.service"],
         "backup_existing": true,
         "owner": "owner",
         "group": "owner"

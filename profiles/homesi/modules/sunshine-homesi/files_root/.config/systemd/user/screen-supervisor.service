@@ -1,0 +1,13 @@
+[Unit]
+Description=Owner screen supervisor (session follows the screen)
+After=hometv-sway-session.target
+Requisite=hometv-sway-session.target
+PartOf=hometv-sway-session.target
+[Service]
+Type=simple
+Environment=SCREEN_SUPERVISOR_FOLLOWER=sunshine
+ExecStart=/usr/local/libexec/sway-seat/sway-seat-screen-supervisor
+Restart=on-failure
+RestartSec=2
+[Install]
+WantedBy=hometv-sway-session.target

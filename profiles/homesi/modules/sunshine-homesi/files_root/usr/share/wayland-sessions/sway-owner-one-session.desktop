@@ -1,0 +1,4 @@
+[Desktop Entry]
+Name=Sway (owner, screen and headless)
+Exec=env WLR_BACKENDS=drm,libinput,headless WLR_HEADLESS_OUTPUTS=1 WLR_LIBINPUT_NO_DEVICES=1 /usr/bin/sway -c /home/owner/.config/sway/config
+Type=Application

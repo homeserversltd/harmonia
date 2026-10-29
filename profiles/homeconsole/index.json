@@ -39,6 +39,7 @@
     "retroarch-input",
     "grub-branding",
     "sway-seat",
+    "screen-supervisor",
     "cua-driver",
     "hermes-seat",
     "sway-seat-arch-config",

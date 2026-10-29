@@ -1,0 +1,26 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "screen-supervisor",
+  "title": "Screen supervisor",
+  "summary": "Keeps the shared Sway screen supervisor current.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "Maintains the single screen supervisor; the session chooses its streaming follower.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "screen-supervisor",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/fragments/screen-supervisor",
+        "target_path": "/usr/local/libexec/sway-seat/sway-seat-screen-supervisor",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
