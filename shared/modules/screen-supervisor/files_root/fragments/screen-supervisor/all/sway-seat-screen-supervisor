@@ -309,7 +309,7 @@ def stop_on_signal(_signum, _frame):
 
 def main():
     global last_compositor_success
-    if FOLLOWER not in ("wayvnc", "sunshine"):
+    if FOLLOWER not in ("wayvnc", "sunshine", "none"):
         raise RuntimeError("screen-supervisor-follower-invalid")
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime_dir:
