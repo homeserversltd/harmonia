@@ -341,6 +341,8 @@ impl SourceAuthority<'_> {
 pub(crate) struct SourceResolutionReceipt {
     pub schema: &'static str,
     pub source_policy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<&'static str>,
     pub ok: bool,
     pub mutation: bool,
     pub network_access: bool,
@@ -651,6 +653,7 @@ fn receipt(
     SourceResolutionReceipt {
         schema: SOURCE_RECEIPT_SCHEMA,
         source_policy,
+        source_kind: None,
         ok: blocker.is_none(),
         mutation: false,
         network_access: false,
@@ -1385,7 +1388,7 @@ pub(crate) fn validate_declared_sources(
     certificate_path: &Path,
 ) -> Result<Vec<SourceResolutionReceipt>, String> {
     let certificate = parse_certificate(certificate_path)?;
-    validate_source_policy(certificate.source_policy.as_deref())?;
+    let source_policy = validate_source_policy(certificate.source_policy.as_deref())?;
     let config_path = appliance_config_path();
     let config = parse_appliance_config(&config_path)?;
     let components: Vec<String> = config.sources.keys().cloned().collect();
@@ -1394,6 +1397,59 @@ pub(crate) fn validate_declared_sources(
         // The optional stamp locator is observational, not a normal Git source
         // candidate or a gate on configured-source validation.
         if component == "wukong-staff" {
+            continue;
+        }
+        let source = &config.sources[&component];
+        let candidates = source.get("candidates").and_then(Value::as_array);
+        let is_release = candidates.is_some_and(|items| items.iter().any(|item| {
+            item.get("kind").and_then(Value::as_str)
+                .is_some_and(crate::atoms::ask::fetch_artifact::is_external_release_kind)
+        }));
+        if is_release {
+            let validate = || -> Result<Vec<String>, String> {
+                let items = candidates.ok_or("external-release-candidates-missing")?;
+                for (index, item) in items.iter().enumerate() {
+                    let kind = item.get("kind").and_then(Value::as_str).unwrap_or("");
+                    if !crate::atoms::ask::fetch_artifact::is_external_release_kind(kind) {
+                        if matches!(kind, "git" | "local-checkout") {
+                            return Err(format!("external-release-provider-invalid component-candidate={} kind={kind}", index + 1));
+                        }
+                        return Err(format!("source-candidate-kind-unsupported component-candidate={} kind={kind}", index + 1));
+                    }
+                }
+                if source.get("ref").and_then(Value::as_str) != Some("latest") {
+                    return Err("external-release-ref-must-be-latest".into());
+                }
+                let asset = source.get("asset").and_then(Value::as_str).unwrap_or("");
+                let mut identities = Vec::new();
+                for (index, item) in items.iter().enumerate() {
+                    let kind = item.get("kind").and_then(Value::as_str).unwrap_or("");
+                    let locator = item.get("url").and_then(Value::as_str).unwrap_or("");
+                    if !locator_is_safe(locator) {
+                        return Err(format!("source-candidate-locator-secret-like component-candidate={}", index + 1));
+                    }
+                    if let Some(selector) = item.get("credential_selector").and_then(Value::as_str) {
+                        if !selector_is_safe(selector) {
+                            return Err(format!("source-credential-selector-invalid component-candidate={}", index + 1));
+                        }
+                    }
+                    crate::atoms::ask::fetch_artifact::external_release_candidate_shape(kind, locator, asset)?;
+                    identities.push(format!("{kind}:{}", index + 1));
+                }
+                Ok(identities)
+            };
+            let identities = validate().map_err(|blocker| format!(
+                "source-validation-blocker component={component} config={} owner_module=engine-plane step_id=appliance-config-source-validation blocker={blocker}",
+                config_path.display()
+            ))?;
+            let mut result = receipt(
+                SourceAuthority::ApplianceConfig { config_path: &config_path, profile_path: certificate_path },
+                Some(certificate.schema.clone()), source_policy.clone(), &component,
+                "engine-plane", "appliance-config-source-validation", Some("latest".into()),
+                identities, Vec::new(), None, None,
+            );
+            result.source_kind = Some("release-binary");
+            receipts.push(result);
             continue;
         }
         let resolution = resolve_source(

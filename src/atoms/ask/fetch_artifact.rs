@@ -13,14 +13,16 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const INSPECTION_MAX_BODY_BYTES: &str = "67108864";
 const INSPECTION_OVERSIZE_BLOCKER: &str = "release-inspection-fetch-oversize max_bytes=67108864";
 
-/// Acquire a third-party release archive without imposing the house's
-/// release.flag contract. The selected candidate is still digest-verified:
-/// Forgejo supplies an asset sidecar; GitHub supplies the asset API digest.
-pub(crate) fn fetch_external_archive(
+pub(crate) fn is_external_release_kind(kind: &str) -> bool {
+    matches!(kind, "forgejo-release" | "github-release")
+}
+
+/// Shared, network-free shape authority for external release candidates.
+pub(crate) fn external_release_candidate_shape<'a>(
     kind: &str,
-    locator: &str,
+    locator: &'a str,
     asset_name: &str,
-) -> Result<(String, Vec<u8>), String> {
+) -> Result<(&'a str, &'a str, &'a str), String> {
     if !safe_asset_name(asset_name) {
         return Err("external-release-asset-invalid".into());
     }
@@ -31,13 +33,29 @@ pub(crate) fn fetch_external_archive(
         .ok_or("external-release-repository-invalid")?;
     if host.is_empty() || host.contains(['@', '?', '#'])
         || !safe_release_segment(owner) || !safe_release_segment(repo)
-        || repo.contains(['?', '#']) {
+        || owner.contains(['?', '#']) || repo.contains(['?', '#']) {
         return Err("external-release-repository-invalid".into());
     }
-    let base_url = match kind {
-        "forgejo-release" => format!("https://{host}"),
-        "github-release" if host == "github.com" => "https://api.github.com".to_string(),
+    match kind {
+        "forgejo-release" => {},
+        "github-release" if host == "github.com" => {},
         _ => return Err("external-release-provider-invalid".into()),
+    }
+    Ok((host, owner, repo))
+}
+
+/// Acquire a third-party release archive without imposing the house's
+/// release.flag contract. Forgejo supplies a sidecar; GitHub supplies a digest.
+pub(crate) fn fetch_external_archive(
+    kind: &str,
+    locator: &str,
+    asset_name: &str,
+) -> Result<(String, Vec<u8>), String> {
+    let (host, owner, repo) = external_release_candidate_shape(kind, locator, asset_name)?;
+    let base_url = if kind == "github-release" {
+        "https://api.github.com".to_string()
+    } else {
+        format!("https://{host}")
     };
     #[cfg(feature = "test-facade")]
     let base_url = {
