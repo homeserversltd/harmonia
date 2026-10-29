@@ -4,7 +4,7 @@
   "title": "Network protection",
   "summary": "Keeps local network, address assignment, and name lookup settings configured.",
   "category": "interactable",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "Quarry-lifted HOMESERVER network spine: assert birth-provided executables and host-owned network inputs, converge product-owned firewall/DNS/unit policy with backups, validate service configurations.",
   "caduceus_commands": [
     "caduceus.network.firewall.read",
