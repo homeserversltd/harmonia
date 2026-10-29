@@ -1075,10 +1075,13 @@ fn resolve_appliance_config_source(
         );
     }
 
-    // A VALID collective stamp replaces the configured branch/ref for this
-    // declared member. All other observations preserve the historical ref.
-    let requested_ref = crate::atoms::ask::collective_stamp::target_sha(component)
-        .unwrap_or_else(|| configured_ref.to_owned());
+    // A stamp selects artifact provenance, never the developer build source.
+    let stamped_ref = crate::atoms::ask::collective_stamp::target_sha(component);
+    let requested_ref = if source_policy == "developer" {
+        "main".to_owned()
+    } else {
+        stamped_ref.clone().unwrap_or_else(|| configured_ref.to_owned())
+    };
     let mut candidates = Vec::new();
     let mut identities = Vec::new();
     let mut selectors = Vec::new();
@@ -1116,7 +1119,7 @@ fn resolve_appliance_config_source(
         requested_ref: requested_ref.clone(),
         candidates,
     };
-    receipt(
+    let mut result = receipt(
         authority,
         schema,
         source_policy,
@@ -1128,7 +1131,12 @@ fn resolve_appliance_config_source(
         selectors,
         None,
         Some(resolution),
-    )
+    );
+    if result.source_policy == "developer" {
+        result.blessed_ref = valid_commit(stamped_ref.as_deref())
+            .or_else(|| valid_commit(Some(configured_ref)));
+    }
+    result
 }
 
 fn resolve_xenia_source(
@@ -1916,6 +1924,9 @@ pub(crate) fn execute_manifest_band(
 }
 
 fn expected_commit_for_resolution(resolution: &SourceResolution) -> Option<String> {
+    if resolution.source_policy == "developer" {
+        return None;
+    }
     if let Some(source_sha) = crate::atoms::ask::collective_stamp::target_sha(&resolution.component) {
         return Some(source_sha);
     }

@@ -544,6 +544,19 @@ pub(crate) fn acquire_source(
                     continue;
                 }
                 let commit = head.stdout.trim().to_string();
+                if plan.source_policy == "developer"
+                    && observation.remote_head.as_deref() != Some(commit.as_str())
+                {
+                    attempts.push(source_attempt(
+                        index,
+                        candidate,
+                        "hard-red-identity",
+                        Some(commit),
+                        true,
+                        "developer-local-checkout-not-main-head".into(),
+                    ));
+                    return source_hard_red(attempts, precondition_changed);
+                }
                 if let Some(expected) = plan.expected_commit.as_deref() {
                     if commit != expected {
                         attempts.push(source_attempt(

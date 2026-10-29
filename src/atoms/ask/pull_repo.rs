@@ -111,7 +111,14 @@ pub(crate) fn observe_source_candidate(plan: &SourcePlan, candidate: &git_artifa
     let (local_head, remote_head, remote_url_matches) = if candidate.kind == SourceCandidateKind::LocalCheckout {
         let source_request = scoped_request(plan, candidate, PathBuf::from(&candidate.locator));
         let head = observe_head(&source_request, Some(&candidate.locator));
-        (head.clone(), head, true)
+        let main = if plan.source_policy == "developer" {
+            let result = git_observe(&source_request, &["rev-parse", "refs/heads/main^{commit}"], Some(&candidate.locator));
+            result.ok.then(|| result.stdout.trim().to_owned())
+                .filter(|value| git_artifact::is_lower_hex_sha(value))
+        } else {
+            head.clone()
+        };
+        (head, main, true)
     } else {
         let local = observe_head(&request, cwd);
         let (remote_head, remote_url_matches) = if git_artifact::is_lower_hex_sha(&plan.reference) {
@@ -313,10 +320,17 @@ pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
         let index = offset + 1;
         if candidate.kind == SourceCandidateKind::LocalCheckout {
             let command = source_head(Path::new(&candidate.locator), &plan.bearer);
-            let remote_sha = command
+            let mut remote_sha = command
                 .ok
                 .then(|| command.stdout.trim().to_string())
                 .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha));
+            if plan.source_policy == "developer" {
+                let request = scoped_request(plan, candidate, PathBuf::from(&candidate.locator));
+                let main = git_observe(&request, &["rev-parse", "refs/heads/main^{commit}"], Some(&candidate.locator));
+                if !main.ok || remote_sha.as_deref() != Some(main.stdout.trim()) {
+                    remote_sha = None;
+                }
+            }
             return RemoteHeadProbe {
                 state: if remote_sha.is_some() {
                     "local-checkout-observed".into()

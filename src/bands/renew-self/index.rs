@@ -1166,6 +1166,9 @@ fn update_engine_preflight_contract(
     .map_err(|error| format!("engine-preflight-receipt-parse-failed: {error}"))?;
     receipt["engine_lane"] = lane.map_or(Value::Null, |value| json!(value));
     receipt["resolved_tag"] = resolved_tag.map_or(Value::Null, |value| json!(value));
+    if lane == Some("source") {
+        receipt["source_selection_policy"] = json!("developer-main");
+    }
     receipt["blocked_target"] = blocked_target.map_or(Value::Null, |value| json!(value));
     write_json(&path, &receipt)
 }
@@ -2704,9 +2707,6 @@ pub(crate) fn run_engine_preflight(
             });
         }
     };
-    let stamp_target_sha = crate::atoms::ask::collective_stamp::current()
-        .target(&component)
-        .map(str::to_owned);
     let mut source_head: Option<String> = None;
     let mut resolved_sha: Option<String> = None;
     let mut lane: Option<String> = None;
@@ -2785,44 +2785,27 @@ pub(crate) fn run_engine_preflight(
         "developer" => {
             lane = Some("source".into());
             let mut developer_resolution = resolution.clone();
-            let pinned_target = stamp_target_sha.as_deref();
-            developer_resolution.requested_ref = pinned_target.unwrap_or("main").to_owned();
-            let source_plan = if let Some(target_sha) = pinned_target {
-                exact_source_fallback_plan(&developer_resolution, target_sha)
-            } else {
-                crate::bands::pull_source::bridge_acquisition_plan(
-                    &developer_resolution,
-                    engine_source_root(),
-                    None,
-                )
-            };
-            let remote_probe = pinned_target.is_none().then(|| {
-                crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan)
-            });
+            developer_resolution.requested_ref = "main".to_owned();
+            let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
+                &developer_resolution,
+                engine_source_root(),
+                None,
+            );
+            let remote_probe = crate::atoms::ask::pull_repo::probe_declared_remote_head(&source_plan);
             let target = format!(
                 "{}@{}",
-                remote_probe
-                    .as_ref()
-                    .and_then(|probe| probe.locator.as_deref())
+                remote_probe.locator.as_deref()
                     .or_else(|| source_plan.candidates.first().map(|candidate| candidate.locator.as_str()))
                     .unwrap_or("configured-source"),
-                pinned_target.map(|sha| format!("sha-{sha}")).unwrap_or_else(|| "main".into())
+                "main"
             );
-            let source_sha = stamp_target_sha.clone().or_else(|| {
-                remote_probe
-                    .as_ref()
-                    .and_then(|probe| probe.remote_sha.as_deref())
+            let source_sha = remote_probe.remote_sha.as_deref()
                     .filter(|sha| crate::atoms::git_artifact::is_lower_hex_sha(sha))
-                    .map(str::to_owned)
-            });
+                    .map(str::to_owned);
             if let Some(source_sha) = source_sha {
                 source_head = Some(source_sha.clone());
                 resolved_sha = Some(source_sha.clone());
-                let pinned_plan = if pinned_target.is_some() {
-                    source_plan
-                } else {
-                    source_fallback_plan(&developer_resolution, &source_sha)
-                };
+                let pinned_plan = source_fallback_plan(&developer_resolution, &source_sha);
                 let source = crate::bands::pull_source::execute_source(
                     &pinned_plan,
                     apply,
