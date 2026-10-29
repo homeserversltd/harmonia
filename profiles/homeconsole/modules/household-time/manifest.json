@@ -4,14 +4,14 @@
   "title": "Accurate clock",
   "summary": "Keeps the household's time setting and device clock synchronized.",
   "category": "known-good",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "optional": false,
   "description": "Household time watched consumer: applies only a fresh valid resolver fact and proves NTP through systemd.",
   "caduceus_commands": [
     "time set-timezone"
   ],
   "constants": {
-    "resolver_time_state_url": "http://homeserver.home.arpa:3014/time/state"
+    "resolver_time_state_url": "http://home.arpa:3014/time/state"
   },
   "ladder": [
     {
