@@ -13,6 +13,100 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const INSPECTION_MAX_BODY_BYTES: &str = "67108864";
 const INSPECTION_OVERSIZE_BLOCKER: &str = "release-inspection-fetch-oversize max_bytes=67108864";
 
+/// Acquire a third-party release archive without imposing the house's
+/// release.flag contract. The selected candidate is still digest-verified:
+/// Forgejo supplies an asset sidecar; GitHub supplies the asset API digest.
+pub(crate) fn fetch_external_archive(
+    kind: &str,
+    locator: &str,
+    asset_name: &str,
+) -> Result<(String, Vec<u8>), String> {
+    if !safe_asset_name(asset_name) {
+        return Err("external-release-asset-invalid".into());
+    }
+    let rest = locator.strip_prefix("https://")
+        .ok_or("external-release-url-must-be-https")?;
+    let (host, repo_path) = rest.split_once('/').ok_or("external-release-repository-invalid")?;
+    let (owner, repo) = repo_path.trim_end_matches('/').split_once('/')
+        .ok_or("external-release-repository-invalid")?;
+    if host.is_empty() || host.contains(['@', '?', '#'])
+        || !safe_release_segment(owner) || !safe_release_segment(repo)
+        || repo.contains(['?', '#']) {
+        return Err("external-release-repository-invalid".into());
+    }
+    let base_url = match kind {
+        "forgejo-release" => format!("https://{host}"),
+        "github-release" if host == "github.com" => "https://api.github.com".to_string(),
+        _ => return Err("external-release-provider-invalid".into()),
+    };
+    #[cfg(feature = "test-facade")]
+    let base_url = {
+        let key = if kind == "forgejo-release" { "HARMONIA_TEST_EXTERNAL_FORGE_API" } else { "HARMONIA_TEST_EXTERNAL_GITHUB_API" };
+        match std::env::var(key) {
+            Ok(value) => {
+                let port = value.strip_prefix("http://127.0.0.1:")
+                    .and_then(|port| port.parse::<u16>().ok()).filter(|port| *port != 0)
+                    .ok_or("external-release-fixture-api-not-loopback")?;
+                format!("http://127.0.0.1:{port}")
+            }
+            Err(std::env::VarError::NotPresent) => base_url,
+            Err(_) => return Err("external-release-fixture-api-invalid".into()),
+        }
+    };
+    let credential = if kind == "forgejo-release" {
+        crate::atoms::forge_credential::credential_for_url(&base_url)?
+    } else { None };
+    let request = ReleaseRequest {
+        kind: kind.into(), base_url: base_url.clone(), owner: owner.into(), repo: repo.into(),
+        credential_scope_found: credential.is_some(), credential,
+        credential_host: crate::atoms::forge_credential::url_host(&base_url),
+        cache_dir: std::env::temp_dir().join(format!("harmonia-external-release-{}", unique_temp_suffix())),
+    };
+    let result = (|| {
+        let metadata = if kind == "github-release" {
+            lookup_release_metadata_inner(&request, "latest", true)?
+                .ok_or("external-release-latest-missing")?
+        } else {
+            let mut releases = lookup_published_releases(&request)?;
+            releases.retain(|release| !release.draft);
+            releases.sort_by(|a, b| b.created_at_order.cmp(&a.created_at_order).then_with(|| b.id.cmp(&a.id)));
+            let latest = releases.first().ok_or("external-release-latest-missing")?;
+            lookup_release_metadata_single(&request, &latest.tag_name, true)?
+                .ok_or("external-release-latest-missing")?
+        };
+        let tag = metadata.tag_name.as_deref().ok_or("external-release-tag-missing")?;
+        let selected = metadata.assets.as_array().and_then(|assets| assets.iter().find(|entry|
+            entry.get("name").and_then(Value::as_str) == Some(asset_name)))
+            .ok_or("external-release-asset-missing")?;
+        let expected = if kind == "github-release" {
+            selected.get("digest").and_then(Value::as_str)
+                .and_then(|digest| digest.strip_prefix("sha256:"))
+                .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+                .ok_or("external-release-github-digest-missing-or-invalid")?.to_ascii_lowercase()
+        } else {
+            let sidecar_name = format!("{asset_name}.sha256");
+            let sidecar_url = release_asset_url(&metadata, tag, &sidecar_name)?;
+            let sidecar = download_release_asset(&request, &sidecar_url, &sidecar_name, true)?;
+            let text = std::str::from_utf8(&sidecar).map_err(|_| "external-release-sidecar-invalid")?;
+            let mut parts = text.split_whitespace();
+            let digest = parts.next().filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+                .ok_or("external-release-sidecar-invalid")?;
+            if parts.next().is_some_and(|name| name.trim_start_matches('*') != asset_name) || parts.next().is_some() {
+                return Err("external-release-sidecar-name-mismatch".into());
+            }
+            digest.to_ascii_lowercase()
+        };
+        let asset_url = release_asset_url(&metadata, tag, asset_name)?;
+        let bytes = download_release_asset(&request, &asset_url, asset_name, true)?;
+        if crate::atoms::file_sha256(&bytes) != expected {
+            return Err("external-release-digest-mismatch".into());
+        }
+        Ok((tag.to_string(), bytes))
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result
+}
+
 pub(crate) fn unique_temp_suffix() -> String {
     format!(
         "{}-{}",

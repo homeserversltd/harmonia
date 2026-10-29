@@ -1,12 +1,198 @@
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 const INSTALL_MODE: u32 = 0o755;
 const INSTALL_UID: u32 = 0;
 const INSTALL_GID: u32 = 0;
+const MAX_ARCHIVE_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Resolve a third-party archive only from the component's appliance source
+/// declaration. This lane does not change the Git or internal flag resolvers.
+fn external_archive(component: &str, asset: &str) -> Result<(String, String, Vec<u8>), String> {
+    let config_path = crate::bands::pull_source::appliance_config_path();
+    let config: Value = serde_json::from_slice(&fs::read(&config_path)
+        .map_err(|_| "external-release-sources-unreadable".to_string())?)
+        .map_err(|_| "external-release-sources-invalid".to_string())?;
+    let source = config.get("sources").and_then(|sources| sources.get(component))
+        .ok_or_else(|| format!("external-release-source-missing component={component}"))?;
+    if source.get("ref").and_then(Value::as_str) != Some("latest") {
+        return Err("external-release-ref-must-be-latest".into());
+    }
+    if source.get("asset").and_then(Value::as_str) != Some(asset) {
+        return Err("external-release-declared-asset-mismatch".into());
+    }
+    let candidates = source.get("candidates").and_then(Value::as_array)
+        .filter(|candidates| !candidates.is_empty())
+        .ok_or("external-release-candidates-missing")?;
+    let mut refusals = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let kind = candidate.get("kind").and_then(Value::as_str).unwrap_or("");
+        let locator = candidate.get("url").and_then(Value::as_str).unwrap_or("");
+        match crate::atoms::ask::fetch_artifact::fetch_external_archive(kind, locator, asset) {
+            Ok((tag, bytes)) => return Ok((kind.to_owned(), tag, bytes)),
+            Err(reason) if reason == "external-release-digest-mismatch"
+                || reason == "external-release-sidecar-invalid"
+                || reason == "external-release-sidecar-name-mismatch" => return Err(reason),
+            Err(reason) => refusals.push(format!("candidate={} kind={} signal={}", index + 1, kind, reason)),
+        }
+    }
+    Err(format!("external-release-candidates-exhausted component={component} {}", refusals.join("; ")))
+}
+
+/// Extract only the exact member to stdout, never archive paths to the body.
+/// Both the member list and decompressed bytes are bounded before promotion.
+fn extract_archive_member(archive: &[u8], member: &str) -> Result<Vec<u8>, String> {
+    if !safe_asset(member) {
+        return Err("external-release-member-invalid".into());
+    }
+    let path = std::env::temp_dir().join(format!(
+        "harmonia-external-archive-{}", crate::atoms::ask::fetch_artifact::unique_temp_suffix()
+    ));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|error| format!("external-release-archive-stage-failed: {error}"))?;
+    let result = (|| {
+        file.write_all(archive).map_err(|error| format!("external-release-archive-stage-failed: {error}"))?;
+        drop(file);
+        let list = bounded_unzip(&["-Z1", path.to_str().ok_or("external-release-stage-path-invalid")?], 1024 * 1024)?;
+        let list = std::str::from_utf8(&list).map_err(|_| "external-release-member-list-invalid")?;
+        if list.lines().filter(|line| *line == member).count() != 1 {
+            return Err("external-release-member-missing-or-duplicate".into());
+        }
+        let bytes = bounded_unzip(&["-p", path.to_str().ok_or("external-release-stage-path-invalid")?, member], MAX_ARCHIVE_MEMBER_BYTES)?;
+        if bytes.is_empty() { return Err("external-release-member-empty".into()); }
+        Ok(bytes)
+    })();
+    let _ = fs::remove_file(&path);
+    result
+}
+
+fn bounded_unzip(args: &[&str], limit: u64) -> Result<Vec<u8>, String> {
+    let mut child = std::process::Command::new("/usr/bin/unzip")
+        .args(args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
+        .spawn().map_err(|error| format!("external-release-unzip-unavailable: {error}"))?;
+    let mut bytes = Vec::new();
+    let read = child.stdout.take().ok_or("external-release-unzip-output-missing")?
+        .take(limit + 1).read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() as u64 > limit {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("external-release-unzip-output-too-large-or-unreadable".into());
+    }
+    let status = child.wait().map_err(|error| format!("external-release-unzip-wait-failed: {error}"))?;
+    if !status.success() { return Err("external-release-unzip-failed".into()); }
+    Ok(bytes)
+}
+
+fn running_service_sha(service: &str) -> Result<String, String> {
+    let observe = || crate::atoms::ask::systemd_state_query("main-pid", service, false, None, 30);
+    let first = observe();
+    let pid = first.stdout.trim().parse::<u32>().ok().filter(|pid| *pid > 0)
+        .filter(|_| first.ok).ok_or("external-release-service-main-pid-unavailable")?;
+    let bytes = fs::read(format!("/proc/{pid}/exe"))
+        .map_err(|_| "external-release-service-process-image-unreadable")?;
+    let second = observe();
+    if !second.ok || second.stdout.trim().parse::<u32>().ok() != Some(pid) {
+        return Err("external-release-service-main-pid-changed".into());
+    }
+    Ok(crate::atoms::file_sha256(&bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_external_archive(
+    component: &str, asset: &str, member: &str, service: &str, path: &Path, mode: u32,
+    receipt_dir: &Path, apply: bool, invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    observed: &InstalledObservation,
+) -> Result<crate::OperationOutcome, String> {
+    if !safe_asset(service) || !service.ends_with(".service") {
+        return Err("external-release-service-invalid".into());
+    }
+    let old_sha = observed.sha256.as_deref().ok_or("external-release-birth-binary-missing")?;
+    let (provider, tag, archive) = external_archive(component, asset)?;
+    let binary = extract_archive_member(&archive, member)?;
+    let desired_sha = crate::atoms::file_sha256(&binary);
+    if stable_installed_observation(path)? != *observed {
+        return Err("external-release-standing-target-changed-during-resolution".into());
+    }
+    if old_sha == desired_sha || !apply {
+        let current = old_sha == desired_sha;
+        return Ok(crate::OperationOutcome { ok: true, changed: false, skipped: true,
+            message: format!("{} provider={provider} tag={tag}", if current {"external-release-current"} else {"external-release-planned"}), command: None });
+    }
+    let invocation = invocation.ok_or("external-release-invocation-key-missing")?;
+    if running_service_sha(service)? != old_sha {
+        return Err("external-release-standing-process-identity-mismatch".into());
+    }
+    let old_bytes = fs::read(path).map_err(|_| "external-release-standing-binary-unreadable")?;
+    if crate::atoms::file_sha256(&old_bytes) != old_sha || stable_installed_observation(path)? != *observed {
+        return Err("external-release-standing-target-changed-before-placement".into());
+    }
+    let ownership = crate::place_file::DeclaredOwnership { uid: observed.uid, gid: observed.gid };
+    let placed = match crate::place_file::execute(crate::place_file::PlaceFileRequest {
+        path, declared_bytes: &binary, mode: Some(mode), ownership,
+        backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation),
+    }) {
+        Ok(placed) => placed,
+        Err(signal) => {
+            let current = stable_installed_observation(path);
+            let restored = match current {
+                Ok(ref now) if now.sha256.as_deref() == Some(old_sha) => running_service_sha(service).is_ok_and(|sha| sha == old_sha),
+                Ok(ref now) if now.sha256.as_deref() == Some(desired_sha.as_str()) => {
+                    crate::place_file::execute(crate::place_file::PlaceFileRequest {
+                        path, declared_bytes: &old_bytes, mode: observed.mode,
+                        ownership: crate::place_file::DeclaredOwnership { uid: observed.uid, gid: observed.gid },
+                        backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation),
+                    }).is_ok() && running_service_sha(service).is_ok_and(|sha| sha == old_sha)
+                }
+                _ => false,
+            };
+            return Err(format!("external-release-placement-failed: {signal} rollback_process_verified={restored}"));
+        }
+    };
+    let restarted = crate::atoms::systemd::run_action(
+        receipt_dir, "external-release-restart", "restart", Some(service), false, None, 30, true, true, Some(invocation)
+    );
+    let result = match restarted {
+        Ok(outcome) if outcome.ok && outcome.changed => running_service_sha(service).and_then(|sha| {
+            if sha != desired_sha { return Err("external-release-running-identity-mismatch".into()); }
+            if stable_installed_observation(path)?.sha256.as_deref() != Some(desired_sha.as_str()) {
+                return Err("external-release-installed-readback-mismatch".into());
+            }
+            Ok(())
+        }),
+        Ok(_) => Err("external-release-restart-failed-or-skipped".into()),
+        Err(error) => Err(format!("external-release-restart-failed: {error}")),
+    };
+    if let Err(signal) = result {
+        let restore = if stable_installed_observation(path).is_ok_and(|now| now.sha256.as_deref() == Some(desired_sha.as_str())) {
+            crate::place_file::execute(crate::place_file::PlaceFileRequest {
+                path, declared_bytes: &old_bytes, mode: observed.mode,
+                ownership: crate::place_file::DeclaredOwnership { uid: observed.uid, gid: observed.gid },
+                backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation),
+            })
+        } else { Err("external-release-rollback-target-changed".into()) };
+        let restored = match restore {
+            Ok(_) => crate::atoms::systemd::run_action(receipt_dir, "external-release-restore-restart", "restart",
+                Some(service), false, None, 30, true, true, Some(invocation))
+                .and_then(|outcome| if outcome.ok { running_service_sha(service) } else { Err("restore-restart-failed".into()) })
+                .is_ok_and(|sha| sha == old_sha),
+            Err(_) => false,
+        };
+        return Err(format!("{signal} rollback_process_verified={restored}"));
+    }
+    crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &placed.receipt, &[], placed.movement.changed())?;
+    write_receipt(receipt_dir, &json!({
+        "component": component, "asset": asset, "path": path, "selected_tag": tag, "provider": provider,
+        "installed_sha256": desired_sha, "observed": observed.receipt_value(),
+        "attempt": "place-and-restart", "state": "installed-and-running",
+        "service": service, "running_sha256": desired_sha, "changed": true, "skipped": false
+    }))?;
+    Ok(crate::OperationOutcome { ok: true, changed: true, skipped: false,
+        message: "external-release-installed-and-running".into(), command: None })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InstalledObservation {
@@ -350,6 +536,10 @@ pub(crate) fn execute(
 
     // A missing birth parent is established before any schema or network door.
     let observed = stable_installed_observation(path)?;
+    if let Some(member) = args.get("archive_member").and_then(Value::as_str) {
+        let service = required_string(args, "service")?;
+        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed);
+    }
     let seat = crate::atoms::ask::mint_seats::at_start()
         .release_flag
         .as_ref()

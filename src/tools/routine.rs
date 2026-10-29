@@ -643,6 +643,12 @@ fn execute_routine_tool(
                 routine_id,
                 step_id,
             )?;
+            if args.contains_key("archive_member") && outcome.skipped && outcome.ok {
+                return Ok((outcome, BTreeMap::from([
+                    ("installed_path".into(), args.get("path").cloned().unwrap_or(Value::Null)),
+                    ("changed".into(), Value::Bool(false)),
+                ])));
+            }
             let receipt: Value = serde_json::from_slice(
                 &std::fs::read(receipt_dir.join("release-binary.json"))
                     .map_err(|error| format!("release-binary-receipt-read-failed: {error}"))?,

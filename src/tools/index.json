@@ -1796,7 +1796,9 @@
             {"name": "component", "kind": "string", "required": true},
             {"name": "asset", "kind": "string", "required": true},
             {"name": "path", "kind": "string", "required": true},
-            {"name": "mode", "kind": "integer", "required": true}
+            {"name": "mode", "kind": "integer", "required": true},
+            {"name": "archive_member", "kind": "string", "required": false},
+            {"name": "service", "kind": "string", "required": false}
           ],
           "placement": "RatchetBinaries"
         }

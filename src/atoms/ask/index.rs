@@ -308,10 +308,11 @@ pub(crate) fn systemd_state_query(
     }
     match kind {
         "is-enabled" | "is-active" => args.extend([kind.into(), unit.into()]),
-        "load-state" | "unit-file-state" | "needs-reload" => {
+        "load-state" | "unit-file-state" | "needs-reload" | "main-pid" => {
             let property = match kind {
                 "load-state" => "LoadState",
                 "unit-file-state" => "UnitFileState",
+                "main-pid" => "MainPID",
                 _ => "NeedDaemonReload",
             };
             args.extend([
