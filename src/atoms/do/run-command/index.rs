@@ -1,13 +1,35 @@
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{CommandObservation, Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 const OUTPUT_LIMIT: usize = 16 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const STDIN_LIMIT: usize = 4096;
+
+/// Input is bounded and is never included in command attestation.
+pub(crate) fn command_with_stdin(
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
+    program: &str,
+    args: &[String],
+    stdin: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<CommandObservation, String> {
+    if stdin.as_ref().is_some_and(|bytes| bytes.len() > STDIN_LIMIT) {
+        return Err("run-command-stdin-too-large".into());
+    }
+    let preimage = crate::atoms::ask::run_command::observe(program, args, None);
+    let result = run_with_input(program, args, None, &[], timeout, stdin);
+    let _ = (authorization, invocation);
+    let outcome = CommandObservation { program: program.into(), args: args.to_vec(),
+        ok: result.ok, code: result.code, stdout: result.stdout, stderr: result.stderr };
+    let _attestation = crate::atoms::attest::run_command::value(&preimage, &serde_json::json!({"ok":outcome.ok,"code":outcome.code}))?;
+    Ok(outcome)
+}
 
 pub(crate) fn command_with_timeout_in_dir(
     authorization: &ActionAuthorization,
@@ -161,12 +183,24 @@ fn run_with_timeout_in_dir_env(
     environment: &[(String, String)],
     timeout: Duration,
 ) -> ResultData {
+    run_with_input(program, args, cwd, environment, timeout, None)
+}
+
+fn run_with_input(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    environment: &[(String, String)],
+    timeout: Duration,
+    stdin: Option<Vec<u8>>,
+) -> ResultData {
     let mut command = Command::new(program);
     command.args(args);
     command.envs(environment.iter().map(|(key, value)| (key, value)));
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
+    if stdin.is_some() { command.stdin(Stdio::piped()); }
     let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -182,6 +216,18 @@ fn run_with_timeout_in_dir_env(
             };
         }
     };
+    let mut input_ok = true;
+    if let Some(bytes) = stdin {
+        if let Some(mut pipe) = child.stdin.take() {
+            use std::os::fd::AsRawFd;
+            let fd = pipe.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            input_ok = flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0
+                && pipe.write_all(&bytes).is_ok();
+        } else {
+            input_ok = false;
+        }
+    }
     let out = child
         .stdout
         .take()
@@ -214,7 +260,7 @@ fn run_with_timeout_in_dir_env(
         stderr.push_str("; command timed out");
     }
     ResultData {
-        ok: status
+        ok: input_ok && status
             .as_ref()
             .is_some_and(std::process::ExitStatus::success),
         code: status.and_then(|status| status.code()),

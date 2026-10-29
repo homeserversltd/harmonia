@@ -1,4 +1,6 @@
 //! Profile/update adapters for the durable ritual owner in ritual.rs.
+#[path = "notify.rs"]
+mod notify;
 use crate::Profile;
 use crate::*;
 use std::{
@@ -132,6 +134,59 @@ pub(crate) struct RunCarrier {
 }
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
+
+fn post_update_notifications(profile: &Profile, promoted: &[String], key: &crate::atoms::r#do::InvocationKey) -> Vec<serde_json::Value> {
+    use crate::atoms::comparison::{ComparisonRun, DiffDecision};
+    let count = crate::interactables::pending_config_proposal_count();
+    let feed = crate::interactables::load_feed(&crate::interactables::feed_path());
+    // The count helper already includes Ruyi-born rows. Subtract the silenced
+    // unsatisfied entries once; never add a second Ruyi count.
+    let silenced = match feed {
+        Ok(feed) => feed.interactables.iter().filter(|item| item.silenced && !crate::interactables::json_key::is_satisfied(item)).count(),
+        Err(_) => { eprintln!("notify-feed-unavailable"); 0 }
+    };
+    let pending = count.saturating_sub(silenced);
+    if pending == 0 && promoted.is_empty() { return Vec::new(); }
+    let identity = match crate::atoms::ask::ruyi::local_identity() {
+        Ok(identity) => identity,
+        Err(_) => { eprintln!("notify-identity-unavailable"); return Vec::new(); }
+    };
+    let rows = notify::rows(&profile.id, &identity, pending, promoted);
+    let override_program = std::env::var("HARMONIA_NOTIFY_STAFF").ok();
+    let (program, args) = match override_program {
+        Some(path) => (path, Vec::new()),
+        None => ("/usr/bin/env".to_string(), vec!["PYTHONPATH=/usr/local/sbin".into(), "/usr/bin/python3".into(), "-m".into(), "agathodaimon.notify".into(), "post".into()]),
+    };
+    rows.into_iter().map(|(kind, row)| {
+        let started = std::time::Instant::now();
+        let input = serde_json::to_vec(&row).unwrap_or_default();
+        let outcome: Result<ComparisonRun<(), crate::atoms::CommandObservation>, String> = crate::atoms::comparison::execute_once(
+            "notify-post", || Ok(()), |_| DiffDecision::Different,
+            |authorization, _| crate::atoms::r#do::run_command::command_with_stdin(&authorization, key, &program, &args, Some(input), std::time::Duration::from_secs(10)),
+        );
+        let result = match outcome {
+            Ok(ComparisonRun::Moved { movement, .. }) => {
+                let receipt: Option<serde_json::Value> = serde_json::from_str(&movement.stdout).ok();
+                let signal = receipt.as_ref().and_then(|v| v.get("firstMissingSignal")).and_then(serde_json::Value::as_str);
+                if movement.ok && receipt.as_ref().and_then(|v| v.get("ok")).and_then(serde_json::Value::as_bool) == Some(true) {
+                    let id = receipt.as_ref().and_then(|v| v.get("id")).and_then(serde_json::Value::as_str)
+                        .filter(|id| id.len() <= 200 && !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:./".contains(&b)))
+                        .unwrap_or_else(|| row["id"].as_str().unwrap_or(""));
+                    serde_json::json!({"row":kind,"posted":true,"id":id})
+                } else {
+                    let absent = signal == Some("notify-door-absent") || (movement.code.is_none() && movement.stderr.contains("No such file")) || movement.stderr.contains("No module named agathodaimon.notify");
+                    let signal = if absent { "notify-staff-absent" } else { signal.filter(|s| s.len() <= 96 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')).unwrap_or("notify-staff-failed") };
+                    serde_json::json!({"row":kind,"posted":false,"signal":signal})
+                }
+            }
+            _ => serde_json::json!({"row":kind,"posted":false,"signal":"notify-staff-failed"}),
+        };
+        let posted = result["posted"].as_bool().unwrap_or(false);
+        let signal = result.get("signal").and_then(serde_json::Value::as_str);
+        let _ = crate::deeds::record("run-command", "notify-staff", posted, posted, Some(started.elapsed().as_millis()), None, None, signal, None);
+        result
+    }).collect()
+}
 
 #[derive(Debug)]
 pub(crate) struct RunContext {
@@ -531,6 +586,7 @@ pub(crate) fn rolling_update_run(
                 crate::atoms::r#do::transaction::RunCarrier::default(),
             ))
         });
+    let notify_outcome = RefCell::new(if apply { serde_json::json!([]) } else { serde_json::json!("report-only") });
     let run = || {
         carrier.borrow_mut().rung_promoted.clear();
         carrier.borrow_mut().known_good_pointer_moves.clear();
@@ -930,6 +986,10 @@ pub(crate) fn rolling_update_run(
                 }
             }
         }
+        if let Some(key) = mode.invocation() {
+            let promoted = carrier.borrow().rung_promoted.clone();
+            *notify_outcome.borrow_mut() = serde_json::json!(post_update_notifications(profile, &promoted, key));
+        }
         let Some(summary) = carrier.borrow_mut().deferred_terminal_summary.take() else {
             write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
@@ -1063,6 +1123,7 @@ pub(crate) fn rolling_update_run(
         let projection = (|| -> Result<(), String> {
             let mut receipt = valid_run_receipt(&effective_receipt_dir)
                 .ok_or_else(|| "receipt-lifecycle-run-receipt-unavailable".to_string())?;
+            receipt["notify"] = notify_outcome.borrow().clone();
             receipt["receipt_lifecycle"] = serde_json::json!({
                 "directory_mode": "overwrite-in-place", "warnings": receipt_warnings,
             });
