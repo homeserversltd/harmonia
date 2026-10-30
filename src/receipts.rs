@@ -14,12 +14,8 @@ thread_local! {
     static ACTIVE_PROPOSAL_OBSERVATION: RefCell<Option<Option<usize>>> = const { RefCell::new(None) };
 }
 
-const PROPOSAL_OBSERVATION_ENV: &str = "HARMONIA_INTERNAL_PRESS_PROPOSALS";
-const SELF_UPDATE_HANDOFF_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC_RECORD";
-
 pub(crate) struct ProposalObservationGuard {
     previous: Option<Option<usize>>,
-    previous_env: Option<std::ffi::OsString>,
 }
 
 fn observe_pending_proposals() -> Option<usize> {
@@ -31,28 +27,15 @@ fn observe_pending_proposals() -> Option<usize> {
 impl ProposalObservationGuard {
     pub(crate) fn enter() -> Self {
         let previous = ACTIVE_PROPOSAL_OBSERVATION.with(|active| *active.borrow());
-        let previous_env = std::env::var_os(PROPOSAL_OBSERVATION_ENV);
-        // A successor may inherit only the observation paired with the existing
-        // self-update handoff. A fresh invocation always observes its own feed.
-        let inherited = std::env::var_os(SELF_UPDATE_HANDOFF_ENV).and_then(|_| {
-            previous_env.as_ref().map(|value| value.to_str().and_then(|value| value.parse::<usize>().ok()))
-        });
-        let observed = previous.or(inherited).unwrap_or_else(observe_pending_proposals);
-        std::env::set_var(PROPOSAL_OBSERVATION_ENV,
-            observed.map(|count| count.to_string()).unwrap_or_else(|| "unobserved".to_string()));
+        let observed = previous.unwrap_or_else(observe_pending_proposals);
         ACTIVE_PROPOSAL_OBSERVATION.with(|active| { active.replace(Some(observed)); });
-        Self { previous, previous_env }
+        Self { previous }
     }
 }
 
 impl Drop for ProposalObservationGuard {
     fn drop(&mut self) {
         ACTIVE_PROPOSAL_OBSERVATION.with(|active| { active.replace(self.previous); });
-        if let Some(value) = &self.previous_env {
-            std::env::set_var(PROPOSAL_OBSERVATION_ENV, value);
-        } else {
-            std::env::remove_var(PROPOSAL_OBSERVATION_ENV);
-        }
     }
 }
 
@@ -393,7 +376,7 @@ pub(crate) fn project_run_alkahest(
                 }))
     });
     let converged = if !steps_ok { Some(false) } else { committed };
-    let mut promoted = if committed == Some(true) { promoted.to_vec() } else { Vec::new() };
+    let mut promoted = promoted.to_vec();
     promoted.sort();
     let digest = if promoted.is_empty() { None } else {
         let hex = format!("{:x}", Sha256::digest(promoted.join("\n").as_bytes()));
@@ -444,7 +427,7 @@ pub(crate) fn project_run_alkahest(
         "set_signal":{"caduceus":candidate_signal,"sbin":"candidate-not-observed","face":"candidate-not-observed"},
         "diff":{"caduceus":caduceus_diff,"sbin":null,"face":null}});
     receipt["attempt"] = json!(attempts);
-    receipt["final_receipt"] = json!({"ok":ok && converged == Some(true) && pending.is_some(),
+    receipt["final_receipt"] = json!({"ok":ok && converged != Some(false) && pending.is_some(),
         "converged":converged,"promoted":promoted,"set_digest":digest,
         "stamps":[{"by":"harmonia","at":crate::bands::propose_edits::iso8601_now()}]});
 }

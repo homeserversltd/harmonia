@@ -137,7 +137,8 @@ pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
 
 fn post_update_notifications(profile: &Profile, final_receipt: &serde_json::Value, key: &crate::atoms::r#do::InvocationKey) -> Vec<serde_json::Value> {
     use crate::atoms::comparison::{ComparisonRun, DiffDecision};
-    if !final_receipt.get("promoted").and_then(serde_json::Value::as_array).is_some_and(|values| !values.is_empty()) { return Vec::new(); }
+    if final_receipt.get("converged").and_then(serde_json::Value::as_bool) != Some(true)
+        || !final_receipt.get("promoted").and_then(serde_json::Value::as_array).is_some_and(|values| !values.is_empty()) { return Vec::new(); }
     let identity = match crate::atoms::ask::ruyi::local_identity() {
         Ok(identity) => identity,
         Err(_) => { eprintln!("notify-identity-unavailable"); return Vec::new(); }
@@ -1124,8 +1125,16 @@ pub(crate) fn rolling_update_run(
         let projection = (|| -> Result<(), String> {
             let mut receipt = valid_run_receipt(&effective_receipt_dir)
                 .ok_or_else(|| "receipt-lifecycle-run-receipt-unavailable".to_string())?;
-            if !apply || run_result.is_err() {
-                crate::receipts::project_run_alkahest(&mut receipt, Some(false), &[], &effective_receipt_dir);
+            if let Err(error) = &run_result {
+                if receipt.pointer("/final_receipt/converged").and_then(serde_json::Value::as_bool) == Some(true) {
+                    receipt["ok"] = serde_json::json!(false);
+                    if receipt.get("first_missing_signal").and_then(serde_json::Value::as_str) == Some("none") {
+                        receipt["first_missing_signal"] = serde_json::json!(error);
+                    }
+                } else if apply {
+                    let promoted = carrier.borrow().rung_promoted.clone();
+                    crate::receipts::project_run_alkahest(&mut receipt, Some(false), &promoted, &effective_receipt_dir);
+                }
             }
             receipt["notify"] = notify_outcome.borrow().clone();
             receipt["receipt_lifecycle"] = serde_json::json!({
@@ -1139,6 +1148,23 @@ pub(crate) fn rolling_update_run(
                 Ok(()) => format!("receipt-lifecycle-projection-failed: {error}"),
                 Err(previous) => format!("{previous}; receipt-lifecycle-projection-failed: {error}"),
             });
+            // If the projection failed after commit, preserve the committed four
+            // parts and make one bounded attempt to record the closure failure.
+            if let Some(mut receipt) = valid_run_receipt(&effective_receipt_dir) {
+                if receipt.pointer("/final_receipt/converged").and_then(serde_json::Value::as_bool) == Some(true) {
+                    receipt["ok"] = serde_json::json!(false);
+                    if receipt.get("first_missing_signal").and_then(serde_json::Value::as_str) == Some("none") {
+                        receipt["first_missing_signal"] = serde_json::json!(run_result.as_ref().err());
+                    }
+                    receipt["notify"] = notify_outcome.borrow().clone();
+                    receipt["receipt_lifecycle"] = serde_json::json!({
+                        "directory_mode": "overwrite-in-place", "warnings": receipt_warnings,
+                    });
+                    if let Err(retry_error) = write_json(&run_path, &receipt) {
+                        receipt_warnings.push(format!("receipt-lifecycle-failure-record-failed: {retry_error}"));
+                    }
+                }
+            }
         }
     } else {
         let error = "receipt-lifecycle-run-receipt-missing";
