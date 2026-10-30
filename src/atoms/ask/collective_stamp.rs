@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-const MEMBERS: [&str; 8] = [
+const MEMBERS: [&str; 9] = [
     "harmonia",
     "caduceus",
     "sbin",
@@ -17,6 +17,7 @@ const MEMBERS: [&str; 8] = [
     "documentation",
     "keyman",
     "noesis",
+    "hermes-agent",
 ];
 const MAX_HTTP_BODY: usize = 2 * 1024 * 1024;
 const MAX_STAMP_BYTES: usize = 16 * 1024;
