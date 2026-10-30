@@ -10,6 +10,9 @@ Environment=HOME=/home/hermes
 Environment=XDG_RUNTIME_DIR=%t
 Environment=WAYLAND_DISPLAY=wayland-1
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+Environment=CUA_DRIVER_RS_TELEMETRY_ENABLED=false
+Environment=CUA_DRIVER_RS_UPDATE_CHECK=false
+Environment=DO_NOT_TRACK=1
 ExecStart=/usr/local/bin/cua-driver serve
 Restart=on-failure
 RestartSec=5
