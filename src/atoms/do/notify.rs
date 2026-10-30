@@ -5,21 +5,11 @@ use sha2::{Digest, Sha256};
 pub(super) fn rows(
     profile: &str,
     identity: &crate::atoms::ask::ruyi::LocalIdentity,
-    pending: usize,
     promoted: &[String],
 ) -> Vec<(&'static str, Value)> {
     let key = identity.mac.as_str();
     let from = json!({"body":profile,"hostname":identity.hostname,"mac":identity.mac});
     let mut rows = Vec::new();
-    if pending > 0 {
-        rows.push(("proposals", json!({
-            "id":format!("update:{key}:proposals"), "kind":"update", "color":"blue",
-            "title":"Updates waiting for you", "body":format!("{pending} proposals wait in Updates"),
-            "from":from, "state":"pending", "ttl":"until-acted",
-            "actions":[{"verb":"open-updates","label":"Open Updates"},{"verb":"dismiss","label":"Dismiss"}],
-            "max_rows":10
-        })));
-    }
     if !promoted.is_empty() {
         let mut set = promoted.to_vec();
         set.sort();

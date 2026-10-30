@@ -137,21 +137,12 @@ pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
 
 fn post_update_notifications(profile: &Profile, promoted: &[String], key: &crate::atoms::r#do::InvocationKey) -> Vec<serde_json::Value> {
     use crate::atoms::comparison::{ComparisonRun, DiffDecision};
-    let count = crate::interactables::pending_config_proposal_count();
-    let feed = crate::interactables::load_feed(&crate::interactables::feed_path());
-    // The count helper already includes Ruyi-born rows. Subtract the silenced
-    // unsatisfied entries once; never add a second Ruyi count.
-    let silenced = match feed {
-        Ok(feed) => feed.interactables.iter().filter(|item| item.silenced && !crate::interactables::json_key::is_satisfied(item)).count(),
-        Err(_) => { eprintln!("notify-feed-unavailable"); 0 }
-    };
-    let pending = count.saturating_sub(silenced);
-    if pending == 0 && promoted.is_empty() { return Vec::new(); }
+    if promoted.is_empty() { return Vec::new(); }
     let identity = match crate::atoms::ask::ruyi::local_identity() {
         Ok(identity) => identity,
         Err(_) => { eprintln!("notify-identity-unavailable"); return Vec::new(); }
     };
-    let rows = notify::rows(&profile.id, &identity, pending, promoted);
+    let rows = notify::rows(&profile.id, &identity, promoted);
     let override_program = std::env::var("HARMONIA_NOTIFY_STAFF").ok();
     let (program, args) = match override_program {
         Some(path) => (path, Vec::new()),
