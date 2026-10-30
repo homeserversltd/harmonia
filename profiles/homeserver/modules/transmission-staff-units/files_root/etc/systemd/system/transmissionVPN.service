@@ -6,7 +6,6 @@ After=network-online.target hold-port-forward@pia.service transmissionPIA.servic
 Conflicts=transmissionPIA.service transmission-daemon.service
 ConditionPathIsMountPoint=/vault
 ConditionPathIsMountPoint=/mnt/nas
-RequiresMountsFor=/vault /mnt/nas
 PropagatesStopTo=hold-port-forward@pia.service
 StartLimitIntervalSec=0
 

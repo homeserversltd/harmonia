@@ -4,8 +4,8 @@
   "title": "Shared storage access",
   "summary": "Connects the server to household shared storage.",
   "category": "known-good",
-  "version": "1.2.0",
-  "description": "Declares service-backed NAS mountpoints, role-specific USB readiness, fixed unit bytes, and enable-only boot election for both mounts.",
+  "version": "1.3.0",
+  "description": "Places and keeps both NAS mount units without enabling them; Caduceus PID 2 attaches the NAS.",
   "constants": {},
   "files_root": "files_root",
   "ladder": [
@@ -49,24 +49,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "nas-units-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "nas-units-enable-primary",
-      "tool": "systemd",
-      "permutation": "enable",
-      "args": {
-        "service": "mnt-nas.mount"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "nas-units-enable-backup",
-      "tool": "systemd",
-      "permutation": "enable",
-      "args": {
-        "service": "mnt-nas_backup.mount"
       },
       "on_failure": "stop"
     }
