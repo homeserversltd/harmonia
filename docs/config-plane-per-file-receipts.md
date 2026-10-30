@@ -66,8 +66,8 @@ continues to fail closed.
 This does not relax the runtime wall for explicit inputs. Runtime repeats the
 interactable/off-ConfigPlane check for every materialized `interactable` entry
 before either the held-file or proposal loop observes targets or writes proposal
-sources. An explicit `interactable` SoftwarePlane entry in `args.files` or
-`profile_sources` still returns the same named error. A `known-good` declaration
+sources. An explicit `interactable` SoftwarePlane entry in `args.files`
+still returns the same named error. A `known-good` declaration
 on a SoftwarePlane path remains the ordinary held software file, and an omitted
 category still defaults to `known-good`. This contract still does not infer a
 category or create witnesses for other file/converge permutations, compiled
