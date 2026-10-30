@@ -6,11 +6,5 @@
       "mode": 420,
       "content": "/usr/local/sbin\n"
     }
-  ],
-  "caduceus_profile_source": {
-    "source": "profiles/homesi/index.yaml",
-    "path": "/etc/caduceus/profile.yaml",
-    "mode": 420,
-    "append": ""
-  }
+  ]
 }

@@ -194,11 +194,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             continue;
         };
         let original = step.steps[index].clone();
-        let profile_sources_present = original
-            .args
-            .get("profile_sources")
-            .and_then(Value::as_object)
-            .is_some_and(|sources| !sources.is_empty());
+
         let declarations = original
             .args
             .get("files")
@@ -409,7 +405,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
             });
         }
         step.steps.splice(index..=index, replacement);
-        if !configuration.is_empty() || profile_sources_present {
+        if !configuration.is_empty() {
             let mut proposal = original;
             proposal
                 .args

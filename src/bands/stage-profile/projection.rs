@@ -526,13 +526,7 @@ fn projection_derive_plan_inner(
                     }
                 }
             }
-            if let Some(p) = args
-                .get("caduceus_profile_source")
-                .and_then(|x| projection_value_path(x, "path"))
-            {
-                projection_add_census_target(&mut targets, p, member, emit_diagnostics)?;
-                record_module(member, module_id);
-            }
+
             if let Some(name) = projection_text(args, "service") {
                 projection_add_service(&mut services, name, false, None, member);
                 record_module(member, module_id);

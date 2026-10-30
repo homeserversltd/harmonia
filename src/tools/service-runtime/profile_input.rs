@@ -227,9 +227,9 @@ pub(crate) fn apply(
         .and_then(Value::as_object_mut)
         .ok_or_else(|| "profile-input-service-runtime-args-invalid".to_string())?;
 
-    // The fragment owns only these three runtime inputs. Unknown fields are
+    // The fragment owns only these two runtime inputs. Unknown fields are
     // semantically skipped and cannot replace component or install metadata.
-    for key in ["url", "managed_files", "caduceus_profile_source"] {
+    for key in ["url", "managed_files"] {
         if let Some(value) = selected_fragment.get(key) {
             let value = if key == "url" {
                 resolve_fragment_url(value)?

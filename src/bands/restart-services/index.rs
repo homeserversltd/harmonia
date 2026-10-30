@@ -72,12 +72,6 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
     enter(Band::RestartServices)
 }
 
-fn collect_profile_sources(args: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-    args.iter()
-        .filter(|(key, value)| key.ends_with("_profile_source") && !value.is_null())
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect()
-}
 
 pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
     for step in &mut manifest.ladder {
@@ -134,12 +128,11 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             ("health-proof", "check-health", "probe"),
             ("source-sha-record", "place-file", "source-sha-record"),
         ];
-        let profile_sources = collect_profile_sources(&args);
+
         let has_managed_files = args
             .get("managed_files")
             .and_then(Value::as_array)
-            .is_some_and(|files| !files.is_empty())
-            || !profile_sources.is_empty();
+            .is_some_and(|files| !files.is_empty());
         step.tool = "routine".into();
         step.permutation = "execute".into();
         step.args.clear();
@@ -322,16 +315,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                                 .cloned()
                                 .unwrap_or_else(|| Value::Array(Vec::new())),
                         );
-                        if !profile_sources.is_empty() {
-                            c.insert(
-                                "profile_sources".into(),
-                                Value::Object(profile_sources.clone().into_iter().collect()),
-                            );
-                            c.insert(
-                                "source_dir".into(),
-                                serde_json::json!({"from":"pull-repo.path"}),
-                            );
-                        }
+
                         c
                     }
                     "binary-install" => {
@@ -1208,49 +1192,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn caduceus_real_manifest_lowers_managed_profile_source() {
-        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("profiles/homeconsole/modules/install-caduceus/manifest.json");
-        let manifest = load_ladder_manifest(&manifest_path).unwrap();
-        let routine = manifest
-            .ladder
-            .iter()
-            .find(|step| step.step_id == "caduceus-service-runtime")
-            .expect("real Caduceus lowered routine");
-        let routine_child_names = routine
-            .steps
-            .iter()
-            .map(|child| child.name.as_str())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            routine_child_names.len(),
-            routine.steps.len(),
-            "routine child names must be unique"
-        );
-        let managed = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "managed-files")
-            .expect("managed profile-source child");
-        assert_eq!(managed.tool, "files");
-        assert_eq!(managed.permutation.as_deref(), Some("managed-files"));
-        assert_eq!(
-            managed.args.get("source_dir"),
-            Some(&json!({"from": "pull-repo.path"}))
-        );
-        assert_eq!(
-            managed
-                .args
-                .get("profile_sources")
-                .and_then(Value::as_object)
-                .and_then(|sources| sources.get("caduceus_profile_source"))
-                .and_then(Value::as_object)
-                .and_then(|source| source.get("path"))
-                .and_then(Value::as_str),
-            Some("/etc/caduceus/profile.yaml")
-        );
-    }
 
     #[test]
     fn arcadia_health_window_lowers_into_health_probe_request() {
@@ -1314,25 +1255,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod profile_source_collection_tests {
-    use super::collect_profile_sources;
-    use serde_json::json;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn collects_two_suffix_generic_profile_sources() {
-        let args = BTreeMap::from([
-            ("alpha_profile_source".into(), json!({"source": "a"})),
-            ("beta_profile_source".into(), json!({"source": "b"})),
-            ("ordinary".into(), json!(true)),
-        ]);
-        let collected = collect_profile_sources(&args);
-        assert_eq!(collected.len(), 2);
-        assert_eq!(collected["alpha_profile_source"], json!({"source": "a"}));
-        assert_eq!(collected["beta_profile_source"], json!({"source": "b"}));
-    }
-}
 
 #[cfg(test)]
 mod xenia_restart_gate_tests {

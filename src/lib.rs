@@ -130,15 +130,6 @@ struct ManagedFileManifest {
     legacy_transition_note: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct CaduceusProfileSourceManifest {
-    source: String,
-    path: String,
-    #[serde(default)]
-    mode: Option<u32>,
-    #[serde(default)]
-    append: String,
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct TemplateFileManifest {
@@ -201,8 +192,7 @@ struct ModuleManifest {
     groups: Vec<String>,
     #[serde(default)]
     managed_files: Vec<ManagedFileManifest>,
-    #[serde(default)]
-    caduceus_profile_source: Option<CaduceusProfileSourceManifest>,
+
     #[serde(default)]
     caduceus_commands: Vec<String>,
     #[serde(default)]
