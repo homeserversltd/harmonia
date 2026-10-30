@@ -446,15 +446,16 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
     let mut feed = load_feed(&path)?;
     crate::ledger::filter_open_proposals(&path, &mut feed)?;
     let silenced = args.iter().any(|arg| arg == "--silenced");
+    let json = args.iter().any(|arg| arg == "--json");
     let mut filtered_feed = feed.clone();
     filtered_feed.interactables = feed
         .interactables
         .iter()
-        .filter(|item| item.silenced == silenced)
+        .filter(|item| if silenced { item.silenced } else { json || !item.silenced })
         .filter(|item| !json_key::is_satisfied(item))
         .cloned()
         .collect();
-    if args.iter().any(|arg| arg == "--json") {
+    if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&filtered_feed).map_err(|error| error.to_string())?
@@ -505,12 +506,22 @@ fn interactable_set_silenced(args: &[String], silenced: bool) -> Result<(), Stri
     crate::bands::propose_edits::persist_feed_with_intent(
         &path,
         crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
-            entries: vec![item],
+            entries: vec![item.clone()],
             remove_ids: BTreeSet::new(),
             sort_by_id: false,
         },
-    )
-    .map(|_| ())
+    )?;
+    let receipt = serde_json::json!({
+        "schema": "harmonia.interactables.silence.receipt.v1",
+        "ok": true,
+        "converged": true,
+        "id": item.id,
+        "silenced": item.silenced,
+        "silenced_at": item.silenced_at,
+        "stamps": [{"by": "harmonia", "at": crate::bands::propose_edits::iso8601_now()}],
+    });
+    println!("{}", receipt);
+    Ok(())
 }
 
 fn interactable_inspect(args: &[String]) -> Result<(), String> {

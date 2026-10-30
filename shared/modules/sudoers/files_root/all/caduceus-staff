@@ -8,4 +8,6 @@ caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia update
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia update --apply
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia interactable list --json
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^interactable run [A-Za-z0-9._-]+$
+caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^interactable silence [A-Za-z0-9._-]+$
+caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^interactable unsilence [A-Za-z0-9._-]+$
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^update-module /etc/harmonia/profiles/[a-z0-9-]+/index\.json --module [A-Za-z0-9._-]+( --apply)?$
