@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homesi",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "package_authority": {
     "os_family": "debian",
     "package_manager": "apt"
