@@ -135,14 +135,14 @@ pub(crate) struct RunCarrier {
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
 
-fn post_update_notifications(profile: &Profile, promoted: &[String], key: &crate::atoms::r#do::InvocationKey) -> Vec<serde_json::Value> {
+fn post_update_notifications(profile: &Profile, final_receipt: &serde_json::Value, key: &crate::atoms::r#do::InvocationKey) -> Vec<serde_json::Value> {
     use crate::atoms::comparison::{ComparisonRun, DiffDecision};
-    if promoted.is_empty() { return Vec::new(); }
+    if !final_receipt.get("promoted").and_then(serde_json::Value::as_array).is_some_and(|values| !values.is_empty()) { return Vec::new(); }
     let identity = match crate::atoms::ask::ruyi::local_identity() {
         Ok(identity) => identity,
         Err(_) => { eprintln!("notify-identity-unavailable"); return Vec::new(); }
     };
-    let rows = notify::rows(&profile.id, &identity, promoted);
+    let rows = notify::rows(&profile.id, &identity, final_receipt);
     let override_program = std::env::var("HARMONIA_NOTIFY_STAFF").ok();
     let (program, args) = match override_program {
         Some(path) => (path, Vec::new()),
@@ -159,7 +159,9 @@ fn post_update_notifications(profile: &Profile, promoted: &[String], key: &crate
             Ok(ComparisonRun::Moved { movement, .. }) => {
                 let receipt: Option<serde_json::Value> = serde_json::from_str(&movement.stdout).ok();
                 let signal = receipt.as_ref().and_then(|v| v.get("firstMissingSignal")).and_then(serde_json::Value::as_str);
-                if movement.ok && receipt.as_ref().and_then(|v| v.get("ok")).and_then(serde_json::Value::as_bool) == Some(true) {
+                if movement.ok && receipt.as_ref().and_then(|v| v.get("ok")).and_then(serde_json::Value::as_bool) == Some(true)
+                    && receipt.as_ref().and_then(|v| v.get("converged")).and_then(serde_json::Value::as_bool) != Some(false)
+                    && receipt.as_ref().and_then(|v| v.pointer("/final_receipt/converged")).and_then(serde_json::Value::as_bool) != Some(false) {
                     let id = receipt.as_ref().and_then(|v| v.get("id")).and_then(serde_json::Value::as_str)
                         .filter(|id| id.len() <= 200 && !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:./".contains(&b)))
                         .unwrap_or_else(|| row["id"].as_str().unwrap_or(""));
@@ -491,6 +493,7 @@ pub(crate) fn rolling_update_run(
         .map(|context| context.run_id.clone())
         .unwrap_or_else(run_id_from_stamp);
     let _run_id_guard = crate::receipts::RunIdGuard::enter(&requested_run_id);
+    let _proposal_observation = crate::receipts::ProposalObservationGuard::enter();
     let policy = match crate::bands::stage_profile::groups::read_device_module_policy() {
         Ok(policy) => policy,
         Err(reason) => {
@@ -977,10 +980,6 @@ pub(crate) fn rolling_update_run(
                 }
             }
         }
-        if let Some(key) = mode.invocation() {
-            let promoted = carrier.borrow().rung_promoted.clone();
-            *notify_outcome.borrow_mut() = serde_json::json!(post_update_notifications(profile, &promoted, key));
-        }
         let Some(summary) = carrier.borrow_mut().deferred_terminal_summary.take() else {
             write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
@@ -1040,6 +1039,17 @@ pub(crate) fn rolling_update_run(
                 ));
             }
             return Err(error);
+        }
+        // Construct and persist the committed closure before projecting the notification.
+        let mut run_receipt = valid_run_receipt(&effective_receipt_dir)
+            .ok_or_else(|| "transaction-final-receipt-unavailable".to_string())?;
+        let promoted = carrier.borrow().rung_promoted.clone();
+        crate::receipts::project_run_alkahest(&mut run_receipt, Some(true), &promoted, &effective_receipt_dir);
+        write_json(&effective_receipt_dir.join("run.json"), &run_receipt)?;
+        if let Some(key) = mode.invocation() {
+            *notify_outcome.borrow_mut() = serde_json::json!(post_update_notifications(
+                profile, &run_receipt["final_receipt"], key,
+            ));
         }
         crate::bands::report_home::emit_run_profile_deed(deed);
         carrier.borrow_mut().terminal_deed_emitted = true;
@@ -1114,15 +1124,26 @@ pub(crate) fn rolling_update_run(
         let projection = (|| -> Result<(), String> {
             let mut receipt = valid_run_receipt(&effective_receipt_dir)
                 .ok_or_else(|| "receipt-lifecycle-run-receipt-unavailable".to_string())?;
+            if !apply || run_result.is_err() {
+                crate::receipts::project_run_alkahest(&mut receipt, Some(false), &[], &effective_receipt_dir);
+            }
             receipt["notify"] = notify_outcome.borrow().clone();
             receipt["receipt_lifecycle"] = serde_json::json!({
                 "directory_mode": "overwrite-in-place", "warnings": receipt_warnings,
             });
             write_json(&run_path, &receipt)
         })();
-        if let Err(error) = projection { receipt_warnings.push(error); }
+        if let Err(error) = projection {
+            receipt_warnings.push(error.clone());
+            run_result = Err(match run_result {
+                Ok(()) => format!("receipt-lifecycle-projection-failed: {error}"),
+                Err(previous) => format!("{previous}; receipt-lifecycle-projection-failed: {error}"),
+            });
+        }
     } else {
-        receipt_warnings.push("receipt-lifecycle-run-receipt-missing".to_string());
+        let error = "receipt-lifecycle-run-receipt-missing";
+        receipt_warnings.push(error.to_string());
+        if run_result.is_ok() { run_result = Err(error.to_string()); }
     }
     if !receipt_warnings.is_empty() {
         eprintln!("receipt-lifecycle-warning: {}", receipt_warnings.join("; "));

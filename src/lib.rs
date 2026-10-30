@@ -1060,6 +1060,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 )?;
                 return Err(reason);
             }
+            let _proposal_observation = crate::receipts::ProposalObservationGuard::enter();
             crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
             if profile.id == "homeserver" && profile.identity == "homeserver" {
                 homeserver_update(&profile, &module_root, &receipt_dir, mode)

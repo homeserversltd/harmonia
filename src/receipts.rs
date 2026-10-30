@@ -10,6 +10,50 @@ use std::time::{SystemTime, UNIX_EPOCH};
 thread_local! {
     static ACTIVE_RUN_ID: RefCell<Option<String>> = const { RefCell::new(None) };
     static ACTIVE_RECEIPT_DIRECTORY: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    // Outer Option marks an active press; inner Option is the observation result.
+    static ACTIVE_PROPOSAL_OBSERVATION: RefCell<Option<Option<usize>>> = const { RefCell::new(None) };
+}
+
+const PROPOSAL_OBSERVATION_ENV: &str = "HARMONIA_INTERNAL_PRESS_PROPOSALS";
+const SELF_UPDATE_HANDOFF_ENV: &str = "HARMONIA_SELF_UPDATE_REEXEC_RECORD";
+
+pub(crate) struct ProposalObservationGuard {
+    previous: Option<Option<usize>>,
+    previous_env: Option<std::ffi::OsString>,
+}
+
+fn observe_pending_proposals() -> Option<usize> {
+    crate::interactables::load_feed(&crate::interactables::feed_path())
+        .ok().map(|feed| feed.interactables.iter()
+            .filter(|item| !crate::interactables::json_key::is_satisfied(item)).count())
+}
+
+impl ProposalObservationGuard {
+    pub(crate) fn enter() -> Self {
+        let previous = ACTIVE_PROPOSAL_OBSERVATION.with(|active| *active.borrow());
+        let previous_env = std::env::var_os(PROPOSAL_OBSERVATION_ENV);
+        // A successor may inherit only the observation paired with the existing
+        // self-update handoff. A fresh invocation always observes its own feed.
+        let inherited = std::env::var_os(SELF_UPDATE_HANDOFF_ENV).and_then(|_| {
+            previous_env.as_ref().map(|value| value.to_str().and_then(|value| value.parse::<usize>().ok()))
+        });
+        let observed = previous.or(inherited).unwrap_or_else(observe_pending_proposals);
+        std::env::set_var(PROPOSAL_OBSERVATION_ENV,
+            observed.map(|count| count.to_string()).unwrap_or_else(|| "unobserved".to_string()));
+        ACTIVE_PROPOSAL_OBSERVATION.with(|active| { active.replace(Some(observed)); });
+        Self { previous, previous_env }
+    }
+}
+
+impl Drop for ProposalObservationGuard {
+    fn drop(&mut self) {
+        ACTIVE_PROPOSAL_OBSERVATION.with(|active| { active.replace(self.previous); });
+        if let Some(value) = &self.previous_env {
+            std::env::set_var(PROPOSAL_OBSERVATION_ENV, value);
+        } else {
+            std::env::remove_var(PROPOSAL_OBSERVATION_ENV);
+        }
+    }
 }
 
 pub(crate) struct RunIdGuard(Option<String>);
@@ -309,6 +353,102 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps(
     )
 }
 
+/// Add run-level evidence without replacing any existing receipt fields.
+/// `committed` is unknown until the rolling transaction reaches its commit.
+pub(crate) fn project_run_alkahest(
+    receipt: &mut serde_json::Value,
+    committed: Option<bool>,
+    promoted: &[String],
+    receipt_dir: &Path,
+) {
+    use sha2::{Digest, Sha256};
+    let steps = receipt.get("steps").and_then(serde_json::Value::as_array)
+        .cloned().unwrap_or_default();
+    let attempts: Vec<serde_json::Value> = steps.iter().map(|module| {
+        let outcome = &module["outcome"];
+        let module_ok = outcome.get("ok").and_then(serde_json::Value::as_bool);
+        let failed = module.get("attempt").and_then(serde_json::Value::as_array)
+            .and_then(|items| items.iter().find(|item| {
+                item.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                    || item.pointer("/outcome/ok").and_then(serde_json::Value::as_bool) == Some(false)
+            }));
+        let signal = outcome.get("first_missing_signal").and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "none");
+        let step = if module_ok == Some(false) {
+            failed.and_then(|value| value.get("step_id")).and_then(serde_json::Value::as_str)
+                .or_else(|| signal.and_then(|s| s.split_whitespace().find_map(|w| w.strip_prefix("step_id="))))
+        } else { None };
+        json!({"module":module.get("module"), "step":step, "ok":module_ok,
+            "changed":outcome.get("changed"), "signal":signal})
+    }).collect();
+    let pending = ACTIVE_PROPOSAL_OBSERVATION.with(|active| *active.borrow())
+        .unwrap_or_else(observe_pending_proposals);
+    let ok = receipt.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let steps_ok = steps.iter().all(|module| {
+        module.pointer("/outcome/ok").and_then(serde_json::Value::as_bool) == Some(true)
+            && module.get("attempt").and_then(serde_json::Value::as_array)
+                .is_none_or(|items| items.iter().all(|item| {
+                    item.get("ok").or_else(|| item.pointer("/outcome/ok"))
+                        .and_then(serde_json::Value::as_bool) == Some(true)
+                }))
+    });
+    let converged = if !steps_ok { Some(false) } else { committed };
+    let mut promoted = if committed == Some(true) { promoted.to_vec() } else { Vec::new() };
+    promoted.sort();
+    let digest = if promoted.is_empty() { None } else {
+        let hex = format!("{:x}", Sha256::digest(promoted.join("\n").as_bytes()));
+        Some(hex[..12].to_string())
+    };
+    if converged == Some(false) || pending.is_none() {
+        receipt["ok"] = json!(false);
+        if receipt.get("overall_ok").is_some() { receipt["overall_ok"] = json!(false); }
+        if pending.is_none() && receipt.get("first_missing_signal").and_then(serde_json::Value::as_str) == Some("none") {
+            receipt["first_missing_signal"] = json!("proposal-observation-failed");
+        }
+    }
+    let (beam, beam_error) = match fs::read(receipt_dir.join("beam.json")) {
+        Err(_) => (None, Some("beam-receipt-unavailable")),
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Err(_) => (None, Some("beam-receipt-malformed")),
+            Ok(value) if value.get("schema").and_then(serde_json::Value::as_str) != Some("harmonia.beam-compare.v1") =>
+                (None, Some("beam-receipt-schema-mismatch")),
+            Ok(value) if !is_current_run_receipt(&value) => (None, Some("beam-receipt-stale")),
+            Ok(value) => (Some(value), None),
+        },
+    };
+    let valid_sha = |value: Option<&serde_json::Value>| -> Option<String> {
+        value.and_then(serde_json::Value::as_str)
+            .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_owned)
+    };
+    // The comparison's door projection exists only after BeamDoor validation;
+    // it does not carry the original door's `ok` field.
+    let observed_caduceus = beam.as_ref().and_then(|beam| valid_sha(beam.pointer("/door/caduceus_sha")));
+    let candidate_caduceus = beam.as_ref().and_then(|beam| valid_sha(beam.pointer("/lock/caduceus_sha")));
+    let missing_beam_signal = beam_error.or_else(|| beam.as_ref()
+        .and_then(|value| value.get("first_missing_signal"))
+        .and_then(serde_json::Value::as_str).filter(|signal| *signal != "none"));
+    let observed_signal = if observed_caduceus.is_some() { None } else {
+        Some(missing_beam_signal.unwrap_or("beam-door-unobserved"))
+    };
+    let candidate_signal = if candidate_caduceus.is_some() { None } else {
+        Some(missing_beam_signal.unwrap_or("beam-lock-unobserved"))
+    };
+    let caduceus_diff = observed_caduceus.as_ref().zip(candidate_caduceus.as_ref())
+        .map(|(a,b)| !a.eq_ignore_ascii_case(b));
+    receipt["observed"] = json!({"set":{"caduceus":observed_caduceus,"sbin":null,"face":null},
+        "set_signal":{"caduceus":observed_signal,"sbin":"member-not-observed","face":"member-not-observed"},
+        "timer":null,"proposals_pending":pending,
+        "proposal_signal":if pending.is_none() { Some("proposal-observation-failed") } else { None }});
+    receipt["could_change_to"] = json!({"set":{"caduceus":candidate_caduceus,"sbin":null,"face":null},
+        "set_signal":{"caduceus":candidate_signal,"sbin":"candidate-not-observed","face":"candidate-not-observed"},
+        "diff":{"caduceus":caduceus_diff,"sbin":null,"face":null}});
+    receipt["attempt"] = json!(attempts);
+    receipt["final_receipt"] = json!({"ok":ok && converged == Some(true) && pending.is_some(),
+        "converged":converged,"promoted":promoted,"set_digest":digest,
+        "stamps":[{"by":"harmonia","at":crate::bands::propose_edits::iso8601_now()}]});
+}
+
 pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
     receipt_dir: &Path,
     profile: &Profile,
@@ -366,6 +506,7 @@ pub(crate) fn write_engine_run_receipt_with_duration_and_steps_and_debt(
         receipt["excluded_module_ids"] = json!(excluded_module_ids);
     }
     crate::deeds::annotate_reporting(&mut receipt);
+    project_run_alkahest(&mut receipt, None, &[], receipt_dir);
     write_json(&receipt_dir.join("run.json"), &receipt)
 }
 
