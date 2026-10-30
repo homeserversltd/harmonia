@@ -422,15 +422,30 @@ pub(crate) fn persist_feed_with_config(
                 composed
             }
         };
-        if let Err(error) = crate::ledger::prepare_config_proposals(path, &feed, config) {
-            // A failed source write must not expose an unusable new offer.
-            // Hold the prior projection and report the failure without blocking
-            // the module's independent software convergence.
-            report_proposal_row_failure(&error);
-            return Ok(None);
-        }
-        persist_feed_locked(path, &feed, config).map(Some)
+        persist_feed_with_config_locked(path, &feed, config, RowSyncPolicy::ReportAndContinue)
     })
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RowSyncPolicy {
+    ReportAndContinue,
+    Required,
+}
+
+pub(crate) fn persist_feed_with_config_locked(
+    path: &Path,
+    feed: &interactables::InteractablesFeed,
+    config: &[crate::ledger::ConfigProposal],
+    row_sync: RowSyncPolicy,
+) -> Result<Option<usize>, String> {
+    if let Err(error) = crate::ledger::prepare_config_proposals(path, feed, config) {
+        // A failed source write must not expose an unusable new offer.
+        // Hold the prior projection and report the failure without blocking
+        // the module's independent software convergence.
+        report_proposal_row_failure(&error);
+        return Ok(None);
+    }
+    persist_feed_locked(path, feed, config, row_sync).map(Some)
 }
 
 fn report_proposal_row_failure(error: &str) {
@@ -444,6 +459,32 @@ fn persist_feed_locked(
     path: &Path,
     feed: &interactables::InteractablesFeed,
     config: &[crate::ledger::ConfigProposal],
+    row_sync: RowSyncPolicy,
+) -> Result<usize, String> {
+    let prior = match row_sync {
+        RowSyncPolicy::ReportAndContinue => None,
+        RowSyncPolicy::Required => Some(interactables::load_feed(path)?),
+    };
+    let writes = project_feed_locked(path, feed)?;
+    if let Err(error) = crate::ledger::sync_proposals(path, feed, config) {
+        if let Some(prior) = prior {
+            let restored = project_feed_locked(path, &prior);
+            report_proposal_row_failure(&error);
+            let signal = crate::deeds::coded_signal(&error);
+            return match restored {
+                Ok(_) => Err(signal),
+                Err(restore_error) => Err(format!("{signal}; proposal-projection-restore-failed: {restore_error}")),
+            };
+        }
+        report_proposal_row_failure(&error);
+    }
+    if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,None,None,None,None,Some(writes as u64))?; }
+    Ok(writes)
+}
+
+fn project_feed_locked(
+    path: &Path,
+    feed: &interactables::InteractablesFeed,
 ) -> Result<usize, String> {
     let feed_bytes = {
         let mut bytes = serde_json::to_vec_pretty(feed)
@@ -460,17 +501,12 @@ fn persist_feed_locked(
             Ok((format!("{}.json", item.id), bytes))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let writes = crate::atoms::attest::refresh_proposal_projection_locked(
+    crate::atoms::attest::refresh_proposal_projection_locked(
         path,
         &feed_bytes,
         &records,
         crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
-    )?;
-    if let Err(error) = crate::ledger::sync_proposals(path, feed, config) {
-        report_proposal_row_failure(&error);
-    }
-    if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,None,None,None,None,Some(writes as u64))?; }
-    Ok(writes)
+    )
 }
 
 /// Resolve an accepted file proposal while the caller holds the projection lock.
@@ -491,7 +527,7 @@ pub(crate) fn resolve_config_proposal_locked(
             receipts,
         },
     );
-    persist_feed_locked(path, &feed, &[])?;
+    persist_feed_locked(path, &feed, &[], RowSyncPolicy::ReportAndContinue)?;
     Ok(true)
 }
 
@@ -1015,7 +1051,7 @@ pub(crate) fn refresh_validated_symlink(
                 let feed = compose_feed(feed, &FeedPersistenceIntent::Upsert {
                     entries: Vec::new(), remove_ids: matching_ids, sort_by_id: true,
                 });
-                persist_feed_locked(&path, &feed, &[])?;
+                persist_feed_locked(&path, &feed, &[], RowSyncPolicy::ReportAndContinue)?;
             }
             return Ok(false);
         }
@@ -1097,7 +1133,7 @@ pub(crate) fn refresh_validated_symlink(
             report_proposal_row_failure(&error);
             return Ok(false);
         }
-        persist_feed_locked(&path, &feed, &config)?;
+        persist_feed_locked(&path, &feed, &config, RowSyncPolicy::ReportAndContinue)?;
         CURRENT_CONFIG_RECOGNITIONS.with(|state| {
             state.borrow_mut().insert(id, recognition);
         });

@@ -490,27 +490,24 @@ fn interactable_set_silenced(args: &[String], silenced: bool) -> Result<(), Stri
         ));
     }
     let path = feed_path();
-    let mut feed = load_feed(&path)?;
-    let item = feed
-        .interactables
-        .iter_mut()
-        .find(|item| item.id == args[0])
-        .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
-    item.silenced = silenced;
-    item.silenced_at = if silenced {
-        Some(crate::bands::propose_edits::iso8601_now())
-    } else {
-        None
-    };
-    let item = item.clone();
-    crate::bands::propose_edits::persist_feed_with_intent(
-        &path,
-        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
-            entries: vec![item.clone()],
-            remove_ids: BTreeSet::new(),
-            sort_by_id: false,
-        },
-    )?;
+    let item = crate::atoms::attest::with_proposal_projection_lock(&path, || {
+        let mut feed = load_feed(&path)?;
+        let item = feed.interactables.iter_mut()
+            .find(|item| item.id == args[0])
+            .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
+        item.silenced = silenced;
+        item.silenced_at = if silenced {
+            Some(crate::bands::propose_edits::iso8601_now())
+        } else {
+            None
+        };
+        let item = item.clone();
+        crate::bands::propose_edits::persist_feed_with_config_locked(
+            &path, &feed, &[], crate::bands::propose_edits::RowSyncPolicy::Required,
+        )?
+            .ok_or_else(|| "interactable-silence-held proposal rows could not be prepared; prior projection kept".to_string())?;
+        Ok(item)
+    })?;
     let receipt = serde_json::json!({
         "schema": "harmonia.interactables.silence.receipt.v1",
         "ok": true,
