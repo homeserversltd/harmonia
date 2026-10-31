@@ -149,9 +149,50 @@ steps:
         export GIT_CONFIG_COUNT=1
         export GIT_CONFIG_KEY_0=credential.https://git.home.arpa.helper
         export GIT_CONFIG_VALUE_0='!f() { if [ "$${1}" = get ]; then printf "username=x-token\npassword=%s\n" "$${FORGEJO_TOKEN}"; fi; }; f'
-        git clone --depth 1 --no-checkout https://git.home.arpa/HOMESERVERSLTD/wukong-staff.git wukong-staff
-        git -C wukong-staff fetch --depth=1 origin "$${WUKONG_STAFF_SHA}"
-        git -C wukong-staff checkout --detach "$${WUKONG_STAFF_SHA}"
+        retry_budget="$${POOL_BOOTSTRAP_PROOF_SECONDS:-300}"
+        retry_delay=5
+        if [ -n "$${POOL_BOOTSTRAP_PROOF_SECONDS:-}" ]; then retry_delay=1; fi
+        retry_deadline=$(( $(date +%s) + retry_budget ))
+        git_error=''
+        git_status=1
+        while :; do
+          retry_remaining=$(( retry_deadline - $(date +%s) ))
+          if [ "$${retry_remaining}" -le 0 ]; then
+            if [ -n "$${git_error}" ]; then
+              printf '%s\n' "$${git_error}" >&2
+            else
+              printf '%s\n' 'git bootstrap timed out without an error from git' >&2
+            fi
+            exit "$${git_status}"
+          fi
+          if attempt_output=$(timeout "$${retry_remaining}" sh -c '
+            git clone --depth 1 --no-checkout https://git.home.arpa/HOMESERVERSLTD/wukong-staff.git wukong-staff &&
+            git -C wukong-staff fetch --depth=1 origin "$${WUKONG_STAFF_SHA}" &&
+            git -C wukong-staff checkout --detach "$${WUKONG_STAFF_SHA}"
+          ' 2>&1); then
+            break
+          else
+            git_status=$?
+          fi
+          if [ -n "$${attempt_output}" ]; then git_error="$${attempt_output}"; fi
+          retry_remaining=$(( retry_deadline - $(date +%s) ))
+          if [ "$${retry_remaining}" -le 0 ]; then
+            if [ -n "$${git_error}" ]; then
+              printf '%s\n' "$${git_error}" >&2
+            else
+              printf '%s\n' 'git bootstrap timed out without an error from git' >&2
+            fi
+            exit "$${git_status}"
+          fi
+          rm -rf wukong-staff
+          if [ "$${retry_delay}" -gt "$${retry_remaining}" ]; then
+            sleep "$${retry_remaining}"
+          else
+            sleep "$${retry_delay}"
+          fi
+          retry_delay=$(( retry_delay * 2 ))
+          if [ "$${retry_delay}" -gt 30 ]; then retry_delay=30; fi
+        done
         test "$(git -C wukong-staff rev-parse HEAD)" = "$${WUKONG_STAFF_SHA}"
         exec sh wukong-staff/ci/harmonia/pipeline.sh
 
