@@ -328,7 +328,7 @@ pub(crate) fn is_satisfied(item: &Interactable) -> bool {
     };
     item.kind == "hard-stamp"
         && item.id == proposal_id(target, &marker.key)
-        && pending_state(&super::feed_path(), &item.id).is_ok_and(|pending| {
+        && pending_state(&crate::ledger::database_path(), &item.id).is_ok_and(|pending| {
             observe(target).is_ok_and(|(document, _)| {
                 KeyState::of(document.object.get(&marker.key)) == pending.after
             })
@@ -374,7 +374,7 @@ pub(crate) fn propose(
             command: None,
         });
     }
-    let path = super::feed_path();
+    let path = crate::ledger::database_path();
     let feed = super::load_feed(&path)?;
     let prior = feed.interactables.iter().find(|item| item.id == id);
     // Check the candidate now, but never write it on the update path.
@@ -469,9 +469,10 @@ pub(crate) fn propose(
     Ok(outcome)
 }
 
-/// The shared Config acceptance path holds the projection lock for this act.
+/// The shared Config acceptance path holds its proposal transaction for this act.
 /// Return evidence to that path so it can run the owning module continuation.
 pub(super) fn accept_locked(
+    connection: &rusqlite::Connection,
     path: &Path,
     item: &Interactable,
 ) -> Result<Value, String> {
@@ -611,7 +612,7 @@ pub(super) fn accept_locked(
         return Err("json-key-unowned-values-readback-mismatch".into());
     }
     let untouched_keys: Vec<_> = before_other.keys().cloned().collect();
-    crate::bands::propose_edits::resolve_config_proposal_locked(path, &item.id, Vec::new())?;
+    crate::bands::propose_edits::resolve_config_proposal_locked(connection, &item.id, Vec::new())?;
     // Receipts go home; no completed receipt or value is cached in the feed.
     Ok(json!({"schema":"harmonia.interactables.hard_stamp.receipt.v1",
         "ok":true,"id":item.id,"kind":"hard-stamp","config_state":"interactable",

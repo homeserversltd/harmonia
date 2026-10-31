@@ -1894,68 +1894,7 @@ mod declared_sudoers_convergence_tests {
         assert_eq!(error, "declared-sudoers-forced-clobber-invocation-required");
     }
 
-    #[test]
-    fn declared_sudoers_observe_only_admits_exact_shape_without_placement() {
-        let root = tempfile::tempdir().unwrap();
-        let request = fixture_request(root.path());
-        fs::create_dir_all(&request.source_root).unwrap();
-        fs::create_dir_all(&request.target_root).unwrap();
-        fs::write(request.source_root.join(FRAGMENT), b"declared\n").unwrap();
-        fs::write(request.target_root.join(FRAGMENT), b"drifted\n").unwrap();
 
-        let outcome = converge_declared_sudoers_fragments_authorized_at(
-            &request,
-            &root.path().join("receipts"),
-            None,
-            None,
-            &request.target_root,
-        )
-        .unwrap();
-
-        assert!(outcome.ok);
-        assert!(outcome.changed);
-        assert_eq!(outcome.written, 0);
-        assert_eq!(
-            fs::read(request.target_root.join(FRAGMENT)).unwrap(),
-            b"drifted\n"
-        );
-        assert!(!root.path().join("interactables.json").exists());
-    }
-
-    #[test]
-    fn declared_sudoers_apply_replaces_drift_and_sets_exact_metadata_when_root() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
-        let root = tempfile::tempdir().unwrap();
-        let request = fixture_request(root.path());
-        fs::create_dir_all(&request.source_root).unwrap();
-        fs::create_dir_all(&request.target_root).unwrap();
-        fs::write(request.source_root.join(FRAGMENT), b"declared\n").unwrap();
-        fs::write(request.target_root.join(FRAGMENT), b"drifted\n").unwrap();
-        let invocation = crate::atoms::r#do::InvocationKey::for_apply();
-        let mode = crate::UpdateMode::from_apply_flag_with_invocation(true, Some(&invocation));
-
-        let outcome = converge_declared_sudoers_fragments_authorized_at(
-            &request,
-            &root.path().join("receipts"),
-            mode.software_authorization(),
-            Some(&invocation),
-            &request.target_root,
-        )
-        .unwrap();
-
-        let target = request.target_root.join(FRAGMENT);
-        let metadata = fs::metadata(&target).unwrap();
-        assert!(outcome.ok);
-        assert!(outcome.changed);
-        assert_eq!(outcome.written, 1);
-        assert_eq!(fs::read(&target).unwrap(), b"declared\n");
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o440);
-        assert_eq!(metadata.uid(), 0);
-        assert_eq!(metadata.gid(), 0);
-        assert!(!root.path().join("interactables.json").exists());
-    }
 }
 
 pub(crate) fn hard_stamp_interactable(

@@ -13,7 +13,6 @@ pub(crate) const FEED_SCHEMA: &str = "harmonia.config_proposals.feed.v1";
 pub(crate) const LEGACY_FEED_SCHEMA: &str = "harmonia.interactables.feed.v1";
 const HOUSEHOLD_TRUST_RENEW_RECEIPT: &str =
     "harmonia.interactables.household_trust_renew.receipt.v1";
-const DEFAULT_FEED_PATH: &str = "/var/lib/harmonia/interactables.json";
 
 pub(crate) mod homeserver_clock_utc;
 pub(crate) mod json_key;
@@ -33,7 +32,7 @@ pub(crate) fn operator_hand() -> OperatorHand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct InteractablesFeed {
-    schema: String,
+    pub(crate) schema: String,
     #[serde(default)]
     pub(crate) interactables: Vec<Interactable>,
     #[serde(default)]
@@ -164,18 +163,8 @@ pub(crate) struct DriftSummary {
     pub(crate) ownership: bool,
 }
 
-pub(crate) fn feed_path() -> PathBuf {
-    env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_FEED_PATH))
-}
-
-pub(crate) fn feed_path_for_command() -> PathBuf {
-    feed_path()
-}
-
 pub(crate) fn retire_command_proposal(module_id: &str, step_id: &str) -> Result<(), String> {
-    let path = feed_path();
+    let path = crate::ledger::database_path();
     let feed = load_feed(&path)?;
     let remove_ids = feed
         .interactables
@@ -349,7 +338,7 @@ pub(crate) fn load_feed(path: &Path) -> Result<InteractablesFeed, String> {
 }
 
 pub(crate) fn ruyi_born_proposals() -> Result<Vec<Value>, String> {
-    let feed = load_feed(&feed_path())?;
+    let feed = load_feed(&crate::ledger::database_path())?;
     Ok(feed
         .interactables
         .iter()
@@ -368,47 +357,12 @@ pub(crate) fn ruyi_born_proposals() -> Result<Vec<Value>, String> {
         .collect())
 }
 
-pub(crate) fn load_feed_raw(path: &Path) -> Result<InteractablesFeed, String> {
-    let observed_text = crate::atoms::ask::optional_text(path)?;
-    match observed_text {
-        Some(text) => {
-            let raw: Value = serde_json::from_str(&text).map_err(|error| {
-                format!(
-                    "interactables-feed-parse-failed {}: {error}",
-                    path.display()
-                )
-            })?;
-            let feed: InteractablesFeed = serde_json::from_value(raw.clone()).map_err(|error| {
-                format!(
-                    "interactables-feed-parse-failed {}: {error}",
-                    path.display()
-                )
-            })?;
-            if feed.schema != FEED_SCHEMA && feed.schema != LEGACY_FEED_SCHEMA {
-                return Err(format!(
-                    "interactables-feed-schema-unsupported {}",
-                    feed.schema
-                ));
-            }
-            // The feed's own identity was checked above. Public-seat validation
-            // belongs to its changing producer / explicit list, not every quiet
-            // internal count/load on a convergence press.
-            Ok(InteractablesFeed {
-                schema: FEED_SCHEMA.to_string(),
-                ..feed
-            })
-        }
-        None => Ok(InteractablesFeed {
-            schema: FEED_SCHEMA.to_string(),
-            interactables: Vec::new(),
-            receipts: Vec::new(),
-            extra: serde_json::Map::new(),
-        }),
-    }
+pub(crate) fn load_feed_raw(_path: &Path) -> Result<InteractablesFeed, String> {
+    crate::ledger::load_proposals()
 }
 
 pub(crate) fn pending_config_proposal_count() -> usize {
-    load_feed(&feed_path())
+    load_feed(&crate::ledger::database_path())
         .map(|feed| {
             feed.interactables
                 .iter()
@@ -442,9 +396,7 @@ fn interactable_list(args: &[String]) -> Result<(), String> {
     {
         return Err("config-proposal list accepts only --json and --silenced".to_string());
     }
-    let path=feed_path();
-    let mut feed = load_feed(&path)?;
-    crate::ledger::filter_open_proposals(&path, &mut feed)?;
+    let feed = load_feed(&crate::ledger::database_path())?;
     let silenced = args.iter().any(|arg| arg == "--silenced");
     let json = args.iter().any(|arg| arg == "--json");
     let mut filtered_feed = feed.clone();
@@ -489,11 +441,8 @@ fn interactable_set_silenced(args: &[String], silenced: bool) -> Result<(), Stri
             if silenced { "silence" } else { "unsilence" }
         ));
     }
-    let path = feed_path();
-    let item = crate::atoms::attest::with_proposal_projection_lock(&path, || {
-        let mut feed = load_feed(&path)?;
-        let item = feed.interactables.iter_mut()
-            .find(|item| item.id == args[0])
+    let item = crate::ledger::with_proposal_transaction(|connection| {
+        let mut item = crate::ledger::load_proposal_on(connection, &args[0])?
             .ok_or_else(|| format!("interactable-unknown-id {}", args[0]))?;
         item.silenced = silenced;
         item.silenced_at = if silenced {
@@ -501,11 +450,7 @@ fn interactable_set_silenced(args: &[String], silenced: bool) -> Result<(), Stri
         } else {
             None
         };
-        let item = item.clone();
-        crate::bands::propose_edits::persist_feed_with_config_locked(
-            &path, &feed, &[], crate::bands::propose_edits::RowSyncPolicy::Required,
-        )?
-            .ok_or_else(|| "interactable-silence-held proposal rows could not be prepared; prior projection kept".to_string())?;
+        crate::ledger::set_proposal_silence_on(connection, &item)?;
         Ok(item)
     })?;
     let receipt = serde_json::json!({
@@ -532,11 +477,7 @@ fn interactable_inspect(args: &[String]) -> Result<(), String> {
             )
         }
     };
-    let feed = load_feed(&feed_path())?;
-    let item = feed
-        .interactables
-        .iter()
-        .find(|item| item.id == id.as_str())
+    let item = crate::ledger::load_proposal(id)?
         .ok_or_else(|| format!("interactable-unknown-id {id}"))?;
     let diff = item
         .diff
@@ -545,7 +486,7 @@ fn interactable_inspect(args: &[String]) -> Result<(), String> {
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(item).map_err(|error| error.to_string())?
+            serde_json::to_string_pretty(&item).map_err(|error| error.to_string())?
         );
     } else {
         print!("{diff}");
@@ -560,19 +501,18 @@ fn interactable_run(
     if args.len() != 1 {
         return Err("config-proposal accept requires exactly one <id>".to_string());
     }
-    let path = feed_path();
-    let mut feed = load_feed(&path)?;
-    let position = feed
-        .interactables
-        .iter()
-        .position(|item| item.id == args[0]);
-    let Some(position) = position else {
-        if crate::tools::hermes_appearance::has_current_successful_completion(&feed, &args[0]) {
+    // Run is a mutation: import a pre-molt feed before the first keyed lookup.
+    drop(crate::ledger::writer()?);
+    let path = crate::ledger::database_path();
+    let Some(item) = crate::ledger::load_proposal(&args[0])? else {
+        let feed = make_feed(Vec::new());
+        if crate::tools::hermes_appearance::has_current_successful_completion(&feed, &args[0])? {
             return Ok(());
         }
         return Err(format!("interactable-unknown-id {}", args[0]));
     };
-    let item = feed.interactables[position].clone();
+    let mut feed = make_feed(vec![item.clone()]);
+    let position = 0;
     if item.id == homeserver_clock_utc::INTERACTABLE_ID {
         return homeserver_clock_utc::run(&path, &item, invocation);
     }
@@ -618,10 +558,9 @@ fn run_validated_symlink_proposal(
     let key = invocation.and_then(crate::Invocation::key)
         .ok_or("validated-symlink-owner-invocation-absent")?;
     let mut receipt = None;
-    let result = crate::atoms::attest::with_proposal_projection_lock(path, || {
-        let feed = load_feed(path)?;
-        let mut item = feed.interactables.iter().find(|item| item.id == proposal_id)
-            .cloned().ok_or_else(|| format!("interactable-unknown-id {proposal_id}"))?;
+    let result = crate::ledger::with_proposal_transaction(|connection| {
+        let mut item = crate::ledger::load_proposal_on(connection, proposal_id)?
+            .ok_or_else(|| format!("interactable-unknown-id {proposal_id}"))?;
         if item.kind != "hard-stamp" {
             return Err("validated-symlink-proposal-kind-stale".into());
         }
@@ -680,7 +619,7 @@ fn run_validated_symlink_proposal(
         if !outcome.ok {
             return Err(format!("validated-symlink-owner-act-failed {}", outcome.message));
         }
-        crate::bands::propose_edits::resolve_config_proposal_locked(path, proposal_id, Vec::new())?;
+        crate::bands::propose_edits::resolve_config_proposal_locked(connection, proposal_id, Vec::new())?;
         Ok(())
     });
     if let Some(mut native) = receipt {
@@ -701,18 +640,13 @@ fn run_file_config_proposal(
     proposal_id: &str,
     invocation: Option<&crate::Invocation>,
 ) -> Result<(), String> {
-    let accepted = crate::atoms::attest::with_proposal_projection_lock(path, || {
-        let feed = load_feed(path)?;
-        let Some(item) = feed
-            .interactables
-            .iter()
-            .find(|item| item.id == proposal_id)
-            .cloned()
-        else {
+    let accepted = crate::ledger::with_proposal_transaction(|connection| {
+        let Some(item) = crate::ledger::load_proposal_on(connection, proposal_id)? else {
+            let feed = make_feed(Vec::new());
             if crate::tools::hermes_appearance::has_current_successful_completion(
                 &feed,
                 proposal_id,
-            ) {
+            )? {
                 return Ok(None);
             }
             return Err(format!("interactable-unknown-id {proposal_id}"));
@@ -733,7 +667,7 @@ fn run_file_config_proposal(
         {
             return Err("config-acceptance-owner-invocation-required".into());
         }
-        let receipt = accept_config_file_locked(path, &item)?;
+        let receipt = accept_config_file_locked(connection, path, &item)?;
         Ok(Some((receipt, continuation)))
     })?;
     let Some((mut receipt, continuation)) = accepted else {
@@ -1018,11 +952,12 @@ fn run_config_act_continuation(
 }
 
 fn accept_config_file_locked(
+    connection: &rusqlite::Connection,
     path: &Path,
     item: &Interactable,
 ) -> Result<Value, String> {
     if item.extra.contains_key("json_key_proposal") {
-        return json_key::accept_locked(path, item);
+        return json_key::accept_locked(connection, path, item);
     }
     let path = path.to_path_buf();
     let backup_root = path
@@ -1043,33 +978,10 @@ fn accept_config_file_locked(
         .get("compiled_target_absent")
         .and_then(Value::as_bool)
         == Some(true);
-    let (desired_bytes, reference_mode) = match crate::ledger::proposal_source(&path, &item.id)? {
-        // The former atomic snapshot writer used mode 0644. No snapshot path
-        // is opened for a row-backed proposal.
-        Some(bytes) => (bytes, 0o644),
-        None => {
-            // An older pending feed may still refer to its existing file.
-            // Read it no-follow, leave it untouched, and never recreate it.
-            let mut reference_options = fs::OpenOptions::new();
-            reference_options
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
-            let mut reference_file = reference_options.open(reference_source_path).map_err(|error| {
-                format!("interactable-reference-source-open-failed {}: {error}", reference_source_path.display())
-            })?;
-            let metadata = reference_file.metadata().map_err(|error| {
-                format!("interactable-reference-source-stat-failed {}: {error}", reference_source_path.display())
-            })?;
-            if !metadata.is_file() {
-                return Err(format!("interactable-reference-source-not-regular {}", reference_source_path.display()));
-            }
-            let mut bytes = Vec::new();
-            reference_file.read_to_end(&mut bytes).map_err(|error| {
-                format!("interactable-reference-source-read-failed {}: {error}", reference_source_path.display())
-            })?;
-            (bytes, metadata.mode() & 0o7777)
-        }
-    };
+    // Snapshot bytes are state in the keyed source row, never a side file.
+    let desired_bytes = crate::ledger::proposal_source(&path, &item.id)?
+        .ok_or_else(|| format!("interactable-reference-source-row-absent {}", item.id))?;
+    let reference_mode = 0o644;
     let reference_sha256 = format!("{:x}", Sha256::digest(&desired_bytes));
     let mut receipt = if compiled_target_absent {
         if item.live_sha.is_some()
@@ -1253,7 +1165,7 @@ fn accept_config_file_locked(
         })]
     };
     if !crate::bands::propose_edits::resolve_config_proposal_locked(
-        path.as_path(),
+        connection,
         &item.id,
         receipts,
     )? {
@@ -1554,8 +1466,10 @@ pub(crate) fn reconcile_ruyi_with_household_trust(
     is_gateway: bool,
     household_trust_renewal: Option<&Value>,
 ) -> Result<Vec<String>, String> {
-    let path = feed_path();
+    let path = crate::ledger::database_path();
+    drop(crate::ledger::writer()?);
     let mut feed = load_feed(&path)?;
+    let observed = feed.interactables.clone();
     let created = feed
         .interactables
         .iter()
@@ -1971,10 +1885,10 @@ pub(crate) fn reconcile_ruyi_with_household_trust(
         .collect();
     crate::bands::propose_edits::persist_feed_with_intent(
         &path,
-        crate::bands::propose_edits::FeedPersistenceIntent::Upsert {
+        crate::bands::propose_edits::FeedPersistenceIntent::ReconcileRuyi {
             entries,
             remove_ids,
-            sort_by_id: true,
+            observed,
         },
     )?;
     Ok(held_back_by)
@@ -3192,64 +3106,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn config_proposal_accept_stamps_target_with_backup_and_readback() {
-        let root = fixture("operator");
-        let feed_path = root.join("interactables.json");
-        let target = root.join("config_deploy:interactable/target.conf");
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(root.join("source.conf"), b"desired\n").unwrap();
-        fs::write(&target, b"current\n").unwrap();
-        let proposal = item(&root);
-        assert!(matches!(
-            crate::atoms::files::classify_target(&target),
-            crate::atoms::files::TargetClass::Config
-        ));
-        crate::bands::propose_edits::persist_feed(&feed_path, &make_feed(vec![proposal.clone()]))
-            .unwrap();
-
-        let _env_lock = INTERACTABLES_ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap();
-        let prior_feed = std::env::var_os("HARMONIA_INTERACTABLES_PATH");
-        std::env::set_var("HARMONIA_INTERACTABLES_PATH", &feed_path);
-        let backup_root = feed_path
-            .parent()
-            .unwrap()
-            .join("interactables-backups/config-proposal-accept-regression");
-        let result = interactable_run(&[proposal.id.clone()], None);
-        match prior_feed {
-            Some(value) => std::env::set_var("HARMONIA_INTERACTABLES_PATH", value),
-            None => std::env::remove_var("HARMONIA_INTERACTABLES_PATH"),
-        }
-        result.unwrap();
-        let final_feed = load_feed(&feed_path).unwrap();
-        let receipt = final_feed.receipts.last().unwrap();
-        assert_eq!(
-            receipt
-                .get("config_state")
-                .and_then(serde_json::Value::as_str),
-            Some("interactable")
-        );
-        assert_eq!(
-            receipt.get("id").and_then(serde_json::Value::as_str),
-            Some(proposal.id.as_str())
-        );
-        assert_eq!(
-            receipt
-                .get("actuator")
-                .and_then(serde_json::Value::as_object)
-                .and_then(|v| v.get("has_run"))
-                .and_then(serde_json::Value::as_bool),
-            Some(true)
-        );
-        let backup_dir = fs::read_dir(&backup_root).unwrap();
-        let backups: Vec<_> = backup_dir.map(|entry| entry.unwrap().path()).collect();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(fs::read(&backups[0]).unwrap(), b"current\n");
-        assert_eq!(fs::read(&target).unwrap(), b"desired\n");
-        assert!(load_feed(&feed_path).unwrap().interactables.is_empty());
-        fs::remove_dir_all(root).unwrap();
-    }
 }

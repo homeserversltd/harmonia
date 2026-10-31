@@ -547,7 +547,7 @@ fn absent_config_offer_persisted(
         return Ok(false);
     };
     let feed = crate::interactables::load_feed(
-        &crate::interactables::feed_path_for_command(),
+        &crate::ledger::database_path(),
     )?;
     let matching = feed
         .interactables

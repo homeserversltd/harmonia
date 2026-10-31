@@ -1274,7 +1274,7 @@ fn execute_command_proposal(
         )?;
     } else {
         crate::interactables::refresh_command_proposal(
-            &crate::interactables::feed_path_for_command(),
+            &crate::ledger::database_path(),
             &source_module_dir.join("manifest.json"),
             module_id,
             &step.step_id,

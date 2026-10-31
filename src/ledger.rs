@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -11,6 +11,8 @@ pub(crate) const DATABASE: &str = "/var/lib/harmonia/harmonia.sqlite3";
 const ENTRY: &str = "harmonia.ledger.entry.v1";
 const PAGE: &str = "caduceus.receipts.ledger.v1";
 const PROPOSAL_IDENTITY_MIGRATION: &str = "proposal-product-identity-v1";
+const PROPOSAL_DOCUMENT_MIGRATION: &str = "proposal-documents-v1";
+const PROPOSAL_FEED: &str = "harmonia";
 const PROPOSALS_TABLE: &str = "CREATE TABLE IF NOT EXISTS proposals (
     feed_id TEXT NOT NULL, id TEXT NOT NULL, module_id TEXT NOT NULL,
     kind TEXT NOT NULL, target_path TEXT, reference_source_path TEXT,
@@ -30,15 +32,22 @@ fn database_error(error: rusqlite::Error) -> String {
     format!("harmonia-state-database-failed: {error}")
 }
 
+pub(crate) fn database_path() -> PathBuf {
+    std::env::var_os("HARMONIA_STATE_DATABASE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DATABASE))
+}
+
 pub(crate) fn reader() -> Result<Option<Connection>, String> {
-    match std::fs::symlink_metadata(DATABASE) {
+    let database = database_path();
+    match std::fs::symlink_metadata(&database) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("harmonia-state-observe-failed: {error}")),
         Ok(metadata) if !metadata.file_type().is_file() => return Err("harmonia-state-not-regular".into()),
         Ok(_) => {}
     }
     let connection = Connection::open_with_flags(
-        DATABASE, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        &database, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ).map_err(database_error)?;
     connection.busy_timeout(Duration::from_secs(5)).map_err(database_error)?;
     // An incomplete store is absence, not a failed convergence run.
@@ -64,17 +73,18 @@ fn public_mode(path: &Path, mode: u32) -> Result<(), String> {
 }
 
 pub(crate) fn writer() -> Result<Connection, String> {
-    let parent = Path::new(DATABASE).parent().unwrap();
+    let database = database_path();
+    let parent = database.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|error| format!("harmonia-state-parent-failed: {error}"))?;
     public_mode(parent, 0o755)?;
-    match std::fs::symlink_metadata(DATABASE) {
+    match std::fs::symlink_metadata(&database) {
         Ok(metadata) if !metadata.file_type().is_file() => return Err("harmonia-state-not-regular".into()),
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("harmonia-state-observe-failed: {error}")),
         _ => {}
     }
-    let mut connection = Connection::open(DATABASE).map_err(database_error)?;
+    let mut connection = Connection::open(&database).map_err(database_error)?;
     connection.pragma_update(None, "secure_delete", "ON").map_err(database_error)?;
-    public_mode(Path::new(DATABASE), 0o644)?;
+    public_mode(&database, 0o644)?;
     connection.busy_timeout(Duration::from_secs(5)).map_err(database_error)?;
     // The entire schema becomes visible in one transaction.
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
@@ -95,6 +105,7 @@ pub(crate) fn writer() -> Result<Connection, String> {
     transaction.execute_batch(PROPOSALS_TABLE).map_err(database_error)?;
     transaction.execute_batch(CONFIG_PROPOSALS_TABLE).map_err(database_error)?;
     let migrated = migrate_proposal_identity(&transaction)?;
+    migrate_proposal_documents(&transaction, &database)?;
     transaction.commit().map_err(database_error)?;
     if migrated {
         // Erase bytes freed before secure deletion was enabled too. Record the
@@ -109,14 +120,138 @@ pub(crate) fn writer() -> Result<Connection, String> {
     Ok(connection)
 }
 
+fn migrate_proposal_documents(connection: &Connection, database: &Path) -> Result<(), String> {
+    let complete: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE id=?1)",
+        [PROPOSAL_DOCUMENT_MIGRATION], |row| row.get(0),
+    ).map_err(database_error)?;
+    if complete { return Ok(()); }
+    let has_document: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proposals') WHERE name='document')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    if !has_document {
+        connection.execute("ALTER TABLE proposals ADD COLUMN document TEXT", []).map_err(database_error)?;
+    }
+    let has_position: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proposals') WHERE name='position')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    if !has_position {
+        connection.execute("ALTER TABLE proposals ADD COLUMN position INTEGER", []).map_err(database_error)?;
+    }
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS appearance_adoption (
+             module_id TEXT NOT NULL, home TEXT NOT NULL, PRIMARY KEY(module_id,home));
+         CREATE TABLE IF NOT EXISTS appearance_completion (
+             module_id TEXT PRIMARY KEY, id TEXT NOT NULL, ok INTEGER NOT NULL);"
+    ).map_err(database_error)?;
+    // Different legacy feeds may hold different state for the same id. Never
+    // silently pick a winner when collapsing their keys into the single feed.
+    for (table, sql) in [
+        ("proposals", "SELECT id FROM proposals GROUP BY id HAVING COUNT(*)>1 LIMIT 1"),
+        ("proposal_config", "SELECT id FROM proposal_config GROUP BY id HAVING COUNT(*)>1 LIMIT 1"),
+    ] {
+        let conflict: Option<String> = connection.query_row(sql, [], |row| row.get(0))
+            .optional().map_err(database_error)?;
+        if let Some(id) = conflict {
+            return Err(format!("legacy-proposal-feed-id-collision table={table} id={id}"));
+        }
+    }
+    connection.execute("UPDATE proposals SET feed_id=?1 WHERE feed_id<>?1", [PROPOSAL_FEED]).map_err(database_error)?;
+    connection.execute("UPDATE proposal_config SET feed_id=?1 WHERE feed_id<>?1", [PROPOSAL_FEED]).map_err(database_error)?;
+    // Only this migration reads the old projection; an absent or malformed file
+    // leaves old indexed rows without documents until observation re-mints them.
+    const LEGACY_FILE: &str = "interactables.json";
+    let legacy = database.parent().unwrap_or_else(|| Path::new(".")).join(LEGACY_FILE);
+    let imported = {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+        match options.open(&legacy) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ELOOP) => None,
+            Err(error) => return Err(format!("legacy-feed-open-failed: {error}")),
+            Ok(mut file) => {
+                if !file.metadata().map_err(|error| format!("legacy-feed-metadata-failed: {error}"))?.is_file() {
+                    None
+                } else {
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes).map_err(|error| format!("legacy-feed-read-failed: {error}"))?;
+                    match serde_json::from_slice::<crate::interactables::InteractablesFeed>(&bytes) {
+                        Err(_) => None, // A2: an unparseable feed imports nothing, never a refusal.
+                        Ok(feed) if feed.schema == crate::interactables::FEED_SCHEMA
+                            || feed.schema == crate::interactables::LEGACY_FEED_SCHEMA => Some(feed),
+                        Ok(feed) => return Err(format!("legacy-feed-schema-unsupported {}", feed.schema)),
+                    }
+                }
+            }
+        }
+    };
+    if let Some(feed) = imported {
+        let mut seen = std::collections::BTreeSet::new();
+        for item in &feed.interactables {
+            if !seen.insert(&item.id) {
+                return Err(format!("legacy-feed-document-id-collision id={}", item.id));
+            }
+        }
+        for (position, mut item) in feed.interactables.into_iter().enumerate() {
+            let flags: Option<(bool, bool)> = connection.query_row(
+                "SELECT silenced,has_run FROM proposals WHERE feed_id=?1 AND id=?2",
+                params![PROPOSAL_FEED,item.id], |row| Ok((row.get(0)?,row.get(1)?)),
+            ).optional().map_err(database_error)?;
+            if let Some((silenced, has_run)) = flags {
+                item.silenced = silenced;
+                item.has_run = has_run;
+            }
+            upsert_proposal_row(connection, PROPOSAL_FEED, &item)?;
+            set_proposal_position(connection, PROPOSAL_FEED, &item.id, position)?;
+        }
+        for receipt in &feed.receipts {
+            record_appearance_facts(connection, receipt)?;
+        }
+        if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
+            let visible = load_proposals_on(connection)?;
+            seat.validate_ruyi(&serde_json::to_value(&visible).map_err(|error| error.to_string())?)?;
+        }
+    }
+    connection.execute("INSERT INTO migrations(id) VALUES(?1)", [PROPOSAL_DOCUMENT_MIGRATION]).map_err(database_error)?;
+    Ok(())
+}
+
+pub(crate) fn record_appearance_facts(connection: &Connection, receipt: &Value) -> Result<(), String> {
+    if receipt.get("schema").and_then(Value::as_str) != Some("harmonia.interactables.hermes_appearance.receipt.v1") {
+        return Ok(());
+    }
+    let Some(module) = receipt.get("module_id").and_then(Value::as_str) else { return Ok(()); };
+    let id = receipt.get("id").and_then(Value::as_str).unwrap_or_default();
+    let homes = receipt.get("homes").and_then(Value::as_array);
+    if let Some(homes) = homes {
+        for home in homes.iter().filter(|home| home.get("ok").and_then(Value::as_bool) == Some(true)) {
+            if let Some(path) = home.get("home").and_then(Value::as_str) {
+                connection.execute("INSERT OR IGNORE INTO appearance_adoption(module_id,home) VALUES(?1,?2)", params![module,path])
+                    .map_err(database_error)?;
+            }
+        }
+    }
+    let success = receipt.get("ok").and_then(Value::as_bool) == Some(true)
+        && receipt.get("kind").and_then(Value::as_str) == Some("hermes-appearance")
+        && homes.is_some_and(|homes| !homes.is_empty() && homes.iter().all(|home| home.get("ok").and_then(Value::as_bool) == Some(true)));
+    connection.execute(
+        "INSERT INTO appearance_completion(module_id,id,ok) VALUES(?1,?2,?3)
+         ON CONFLICT(module_id) DO UPDATE SET id=excluded.id,ok=excluded.ok
+         WHERE (id,ok) IS NOT (excluded.id,excluded.ok)",
+        params![module,id,success],
+    ).map_err(database_error)?;
+    Ok(())
+}
+
 fn proposal_feed_id(path: &Path) -> String {
     format!("harmonia-feed-{:x}", Sha256::digest(path.as_os_str().as_bytes()))
 }
 
 fn stored_reference(item: &crate::interactables::Interactable) -> Option<String> {
-    item.reference_source_path.as_ref().map(|_| {
-        format!("/var/lib/harmonia/proposal-sources/{}.source", item.id)
-    })
+    item.reference_source_path.as_ref().map(|path| path.to_string_lossy().into_owned())
 }
 
 /// Move caller locations to opaque product keys once. Both halves of each
@@ -134,10 +269,10 @@ fn migrate_proposal_identity(connection: &Connection) -> Result<bool, String> {
             [&after], |row| row.get(0),
         ).optional().map_err(database_error)?;
         let Some(old) = next else { break; };
-        if !old.starts_with("harmonia-feed-") {
+        if old != PROPOSAL_FEED && !old.starts_with("harmonia-feed-") {
             let new = proposal_feed_id(Path::new(&old));
             connection.execute(
-                "INSERT INTO proposals SELECT ?1,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run FROM proposals WHERE feed_id=?2",
+                "INSERT INTO proposals(feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run) SELECT ?1,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run FROM proposals WHERE feed_id=?2",
                 params![new,old],
             ).map_err(database_error)?;
             connection.execute(
@@ -405,7 +540,7 @@ pub(crate) fn config_state(path: &Path, id: &str) -> Result<Option<Value>, Strin
     let Some(connection) = config_reader()? else { return Ok(None); };
     let state: Option<String> = connection.query_row(
         "SELECT config_state FROM proposal_config WHERE (feed_id=?1 OR feed_id=?3) AND id=?2 ORDER BY feed_id=?1 DESC LIMIT 1",
-        params![proposal_feed_id(path),id,path.to_string_lossy()], |row| row.get(0),
+        params![PROPOSAL_FEED.to_owned(),id,path.to_string_lossy()], |row| row.get(0),
     ).optional().map_err(database_error)?;
     state.map(|state| serde_json::from_str(&state).map_err(|error| error.to_string())).transpose()
 }
@@ -414,70 +549,15 @@ pub(crate) fn proposal_source(path: &Path, id: &str) -> Result<Option<Vec<u8>>, 
     let Some(connection) = config_reader()? else { return Ok(None); };
     connection.query_row(
         "SELECT source FROM proposal_config WHERE (feed_id=?1 OR feed_id=?3) AND id=?2 ORDER BY feed_id=?1 DESC LIMIT 1",
-        params![proposal_feed_id(path),id,path.to_string_lossy()], |row| row.get(0),
+        params![PROPOSAL_FEED.to_owned(),id,path.to_string_lossy()], |row| row.get(0),
     ).optional().map_err(database_error)
 }
 
-pub(crate) fn has_proposal_source(path: &Path, id: &str) -> Result<bool, String> {
-    let Some(connection) = config_reader()? else { return Ok(false); };
+pub(crate) fn has_proposal_source_on(connection: &Connection, id: &str) -> Result<bool, String> {
     connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM proposal_config WHERE (feed_id=?1 OR feed_id=?3) AND id=?2)",
-        params![proposal_feed_id(path),id,path.to_string_lossy()], |row| row.get(0),
+        "SELECT EXISTS(SELECT 1 FROM proposal_config WHERE feed_id=?1 AND id=?2)",
+        params![PROPOSAL_FEED,id], |row| row.get(0),
     ).map_err(database_error)
-}
-
-/// Make new sources durable before exposing their reference strings. Do not
-/// resolve any prior identity here: the old feed may still be visible until
-/// its projection succeeds. Final synchronization resolves retired rows.
-pub(crate) fn prepare_config_proposals(
-    path: &Path, feed: &crate::interactables::InteractablesFeed, config: &[ConfigProposal],
-) -> Result<(), String> {
-    if config.is_empty() { return Ok(()); }
-    if let Some(connection) = reader()? {
-        if proposal_rows_match(&connection, &proposal_feed_id(path), feed)?
-            && config_rows_match(&connection, &proposal_feed_id(path), feed, config)?
-        { return Ok(()); }
-    }
-    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
-        seat.validate_ruyi(&serde_json::to_value(feed).map_err(|error| error.to_string())?)?;
-    }
-    let mut connection = writer()?;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
-    let feed_id = proposal_feed_id(path);
-    for proposal in config {
-        if let Some(item) = feed.interactables.iter().find(|item| item.id==proposal.id && !item.has_run) {
-            upsert_proposal_row(&transaction, &feed_id, item)?;
-            upsert_config_row(&transaction, &feed_id, proposal)?;
-        }
-    }
-    transaction.commit().map_err(database_error)
-}
-
-/// The public feed remains the presentation surface. Its proposal identities
-/// and their config state/source snapshots change together, by key; no run
-/// receipt, diff or command payload is copied into the database.
-pub(crate) fn sync_proposals(
-    path: &Path, feed: &crate::interactables::InteractablesFeed, config: &[ConfigProposal],
-) -> Result<(), String> {
-    let feed_id = proposal_feed_id(path);
-    let observed = reader()?;
-    if observed.is_none() && feed.interactables.is_empty() { return Ok(()); }
-    if let Some(connection) = observed.as_ref() {
-        if proposal_rows_match(connection, &feed_id, feed)? && config_rows_match(connection, &feed_id, feed, config)? {
-            return Ok(());
-        }
-    }
-    drop(observed);
-    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
-        seat.validate_ruyi(&serde_json::to_value(feed).map_err(|error| error.to_string())?)?;
-    }
-    let mut connection = writer()?;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
-    project_proposal_rows(&transaction, &feed_id, feed)?;
-    for proposal in config.iter().filter(|proposal| feed.interactables.iter().any(|item| item.id==proposal.id && !item.has_run)) {
-        upsert_config_row(&transaction, &feed_id, proposal)?;
-    }
-    transaction.commit().map_err(database_error)
 }
 
 fn upsert_config_row(connection: &Connection, feed_id: &str, proposal: &ConfigProposal) -> Result<(), String> {
@@ -490,35 +570,16 @@ fn upsert_config_row(connection: &Connection, feed_id: &str, proposal: &ConfigPr
     Ok(())
 }
 
-fn config_rows_match(
-    connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed,
-    config: &[ConfigProposal],
-) -> Result<bool, String> {
-    if config.is_empty() { return Ok(true); }
-    let present: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='proposal_config')",
-        [], |row| row.get(0),
-    ).map_err(database_error)?;
-    if !present { return Ok(false); }
-    for proposal in config.iter().filter(|proposal| feed.interactables.iter().any(|item| item.id==proposal.id && !item.has_run)) {
-        let same: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM proposal_config WHERE feed_id=?1 AND id=?2 AND config_state=?3 AND source=?4)",
-            params![feed_id,proposal.id,proposal.state.to_string(),proposal.source], |row| row.get(0),
-        ).map_err(database_error)?;
-        if !same { return Ok(false); }
-    }
-    Ok(true)
-}
-
 fn project_proposal_rows(connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed) -> Result<(), String> {
-    for item in &feed.interactables {
+    for (position, item) in feed.interactables.iter().enumerate() {
         upsert_proposal_row(connection, feed_id, item)?;
+        set_proposal_position(connection, feed_id, &item.id, position)?;
     }
     // Keyset walk: no whole-store load or body replay, even during repair.
     let mut after: Option<String> = None;
     loop {
         let next: Option<String> = connection.query_row(
-            "SELECT id FROM proposals WHERE feed_id=?1 AND (?2 IS NULL OR id>?2) ORDER BY id LIMIT 1",
+            "SELECT id FROM proposals WHERE feed_id=?1 AND document IS NOT NULL AND (?2 IS NULL OR id>?2) ORDER BY id LIMIT 1",
             params![feed_id,after], |row| row.get(0)).optional().map_err(database_error)?;
         let Some(id) = next else { break; };
         if !feed.interactables.iter().any(|item| item.id==id) {
@@ -532,61 +593,232 @@ fn project_proposal_rows(connection: &Connection, feed_id: &str, feed: &crate::i
     Ok(())
 }
 
-fn upsert_proposal_row(connection: &Connection, feed_id: &str, item: &crate::interactables::Interactable) -> Result<(), String> {
+fn set_proposal_position(connection: &Connection, feed_id: &str, id: &str, position: usize) -> Result<(), String> {
     connection.execute(
-        "INSERT INTO proposals(feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-         ON CONFLICT(feed_id,id) DO UPDATE SET module_id=excluded.module_id,kind=excluded.kind,
-          target_path=excluded.target_path,reference_source_path=excluded.reference_source_path,
-          live_sha=excluded.live_sha,reference_sha=excluded.reference_sha,silenced=excluded.silenced,has_run=excluded.has_run
-         WHERE (module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run)
-           IS NOT (excluded.module_id,excluded.kind,excluded.target_path,excluded.reference_source_path,
-                   excluded.live_sha,excluded.reference_sha,excluded.silenced,excluded.has_run)",
-        params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
-            stored_reference(item),item.live_sha,item.reference_sha,item.silenced,item.has_run],
+        "UPDATE proposals SET position=?1 WHERE feed_id=?2 AND id=?3 AND position IS NOT ?1",
+        params![position as i64,feed_id,id],
     ).map_err(database_error)?;
     Ok(())
 }
 
-fn proposal_rows_match(connection: &Connection, feed_id: &str, feed: &crate::interactables::InteractablesFeed) -> Result<bool, String> {
-    let count: u64 = connection.query_row("SELECT count(*) FROM proposals WHERE feed_id=?1", [feed_id], |row| row.get(0)).map_err(database_error)?;
-    if count != feed.interactables.len() as u64 { return Ok(false); }
-    for item in &feed.interactables {
-        let same: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1 AND id=?2
-             AND (module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run) IS (?3,?4,?5,?6,?7,?8,?9,?10))",
-            params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
-                stored_reference(item),item.live_sha,item.reference_sha,item.silenced,item.has_run],
-            |row| row.get(0)).map_err(database_error)?;
-        if !same { return Ok(false); }
-    }
-    Ok(true)
+fn upsert_proposal_row(connection: &Connection, feed_id: &str, item: &crate::interactables::Interactable) -> Result<(), String> {
+    connection.execute(
+        "INSERT INTO proposals(feed_id,id,module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run,document)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+         ON CONFLICT(feed_id,id) DO UPDATE SET module_id=excluded.module_id,kind=excluded.kind,
+          target_path=excluded.target_path,reference_source_path=excluded.reference_source_path,
+          live_sha=excluded.live_sha,reference_sha=excluded.reference_sha,silenced=excluded.silenced,has_run=excluded.has_run,document=excluded.document
+         WHERE (module_id,kind,target_path,reference_source_path,live_sha,reference_sha,silenced,has_run,document)
+           IS NOT (excluded.module_id,excluded.kind,excluded.target_path,excluded.reference_source_path,
+                   excluded.live_sha,excluded.reference_sha,excluded.silenced,excluded.has_run,excluded.document)",
+        params![feed_id,item.id,item.module_id,item.kind,item.target_path.as_ref().map(|p|p.to_string_lossy()),
+            stored_reference(item),item.live_sha,item.reference_sha,item.silenced,item.has_run,
+            serde_json::to_string(item).map_err(|error| error.to_string())?],
+    ).map_err(database_error)?;
+    Ok(())
 }
 
-pub(crate) fn filter_open_proposals(path: &Path, feed: &mut crate::interactables::InteractablesFeed) -> Result<(), String> {
-    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
-        seat.validate_ruyi(&serde_json::to_value(&*feed).map_err(|error| error.to_string())?)?;
+pub(crate) fn load_proposals_on(connection: &Connection) -> Result<crate::interactables::InteractablesFeed, String> {
+    let has_document: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proposals') WHERE name='document')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    if !has_document { return Ok(crate::interactables::make_feed(Vec::new())); }
+    let mut query = connection.prepare(
+        "SELECT document,silenced,has_run FROM proposals WHERE feed_id=?1 AND document IS NOT NULL ORDER BY position IS NULL,position,rowid"
+    ).map_err(database_error)?;
+    let mut rows = query.query([PROPOSAL_FEED]).map_err(database_error)?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next().map_err(database_error)? {
+        let document: String = row.get(0).map_err(database_error)?;
+        let mut item: crate::interactables::Interactable = serde_json::from_str(&document)
+            .map_err(|error| format!("interactable-document-invalid: {error}"))?;
+        item.silenced = row.get(1).map_err(database_error)?;
+        item.has_run = row.get(2).map_err(database_error)?;
+        items.push(item);
     }
-    let feed_id = proposal_feed_id(path);
-    let observed = reader().ok().flatten();
-    let connection = match observed {
-        Some(connection) if proposal_rows_match(&connection, &feed_id, feed).unwrap_or(false) => connection,
-        _ => {
-            // A read must not repair disk or log itself. Rebuild the keyed reply
-            // view from the feed; the next producer repairs the persistent rows.
-            let connection = Connection::open_in_memory().map_err(database_error)?;
-            connection.execute_batch(PROPOSALS_TABLE).map_err(database_error)?;
-            connection.execute_batch(CONFIG_PROPOSALS_TABLE).map_err(database_error)?;
-            project_proposal_rows(&connection, &feed_id, feed)?;
-            connection
-        }
-    };
-    for item in &mut feed.interactables {
-        let (silenced, has_run) = connection.query_row(
-            "SELECT silenced,has_run FROM proposals WHERE feed_id=?1 AND id=?2",
-            params![feed_id,item.id], |row| Ok((row.get::<_,bool>(0)?,row.get::<_,bool>(1)?))).map_err(database_error)?;
+    Ok(crate::interactables::make_feed(items))
+}
+
+pub(crate) fn load_proposal_on(connection: &Connection, id: &str) -> Result<Option<crate::interactables::Interactable>, String> {
+    let has_document: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proposals') WHERE name='document')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    if !has_document { return Ok(None); }
+    let row: Option<(String, bool, bool)> = connection.query_row(
+        "SELECT document,silenced,has_run FROM proposals WHERE feed_id=?1 AND id=?2 AND document IS NOT NULL AND kind!='engine-replacement'",
+        params![PROPOSAL_FEED,id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).optional().map_err(database_error)?;
+    row.map(|(document, silenced, has_run)| {
+        let mut item: crate::interactables::Interactable = serde_json::from_str(&document)
+            .map_err(|error| format!("interactable-document-invalid: {error}"))?;
         item.silenced = silenced;
         item.has_run = has_run;
+        Ok(item)
+    }).transpose()
+}
+
+pub(crate) fn load_proposal(id: &str) -> Result<Option<crate::interactables::Interactable>, String> {
+    match reader()? {
+        Some(connection) => load_proposal_on(&connection, id),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn set_proposal_silence_on(connection: &Connection, item: &crate::interactables::Interactable) -> Result<(), String> {
+    let document = serde_json::to_string(item).map_err(|error| error.to_string())?;
+    connection.execute("UPDATE proposals SET silenced=?1, document=?2 WHERE feed_id=?3 AND id=?4 AND document IS NOT NULL",
+        params![item.silenced,document,PROPOSAL_FEED,item.id]).map_err(database_error)?;
+    // A declared feed seat validates the composed full feed before commit.
+    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
+        let feed = load_proposals_on(connection)?;
+        seat.validate_ruyi(&serde_json::to_value(feed).map_err(|error| error.to_string())?)?;
     }
     Ok(())
+}
+
+pub(crate) fn remove_proposal_on(connection: &Connection, id: &str) -> Result<bool, String> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1 AND id=?2 AND document IS NOT NULL)",
+        params![PROPOSAL_FEED,id], |row| row.get(0),
+    ).map_err(database_error)?;
+    if exists {
+        connection.execute("DELETE FROM proposal_config WHERE feed_id=?1 AND id=?2", params![PROPOSAL_FEED,id]).map_err(database_error)?;
+        connection.execute("DELETE FROM proposals WHERE feed_id=?1 AND id=?2", params![PROPOSAL_FEED,id]).map_err(database_error)?;
+    }
+    Ok(exists)
+}
+
+pub(crate) fn validate_proposals_on(connection: &Connection) -> Result<(), String> {
+    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
+        let feed = load_proposals_on(connection)?;
+        seat.validate_ruyi(&serde_json::to_value(feed).map_err(|error| error.to_string())?)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn has_proposal_kind(kind: &str) -> Result<bool, String> {
+    let Some(connection) = reader()? else { return Ok(false); };
+    let has_document: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proposals') WHERE name='document')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    if !has_document { return Ok(false); }
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM proposals WHERE feed_id=?1 AND kind=?2 AND document IS NOT NULL)",
+        params![PROPOSAL_FEED,kind], |row| row.get(0)).map_err(database_error)
+}
+
+pub(crate) fn load_proposals() -> Result<crate::interactables::InteractablesFeed, String> {
+    match reader()? {
+        Some(connection) => load_proposals_on(&connection),
+        None => Ok(crate::interactables::make_feed(Vec::new())),
+    }
+}
+
+pub(crate) fn has_unmatched_proposals() -> Result<bool, String> {
+    let Some(connection) = reader()? else { return Ok(false); };
+    let has_document: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proposals') WHERE name='document')",
+        [], |row| row.get(0),
+    ).map_err(database_error)?;
+    let sql = if has_document {
+        "SELECT EXISTS(SELECT 1 FROM proposals WHERE document IS NULL)"
+    } else {
+        "SELECT EXISTS(SELECT 1 FROM proposals)"
+    };
+    connection.query_row(sql, [], |row| row.get(0)).map_err(database_error)
+}
+
+pub(crate) fn with_proposal_transaction<T>(operation: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
+    let mut connection = writer()?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
+    let result = operation(&transaction)?;
+    transaction.commit().map_err(database_error)?;
+    Ok(result)
+}
+
+pub(crate) fn save_proposals_on(
+    connection: &Connection, feed: &crate::interactables::InteractablesFeed, config: &[ConfigProposal],
+) -> Result<(), String> {
+    let mut visible = feed.clone();
+    visible.receipts.clear();
+    visible.extra.clear();
+    for item in &mut visible.interactables {
+        let flags: Option<(bool, bool)> = connection.query_row(
+            "SELECT silenced,has_run FROM proposals WHERE feed_id=?1 AND id=?2 AND document IS NULL",
+            params![PROPOSAL_FEED,item.id], |row| Ok((row.get(0)?,row.get(1)?)),
+        ).optional().map_err(database_error)?;
+        if let Some((silenced, has_run)) = flags {
+            item.silenced = silenced;
+            item.has_run = has_run;
+        }
+    }
+    if let Some(seat) = crate::atoms::ask::mint_seats::feed_if_present()? {
+        seat.validate_ruyi(&serde_json::to_value(&visible).map_err(|error| error.to_string())?)?;
+    }
+    project_proposal_rows(connection, PROPOSAL_FEED, &visible)?;
+    for proposal in config.iter().filter(|proposal| visible.interactables.iter().any(|item| item.id == proposal.id && !item.has_run)) {
+        upsert_config_row(connection, PROPOSAL_FEED, proposal)?;
+    }
+    for receipt in &feed.receipts { record_appearance_facts(connection, receipt)?; }
+    Ok(())
+}
+
+pub(crate) fn retire_unmatched_ruyi_on(connection: &Connection) -> Result<(), String> {
+    connection.execute(
+        "DELETE FROM proposal_config WHERE feed_id=?1 AND id IN \
+         (SELECT id FROM proposals WHERE feed_id=?1 AND document IS NULL AND \
+          kind IN ('ruyi-bump','dns-record','toolchain-ratchet','household-trust-renew'))",
+        [PROPOSAL_FEED],
+    ).map_err(database_error)?;
+    connection.execute(
+        "DELETE FROM proposals WHERE feed_id=?1 AND document IS NULL AND \
+         kind IN ('ruyi-bump','dns-record','toolchain-ratchet','household-trust-renew')",
+        [PROPOSAL_FEED],
+    ).map_err(database_error)?;
+    Ok(())
+}
+
+pub(crate) fn retire_unseen_documents_on(
+    connection: &Connection, active: &std::collections::BTreeSet<String>,
+    observed: &std::collections::BTreeSet<String>,
+    recognized: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let mut after: Option<String> = None;
+    loop {
+        let next: Option<(String,String,String)> = connection.query_row(
+            "SELECT id,module_id,kind FROM proposals WHERE feed_id=?1 AND document IS NULL AND (?2 IS NULL OR id>?2) \
+             ORDER BY id LIMIT 1", params![PROPOSAL_FEED,after], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        ).optional().map_err(database_error)?;
+        let Some((id, module, kind)) = next else { break; };
+        let independently_observed = matches!(kind.as_str(), "ruyi-bump" | "dns-record" | "toolchain-ratchet" | "household-trust-renew");
+        if !active.contains(&module) || kind == "engine-replacement"
+            || (!independently_observed && observed.contains(&module) && !recognized.contains(&id)) {
+            connection.execute("DELETE FROM proposal_config WHERE feed_id=?1 AND id=?2", params![PROPOSAL_FEED,id]).map_err(database_error)?;
+            connection.execute("DELETE FROM proposals WHERE feed_id=?1 AND id=?2 AND document IS NULL", params![PROPOSAL_FEED,id]).map_err(database_error)?;
+        }
+        after = Some(id);
+    }
+    Ok(())
+}
+
+pub(crate) fn adopted_homes_on(connection: &Connection, module: &str) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut query = connection.prepare("SELECT home FROM appearance_adoption WHERE module_id=?1").map_err(database_error)?;
+    let homes = query.query_map([module], |row| row.get(0)).map_err(database_error)?
+        .collect::<Result<_,_>>().map_err(database_error)?;
+    Ok(homes)
+}
+
+pub(crate) fn adopted_homes(module: &str) -> Result<std::collections::BTreeSet<String>, String> {
+    let Some(connection) = reader()? else { return Ok(Default::default()); };
+    if connection.prepare("SELECT home FROM appearance_adoption LIMIT 0").is_err() { return Ok(Default::default()); }
+    adopted_homes_on(&connection, module)
+}
+
+pub(crate) fn appearance_completed(module: &str, id: &str) -> Result<bool, String> {
+    let Some(connection) = reader()? else { return Ok(false); };
+    if connection.prepare("SELECT id FROM appearance_completion LIMIT 0").is_err() { return Ok(false); }
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM appearance_completion WHERE module_id=?1 AND id=?2 AND ok=1)",
+        params![module,id], |row| row.get(0)).map_err(database_error)
 }

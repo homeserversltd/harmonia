@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::cell::RefCell;
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -145,31 +145,28 @@ fn proposal_reference(id: &str) -> Result<PathBuf, String> {
     Ok(Path::new("/var/lib/harmonia/proposal-sources").join(format!("{id}.source")))
 }
 
-pub(crate) fn persist_feed(
-    path: &Path,
-    feed: &interactables::InteractablesFeed,
-) -> Result<(), String> {
-    persist_feed_with_writes(path, feed).map(|_| ())
-}
-
-pub(crate) fn persist_feed_with_writes(
-    path: &Path,
-    feed: &interactables::InteractablesFeed,
-) -> Result<usize, String> {
-    persist_feed_with_intent(path, FeedPersistenceIntent::Replace(feed.clone()))
-}
-
 pub(crate) enum FeedPersistenceIntent {
-    Replace(interactables::InteractablesFeed),
     Upsert {
         entries: Vec<Interactable>,
         remove_ids: BTreeSet<String>,
         sort_by_id: bool,
     },
+    ConfigUpsert {
+        entries: Vec<Interactable>,
+        remove_ids: BTreeSet<String>,
+        observed: Vec<Interactable>,
+        checks: Vec<(PathBuf, Option<String>)>,
+    },
+    ReconcileRuyi {
+        entries: Vec<Interactable>,
+        remove_ids: BTreeSet<String>,
+        observed: Vec<Interactable>,
+    },
     Remove {
         ids: BTreeSet<String>,
         receipts: Vec<Value>,
     },
+
     AppendReceipts(Vec<Value>),
     HermesAppearanceOffer {
         module_id: String,
@@ -183,11 +180,11 @@ pub(crate) enum FeedPersistenceIntent {
 }
 
 fn compose_feed(
+    connection: &rusqlite::Connection,
     mut feed: interactables::InteractablesFeed,
     intent: &FeedPersistenceIntent,
-) -> interactables::InteractablesFeed {
-    match intent {
-        FeedPersistenceIntent::Replace(replacement) => replacement.clone(),
+) -> Result<interactables::InteractablesFeed, String> {
+    Ok(match intent {
         FeedPersistenceIntent::Upsert {
             entries,
             remove_ids,
@@ -202,6 +199,9 @@ fn compose_feed(
                     .find(|current| current.id == entry.id)
                 {
                     let mut replacement = entry.clone();
+                    replacement.silenced = current.silenced;
+                    replacement.silenced_at = current.silenced_at.clone();
+                    replacement.has_run = current.has_run;
                     for (key, value) in &current.extra {
                         replacement
                             .extra
@@ -227,39 +227,60 @@ fn compose_feed(
             }
             feed
         }
+        FeedPersistenceIntent::ConfigUpsert { entries, remove_ids, observed, checks } => {
+            let mut targets = checks.iter().map(|(target, _)| target.clone()).collect::<BTreeSet<_>>();
+            targets.extend(observed.iter().filter(|item| remove_ids.contains(&item.id)).filter_map(|item| item.target_path.clone()));
+            let projection = |items: &[Interactable]| -> Result<BTreeMap<String, Value>, String> {
+                items.iter().filter(|item| item.target_path.as_ref().is_some_and(|path| targets.contains(path)))
+                    .map(|item| Ok((item.id.clone(), serde_json::to_value(item).map_err(|error| error.to_string())?)))
+                    .collect()
+            };
+            if projection(observed)? != projection(&feed.interactables)? {
+                return Err("config-proposal-observation-stale".into());
+            }
+            for (target, expected) in checks {
+                if let Some(expected) = expected {
+                    let current = read_regular_file_no_follow(target, "config-interactable-target")?;
+                    if format!("{:x}", Sha256::digest(&current)) != *expected {
+                        return Err("config-proposal-target-changed-since-observation".into());
+                    }
+                } else {
+                    match fs::symlink_metadata(target) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                        Ok(_) => return Err("config-proposal-target-changed-since-observation".into()),
+                        Err(error) => return Err(format!("config-proposal-target-observe-failed: {error}")),
+                    }
+                }
+            }
+            return compose_feed(connection, feed, &FeedPersistenceIntent::Upsert {
+                entries: entries.clone(), remove_ids: remove_ids.clone(), sort_by_id: true,
+            });
+        }
+        FeedPersistenceIntent::ReconcileRuyi { entries, remove_ids, observed } => {
+            let projection = |items: &[Interactable]| -> Result<BTreeMap<String, Value>, String> {
+                items.iter().filter(|item| interactables::is_ruyi_born_kind(&item.kind))
+                    .map(|item| Ok((item.id.clone(), serde_json::to_value(item).map_err(|error| error.to_string())?)))
+                    .collect()
+            };
+            if projection(observed)? != projection(&feed.interactables)? {
+                return Err("ruyi-proposal-observation-stale".into());
+            }
+            return compose_feed(connection, feed, &FeedPersistenceIntent::Upsert {
+                entries: entries.clone(), remove_ids: remove_ids.clone(), sort_by_id: true,
+            });
+        }
         FeedPersistenceIntent::Remove { ids, receipts } => {
             feed.interactables.retain(|item| !ids.contains(&item.id));
             feed.receipts.extend(receipts.iter().cloned());
             feed
         }
+
         FeedPersistenceIntent::AppendReceipts(receipts) => {
             feed.receipts.extend(receipts.iter().cloned());
             feed
         }
         FeedPersistenceIntent::HermesAppearanceOffer { module_id, entry } => {
-            let adopted = feed
-                .receipts
-                .iter()
-                .filter(|receipt| {
-                    receipt.get("schema").and_then(Value::as_str)
-                        == Some("harmonia.interactables.hermes_appearance.receipt.v1")
-                        && receipt.get("module_id").and_then(Value::as_str)
-                            == Some(module_id.as_str())
-                })
-                .flat_map(|receipt| {
-                    receipt
-                        .get("homes")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                })
-                .filter(|home| home.get("ok").and_then(Value::as_bool) == Some(true))
-                .filter_map(|home| {
-                    home.get("home")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .collect::<BTreeSet<_>>();
+            let adopted = crate::ledger::adopted_homes_on(connection, module_id)?;
             let entry = entry.clone().and_then(|entry| {
                 crate::tools::hermes_appearance::constrain_offer_to_unadopted(entry, &adopted)
             });
@@ -295,34 +316,7 @@ fn compose_feed(
             item_id,
             receipt,
         } => {
-            let previous = feed
-                .receipts
-                .iter()
-                .filter(|current| is_hermes_appearance_receipt(current, module_id))
-                .cloned()
-                .collect::<Vec<_>>();
-            let merged = merge_hermes_appearance_receipts(receipt.clone(), &previous);
-            let first_match = feed
-                .receipts
-                .iter()
-                .position(|current| is_hermes_appearance_receipt(current, module_id));
-            let extra_capacity = if first_match.is_none() { 1 } else { 0 };
-            let mut receipts = Vec::with_capacity(feed.receipts.len() + extra_capacity);
-            let mut inserted = false;
-            for current in feed.receipts.drain(..) {
-                if is_hermes_appearance_receipt(&current, module_id) {
-                    if !inserted {
-                        receipts.push(merged.clone());
-                        inserted = true;
-                    }
-                } else {
-                    receipts.push(current);
-                }
-            }
-            if !inserted {
-                receipts.push(merged);
-            }
-            feed.receipts = receipts;
+            feed.receipts.push(receipt.clone());
             feed.interactables.retain(|current| {
                 !(current.kind == "hermes-appearance"
                     && current.module_id == *module_id
@@ -330,67 +324,7 @@ fn compose_feed(
             });
             feed
         }
-    }
-}
-
-fn is_hermes_appearance_receipt(receipt: &Value, module_id: &str) -> bool {
-    receipt.get("schema").and_then(Value::as_str)
-        == Some("harmonia.interactables.hermes_appearance.receipt.v1")
-        && receipt.get("module_id").and_then(Value::as_str) == Some(module_id)
-}
-
-fn merge_hermes_appearance_receipts(mut current: Value, previous: &[Value]) -> Value {
-    const RECEIPT_FIELDS: &[&str] = &[
-        "schema", "ok", "id", "kind", "changed", "skin_name", "skin_sha256",
-        "module_id", "homes", "first_missing_signal", "rollback_signal",
-    ];
-    const HOME_FIELDS: &[&str] = &[
-        "home", "ok", "changed", "before_skin", "after_skin",
-        "skin_sha256_before", "skin_sha256_after", "selected_skin_snapshot",
-        "skin_sha256_snapshot", "config_backup_path", "asset_backup_path",
-    ];
-    let Some(current_object) = current.as_object_mut() else {
-        return current;
-    };
-    let mut adopted = BTreeMap::<String, Value>::new();
-    for prior in previous.iter().rev() {
-        let Some(prior_object) = prior.as_object() else { continue };
-        for (key, value) in prior_object {
-            if !RECEIPT_FIELDS.contains(&key.as_str()) {
-                current_object.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-        }
-        for row in prior.get("homes").and_then(Value::as_array).into_iter().flatten() {
-            if row.get("ok").and_then(Value::as_bool) != Some(true) {
-                continue;
-            }
-            if let Some(home) = row.get("home").and_then(Value::as_str) {
-                adopted.entry(home.to_owned()).or_insert_with(|| row.clone());
-            }
-        }
-    }
-    let rows = current_object
-        .entry("homes")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    let Some(rows) = rows.as_array_mut() else { return current };
-    for row in rows.iter_mut() {
-        let Some(home) = row.get("home").and_then(Value::as_str).map(str::to_owned) else {
-            continue;
-        };
-        if row.get("ok").and_then(Value::as_bool) == Some(true) {
-            if let Some(prior) = adopted.remove(&home) {
-                if let (Some(current_row), Some(prior_row)) = (row.as_object_mut(), prior.as_object()) {
-                    for (key, value) in prior_row {
-                        if !HOME_FIELDS.contains(&key.as_str()) {
-                            current_row.entry(key.clone()).or_insert_with(|| value.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    rows.extend(adopted.into_values());
-    current
+    })
 }
 
 pub(crate) fn persist_feed_with_intent(
@@ -401,133 +335,44 @@ pub(crate) fn persist_feed_with_intent(
 }
 
 pub(crate) fn persist_feed_with_config(
-    path: &Path,
+    _path: &Path,
     intent: FeedPersistenceIntent,
     config: &[crate::ledger::ConfigProposal],
 ) -> Result<Option<usize>, String> {
-    crate::atoms::attest::with_proposal_projection_lock(path, || {
-        let feed = match &intent {
-            FeedPersistenceIntent::Replace(feed) => feed.clone(),
-            _ => {
-                let current = interactables::load_feed(path)?;
-                let composed = compose_feed(current.clone(), &intent);
-                if matches!(&intent, FeedPersistenceIntent::HermesAppearanceOffer { .. })
-                    && serde_json::to_value(&current)
-                        .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?
-                        == serde_json::to_value(&composed)
-                            .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?
-                {
-                    return Ok(Some(0));
-                }
-                composed
-            }
-        };
-        persist_feed_with_config_locked(path, &feed, config, RowSyncPolicy::ReportAndContinue)
+    crate::ledger::with_proposal_transaction(|connection| {
+        let before = connection.total_changes();
+        if let FeedPersistenceIntent::AppendReceipts(receipts) = &intent {
+            for receipt in receipts { crate::ledger::record_appearance_facts(connection, receipt)?; }
+            crate::ledger::validate_proposals_on(connection)?;
+            return Ok(Some((connection.total_changes() - before) as usize));
+        }
+        if let FeedPersistenceIntent::Remove { ids, receipts } = &intent {
+            for id in ids { crate::ledger::remove_proposal_on(connection, id)?; }
+            for receipt in receipts { crate::ledger::record_appearance_facts(connection, receipt)?; }
+            crate::ledger::validate_proposals_on(connection)?;
+            return Ok(Some((connection.total_changes() - before) as usize));
+        }
+        let current = crate::ledger::load_proposals_on(connection)?;
+        let feed = compose_feed(connection, current, &intent)?;
+        crate::ledger::save_proposals_on(connection, &feed, config)?;
+        if matches!(&intent, FeedPersistenceIntent::ReconcileRuyi { .. }) {
+            crate::ledger::retire_unmatched_ruyi_on(connection)?;
+        }
+
+        Ok(Some((connection.total_changes() - before) as usize))
     })
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum RowSyncPolicy {
-    ReportAndContinue,
-    Required,
-}
-
-pub(crate) fn persist_feed_with_config_locked(
-    path: &Path,
-    feed: &interactables::InteractablesFeed,
-    config: &[crate::ledger::ConfigProposal],
-    row_sync: RowSyncPolicy,
-) -> Result<Option<usize>, String> {
-    if let Err(error) = crate::ledger::prepare_config_proposals(path, feed, config) {
-        // A failed source write must not expose an unusable new offer.
-        // Hold the prior projection and report the failure without blocking
-        // the module's independent software convergence.
-        report_proposal_row_failure(&error);
-        return Ok(None);
-    }
-    persist_feed_locked(path, feed, config, row_sync).map(Some)
-}
-
-fn report_proposal_row_failure(error: &str) {
-    let signal = crate::deeds::coded_signal(error);
-    crate::deeds::reporting_failure("profile_ledger", &signal);
-    let _ = crate::deeds::record("proposal-rows", "harmonia-interactables", false, false,
-        None, None, None, Some(&signal), None);
-}
-
-fn persist_feed_locked(
-    path: &Path,
-    feed: &interactables::InteractablesFeed,
-    config: &[crate::ledger::ConfigProposal],
-    row_sync: RowSyncPolicy,
-) -> Result<usize, String> {
-    let prior = match row_sync {
-        RowSyncPolicy::ReportAndContinue => None,
-        RowSyncPolicy::Required => Some(interactables::load_feed(path)?),
-    };
-    let writes = project_feed_locked(path, feed)?;
-    if let Err(error) = crate::ledger::sync_proposals(path, feed, config) {
-        if let Some(prior) = prior {
-            let restored = project_feed_locked(path, &prior);
-            report_proposal_row_failure(&error);
-            let signal = crate::deeds::coded_signal(&error);
-            return match restored {
-                Ok(_) => Err(signal),
-                Err(restore_error) => Err(format!("{signal}; proposal-projection-restore-failed: {restore_error}")),
-            };
-        }
-        report_proposal_row_failure(&error);
-    }
-    if writes>0 { crate::deeds::record("config-proposals", "harmonia-interactables", true,true,None,None,None,None,Some(writes as u64))?; }
-    Ok(writes)
-}
-
-fn project_feed_locked(
-    path: &Path,
-    feed: &interactables::InteractablesFeed,
-) -> Result<usize, String> {
-    let feed_bytes = {
-        let mut bytes = serde_json::to_vec_pretty(feed)
-            .map_err(|error| format!("interactables-feed-serialize-failed: {error}"))?;
-        bytes.push(b'\n');
-        bytes
-    };
-    let records = feed
-        .interactables
-        .iter()
-        .map(|item| {
-            let mut bytes = serde_json::to_vec_pretty(item).map_err(|error| error.to_string())?;
-            bytes.push(b'\n');
-            Ok((format!("{}.json", item.id), bytes))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    crate::atoms::attest::refresh_proposal_projection_locked(
-        path,
-        &feed_bytes,
-        &records,
-        crate::atoms::attest::ProposalOwnerPolicy::CurrentProcess,
-    )
-}
-
-/// Resolve an accepted file proposal while the caller holds the projection lock.
-/// This deliberately calls the locked writer directly instead of reacquiring the flock.
 pub(crate) fn resolve_config_proposal_locked(
-    path: &Path,
+    connection: &rusqlite::Connection,
     id: &str,
     receipts: Vec<Value>,
 ) -> Result<bool, String> {
-    let feed = interactables::load_feed(path)?;
-    if !feed.interactables.iter().any(|item| item.id == id) {
+    if !crate::ledger::remove_proposal_on(connection, id)? {
         return Ok(false);
     }
-    let feed = compose_feed(
-        feed,
-        &FeedPersistenceIntent::Remove {
-            ids: [id.to_string()].into_iter().collect(),
-            receipts,
-        },
-    );
-    persist_feed_locked(path, &feed, &[], RowSyncPolicy::ReportAndContinue)?;
+    for receipt in &receipts { crate::ledger::record_appearance_facts(connection, receipt)?; }
+    crate::ledger::validate_proposals_on(connection)?;
     Ok(true)
 }
 
@@ -536,9 +381,7 @@ pub(crate) fn prune_stale_interactables(
     observed_modules: &BTreeSet<String>,
     events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
-    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    let path = crate::ledger::database_path();
     prune_stale_interactables_with_observations(&path, profile, observed_modules, events)
 }
 
@@ -556,54 +399,48 @@ fn prune_stale_interactables_with_observations(
     observed_modules: &BTreeSet<String>,
     _events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
-    let mut feed = interactables::load_feed_raw(path)?;
-    let active_modules = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
-    let mut removed_ids = BTreeSet::new();
-
-    for entry in feed.interactables.drain(..) {
-        let row_backed = crate::ledger::has_proposal_source(path, &entry.id)?;
-        let reason = if entry.kind == "engine-replacement" {
-            Some("retired-kind")
-        } else if !active_modules.contains(&entry.module_id) {
-            Some("module-absent-from-profile")
-        } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry)
-            && (profile.id != "homeserver" || profile.identity != "homeserver")
-        {
-            Some("profile-absent-from-current-certificate")
-        } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry) {
-            None
-        } else if row_backed && observed_modules.contains(&entry.module_id)
-            && !CURRENT_CONFIG_RECOGNITIONS.with(|state| state.borrow().contains_key(&entry.id))
-        {
-            // Only a successfully observed module can retire an offer it no
-            // longer produces. A failed/missing observation is not resolution.
-            Some("config-proposal-no-longer-produced")
-        } else if !interactables::is_ruyi_born_kind(&entry.kind)
-            && !row_backed
-            && !entry
-                .reference_source_path
-                .as_deref()
-                .is_some_and(Path::is_file)
-        {
-            Some("reference-absent")
-        } else {
-            None
-        };
-        if reason.is_some() {
-            removed_ids.insert(entry.id.clone());
-        }
-    }
-    if removed_ids.is_empty() {
+    let active = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
+    let recognized: BTreeSet<String> = CURRENT_CONFIG_RECOGNITIONS.with(|state| state.borrow().keys().cloned().collect());
+    // Import before taking the preimage, not inside the later prune transaction.
+    drop(crate::ledger::writer()?);
+    let snapshot = interactables::load_feed_raw(path)?.interactables.into_iter()
+        .map(|item| Ok((item.id.clone(), serde_json::to_value(item).map_err(|error| error.to_string())?)))
+        .collect::<Result<std::collections::BTreeMap<_,_>,String>>()?;
+    if observed_modules.is_empty() && snapshot.is_empty() && !crate::ledger::has_unmatched_proposals()? {
         return Ok(());
     }
-    persist_feed_with_intent(
-        path,
-        FeedPersistenceIntent::Remove {
-            ids: removed_ids,
-            receipts: Vec::new(),
-        },
-    )?;
-    Ok(())
+    // Classify against the same write-locked snapshot that is persisted: a
+    // producer may have refreshed the row after an earlier observation.
+    crate::ledger::with_proposal_transaction(|connection| {
+        let mut feed = crate::ledger::load_proposals_on(connection)?;
+        let mut retained = Vec::with_capacity(feed.interactables.len());
+        for entry in feed.interactables.drain(..) {
+            let unchanged = snapshot.get(&entry.id).is_some_and(|prior| {
+                serde_json::to_value(&entry).is_ok_and(|current| current == *prior)
+            });
+            if !unchanged {
+                retained.push(entry);
+                continue;
+            }
+            let row_backed = crate::ledger::has_proposal_source_on(connection, &entry.id)?;
+            let remove = if entry.kind == "engine-replacement" {
+                true
+            } else if !active.contains(&entry.module_id) {
+                true
+            } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry) {
+                profile.id != "homeserver" || profile.identity != "homeserver"
+            } else if row_backed && observed_modules.contains(&entry.module_id) && !recognized.contains(&entry.id) {
+                true
+            } else {
+                !interactables::is_ruyi_born_kind(&entry.kind) && !row_backed
+                    && !entry.reference_source_path.as_deref().is_some_and(Path::is_file)
+            };
+            if !remove { retained.push(entry); }
+        }
+        feed.interactables = retained;
+        crate::ledger::save_proposals_on(connection, &feed, &[])?;
+        crate::ledger::retire_unseen_documents_on(connection, &active, observed_modules, &recognized)
+    })
 }
 
 pub(crate) fn refresh_interactables_for_convergence(
@@ -611,9 +448,7 @@ pub(crate) fn refresh_interactables_for_convergence(
     request: &FileConvergenceRequest,
     outcome: &FileConvergenceOutcome,
 ) -> Result<Vec<ConfigRecognition>, String> {
-    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    let path = crate::ledger::database_path();
     refresh_interactables_at_path_with_policy(&path, manifest, request, outcome, false)
 }
 
@@ -622,9 +457,7 @@ pub(crate) fn refresh_interactables_for_compiled_convergence(
     request: &FileConvergenceRequest,
     outcome: &FileConvergenceOutcome,
 ) -> Result<Vec<ConfigRecognition>, String> {
-    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    let path = crate::ledger::database_path();
     refresh_interactables_at_path_with_policy(&path, manifest, request, outcome, true)
 }
 
@@ -634,9 +467,7 @@ pub(crate) fn refresh_interactables_for_convergence_at_step(
     outcome: &FileConvergenceOutcome,
     step_id: &str,
 ) -> Result<Vec<ConfigRecognition>, String> {
-    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    let path = crate::ledger::database_path();
     refresh_interactables_at_path_with_policy_and_step(
         &path, manifest, request, outcome, false, Some(step_id),
     )
@@ -648,9 +479,7 @@ pub(crate) fn refresh_interactables_for_compiled_convergence_at_step(
     outcome: &FileConvergenceOutcome,
     step_id: &str,
 ) -> Result<Vec<ConfigRecognition>, String> {
-    let path = std::env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
+    let path = crate::ledger::database_path();
     refresh_interactables_at_path_with_policy_and_step(
         &path, manifest, request, outcome, true, Some(step_id),
     )
@@ -689,11 +518,15 @@ fn refresh_interactables_at_path_with_policy_and_step(
     {
         return Ok(Vec::new());
     }
+    // Import the legacy projection before taking the optimistic preimage.
+    drop(crate::ledger::writer()?);
     let mut feed = interactables::load_feed(path)?;
+    let observed = feed.interactables.clone();
     let mut recognitions = Vec::new();
     let mut config = Vec::new();
     let mut remove_ids = BTreeSet::new();
     let mut upsert_ids = BTreeSet::new();
+    let mut checks = Vec::new();
     let now = stamp();
     let available_at = iso8601_now();
     for entry in &outcome.entries {
@@ -770,8 +603,24 @@ fn refresh_interactables_at_path_with_policy_and_step(
         };
         let reference_bytes =
             read_regular_file_no_follow(&entry.source, "config-interactable-reference")?;
+        if !target_absent {
+            let metadata = fs::symlink_metadata(&entry.target).map_err(|error|
+                format!("config-interactable-target-observe-failed {}: {error}", entry.target.display()))?;
+            let current_equal = live_bytes == reference_bytes;
+            let mode_equal = Some(metadata.mode() & 0o777) == entry.final_mode;
+            let current_diff = if current_equal { None } else {
+                crate::atoms::files::unified_file_diff(&entry.source, &entry.target)?.text
+            };
+            if current_equal != entry.content_equal_before || mode_equal != entry.mode_equal_before
+                || Some(metadata.uid()) != entry.observed_uid_before
+                || Some(metadata.gid()) != entry.observed_gid_before
+                || current_diff != entry.diff {
+                return Err(format!("config-proposal-observation-stale {}", entry.target.display()));
+            }
+        }
         let live_sha = (!target_absent).then(|| format!("{:x}", Sha256::digest(&live_bytes)));
         let reference_sha = format!("{:x}", Sha256::digest(&reference_bytes));
+        checks.push((entry.target.clone(), live_sha.clone()));
         let id = if target_absent {
             compiled_absent_proposal_id(&entry.target, &reference_sha)
         } else {
@@ -956,7 +805,7 @@ fn refresh_interactables_at_path_with_policy_and_step(
     feed.interactables.sort_by(|a, b| a.id.cmp(&b.id));
     let published = persist_feed_with_config(
         &path,
-        FeedPersistenceIntent::Upsert {
+        FeedPersistenceIntent::ConfigUpsert {
             entries: feed
                 .interactables
                 .iter()
@@ -964,7 +813,8 @@ fn refresh_interactables_at_path_with_policy_and_step(
                 .cloned()
                 .collect(),
             remove_ids,
-            sort_by_id: true,
+            observed,
+            checks,
         },
         &config,
     )?.is_some();
@@ -1034,11 +884,11 @@ pub(crate) fn refresh_validated_symlink(
     step: &ValidatedStep,
     manifest: &LadderManifest,
 ) -> Result<bool, String> {
-    let path = interactables::feed_path();
-    crate::atoms::attest::with_proposal_projection_lock(&path, || {
+    let path = crate::ledger::database_path();
+    crate::ledger::with_proposal_transaction(|connection| {
         let observed = validated_symlink_observation(step)?;
         let binding = config_act_binding(manifest, &step.step_id)?;
-        let feed = interactables::load_feed(&path)?;
+        let feed = crate::ledger::load_proposals_on(connection)?;
         let target = PathBuf::from(observed["target"].as_str()
             .ok_or("validated-symlink-target-unresolved")?);
         let matching_ids = feed.interactables.iter()
@@ -1048,10 +898,10 @@ pub(crate) fn refresh_validated_symlink(
             .map(|item| item.id.clone()).collect::<BTreeSet<_>>();
         if observed["link_target"] == observed["source"] {
             if !matching_ids.is_empty() {
-                let feed = compose_feed(feed, &FeedPersistenceIntent::Upsert {
+                let feed = compose_feed(connection, feed, &FeedPersistenceIntent::Upsert {
                     entries: Vec::new(), remove_ids: matching_ids, sort_by_id: true,
-                });
-                persist_feed_locked(&path, &feed, &[], RowSyncPolicy::ReportAndContinue)?;
+                })?;
+                crate::ledger::save_proposals_on(connection, &feed, &[])?;
             }
             return Ok(false);
         }
@@ -1124,16 +974,12 @@ pub(crate) fn refresh_validated_symlink(
             // A link acts on its declared source, not on a copied file snapshot.
             source: Vec::new(),
         }];
-        let feed = compose_feed(feed, &FeedPersistenceIntent::Upsert {
+        let feed = compose_feed(connection, feed, &FeedPersistenceIntent::Upsert {
             entries: vec![item],
             remove_ids: matching_ids.into_iter().filter(|candidate| candidate != &id).collect(),
             sort_by_id: true,
-        });
-        if let Err(error) = crate::ledger::prepare_config_proposals(&path, &feed, &config) {
-            report_proposal_row_failure(&error);
-            return Ok(false);
-        }
-        persist_feed_locked(&path, &feed, &config, RowSyncPolicy::ReportAndContinue)?;
+        })?;
+        crate::ledger::save_proposals_on(connection, &feed, &config)?;
         CURRENT_CONFIG_RECOGNITIONS.with(|state| {
             state.borrow_mut().insert(id, recognition);
         });
@@ -1570,280 +1416,6 @@ mod refresh_interactables_tests {
         item
     }
 
-    #[test]
-    fn prune_stale_interactables_hides_and_removes_retired_engine_rows_only() {
-        let root = std::env::temp_dir().join(format!(
-            "harmonia-prune-interactables-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let feed_path = root.join("interactables.json");
-        let events_path = root.join("events.jsonl");
-        let reference = root.join("known-good.conf");
-        let shared_target = root.join("shared.conf");
-        fs::write(&reference, b"known-good\n").unwrap();
 
-        let backup = root
-            .join("interactables-backups")
-            .join("ghost-entry")
-            .join("has-run-copy");
-        fs::create_dir_all(backup.parent().unwrap()).unwrap();
-        fs::write(&backup, b"preserve me\n").unwrap();
-
-        let entries = vec![
-            prune_item(
-                &root,
-                "live-entry",
-                "live-module",
-                root.join("live.conf"),
-                reference.clone(),
-                false,
-            ),
-            prune_item(
-                &root,
-                "absent-entry",
-                "absent-module",
-                root.join("absent.conf"),
-                reference.clone(),
-                false,
-            ),
-            prune_item(
-                &root,
-                "missing-entry",
-                "missing-module",
-                root.join("missing.conf"),
-                root.join("missing-reference.conf"),
-                false,
-            ),
-            prune_item(
-                &root,
-                "ghost-entry",
-                "ghost-module",
-                shared_target.clone(),
-                root.join("ghost-reference.conf"),
-                true,
-            ),
-            prune_item(
-                &root,
-                "survivor-entry",
-                "survivor-module",
-                shared_target.clone(),
-                reference.clone(),
-                false,
-            ),
-            {
-                let mut engine = prune_item(
-                    &root,
-                    "engine-replacement-entry",
-                    "harmonia",
-                    root.join("staged-engine"),
-                    reference.clone(),
-                    false,
-                );
-                engine.kind = "engine-replacement".into();
-                engine
-            },
-        ];
-        persist_feed(&feed_path, &interactables::make_feed(entries)).unwrap();
-        let visible_before_prune = interactables::load_feed(&feed_path).unwrap();
-        assert!(visible_before_prune
-            .interactables
-            .iter()
-            .all(|item| item.kind != "engine-replacement"));
-        assert!(interactables::load_feed_raw(&feed_path)
-            .unwrap()
-            .interactables
-            .iter()
-            .any(|item| item.kind == "engine-replacement"));
-        let mut events = File::create(&events_path).unwrap();
-        let profile = Profile {
-            id: "fixture-profile".into(),
-            identity: "fixture-identity".into(),
-            package_authority: None,
-            modules: vec![
-                "live-module".into(),
-                "missing-module".into(),
-                "survivor-module".into(),
-            ],
-            hotfixes: Vec::new(),
-            syzygy_declaration: None,
-        };
-
-        prune_stale_interactables_at_path(&feed_path, &profile, &mut events).unwrap();
-        drop(events);
-
-        let retained = interactables::load_feed(&feed_path).unwrap().interactables;
-        assert_eq!(
-            retained
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["live-entry", "survivor-entry"]
-        );
-        assert_eq!(fs::read(&backup).unwrap(), b"preserve me\n");
-
-        let receipts = fs::read_to_string(&events_path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            receipts,
-            vec![
-                serde_json::json!({
-                    "schema": "harmonia.interactables.prune.v1",
-                    "id": "absent-entry",
-                    "module_id": "absent-module",
-                    "target_path": root.join("absent.conf"),
-                    "reason": "module-absent-from-profile",
-                }),
-                serde_json::json!({
-                    "schema": "harmonia.interactables.prune.v1",
-                    "id": "missing-entry",
-                    "module_id": "missing-module",
-                    "target_path": root.join("missing.conf"),
-                    "reason": "reference-absent",
-                }),
-                serde_json::json!({
-                    "schema": "harmonia.interactables.prune.v1",
-                    "id": "ghost-entry",
-                    "module_id": "ghost-module",
-                    "target_path": shared_target,
-                    "reason": "module-absent-from-profile",
-                }),
-                serde_json::json!({
-                    "schema": "harmonia.interactables.prune.v1",
-                    "id": "engine-replacement-entry",
-                    "module_id": "harmonia",
-                    "target_path": root.join("staged-engine"),
-                    "reason": "retired-kind",
-                }),
-            ]
-        );
-        assert!(receipts
-            .iter()
-            .all(|receipt| { receipt.as_object().is_some_and(|fields| fields.len() == 5) }));
-        println!(
-            "prune_receipt={}",
-            serde_json::to_string(&receipts[0]).unwrap()
-        );
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn prune_stale_interactables_keeps_ruyi_born_rows_without_references() {
-        let root =
-            std::env::temp_dir().join(format!("harmonia-prune-ruyi-born-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let feed_path = root.join("interactables.json");
-        let events_path = root.join("events.jsonl");
-        let present_reference = root.join("known-good.conf");
-        fs::write(&present_reference, b"known-good\n").unwrap();
-
-        let present_hard_stamp = prune_item(
-            &root,
-            "present-hard-stamp",
-            "active-module",
-            root.join("present.conf"),
-            present_reference,
-            false,
-        );
-        let absent_hard_stamp = prune_item(
-            &root,
-            "absent-hard-stamp",
-            "active-module",
-            root.join("absent.conf"),
-            root.join("missing-reference.conf"),
-            false,
-        );
-        let mut toolchain_ratchet = prune_item(
-            &root,
-            "toolchain-ratchet",
-            "active-module",
-            root.join("toolchain"),
-            root.join("unused-reference.conf"),
-            false,
-        );
-        toolchain_ratchet.kind = "toolchain-ratchet".into();
-        toolchain_ratchet.reference_source_path = None;
-        toolchain_ratchet.extra.insert(
-            "preserve-me".into(),
-            serde_json::Value::String("serialized intact".into()),
-        );
-        let mut ruyi_bump = prune_item(
-            &root,
-            "ruyi-bump",
-            "active-module",
-            root.join("ruyi"),
-            root.join("unused-reference.conf"),
-            false,
-        );
-        ruyi_bump.kind = "ruyi-bump".into();
-        ruyi_bump.reference_source_path = None;
-
-        let ratchet_bytes_before = serde_json::to_vec(&toolchain_ratchet).unwrap();
-        persist_feed(
-            &feed_path,
-            &interactables::make_feed(vec![
-                present_hard_stamp,
-                absent_hard_stamp,
-                toolchain_ratchet,
-                ruyi_bump,
-            ]),
-        )
-        .unwrap();
-        let mut events = File::create(&events_path).unwrap();
-        let profile = Profile {
-            id: "fixture-profile".into(),
-            identity: "fixture-identity".into(),
-            package_authority: None,
-            modules: vec!["active-module".into()],
-            hotfixes: Vec::new(),
-            syzygy_declaration: None,
-        };
-
-        prune_stale_interactables_at_path(&feed_path, &profile, &mut events).unwrap();
-        drop(events);
-
-        let retained = interactables::load_feed_raw(&feed_path)
-            .unwrap()
-            .interactables;
-        assert_eq!(
-            retained
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["present-hard-stamp", "toolchain-ratchet", "ruyi-bump"]
-        );
-        let ratchet_after = retained
-            .iter()
-            .find(|item| item.id == "toolchain-ratchet")
-            .unwrap();
-        assert_eq!(
-            serde_json::to_vec(ratchet_after).unwrap(),
-            ratchet_bytes_before
-        );
-
-        let receipts = fs::read_to_string(&events_path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            receipts,
-            vec![serde_json::json!({
-                "schema": "harmonia.interactables.prune.v1",
-                "id": "absent-hard-stamp",
-                "module_id": "active-module",
-                "target_path": root.join("absent.conf"),
-                "reason": "reference-absent",
-            })]
-        );
-
-        fs::remove_dir_all(root).unwrap();
-    }
 
 }

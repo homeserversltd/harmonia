@@ -19,7 +19,7 @@ pub(crate) struct ProposalObservationGuard {
 }
 
 fn observe_pending_proposals() -> Option<usize> {
-    crate::interactables::load_feed(&crate::interactables::feed_path())
+    crate::interactables::load_feed(&crate::ledger::database_path())
         .ok().map(|feed| feed.interactables.iter()
             .filter(|item| !crate::interactables::json_key::is_satisfied(item)).count())
 }
@@ -242,13 +242,13 @@ pub(crate) fn retain_config_witness(witness: &crate::atoms::attest::ConfigPlaneW
 }
 
 fn collect_config_surfaces(_receipt_dir: &Path) -> Vec<serde_json::Value> {
-    let feed_path = crate::interactables::feed_path();
+    let state_path = crate::ledger::database_path();
     let mut legacy = crate::bands::propose_edits::take_config_state_recognitions()
         .into_iter()
         .filter_map(|(id, current)| {
             // Look up only this invocation's recognized keys. A refusal or a
             // reporting-store failure has reply-local evidence but no live row.
-            let value = crate::ledger::config_state(&feed_path, &id).ok().flatten()
+            let value = crate::ledger::config_state(&state_path, &id).ok().flatten()
                 .filter(is_current_run_receipt).unwrap_or(current);
             if value.get("schema").and_then(serde_json::Value::as_str)
                 != Some("harmonia.config_state.v1")

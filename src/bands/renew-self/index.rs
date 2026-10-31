@@ -932,15 +932,9 @@ pub(crate) fn promote_staged_binary(
 }
 
 fn observe_engine_interactable() -> &'static str {
-    let path = env::var_os("HARMONIA_INTERACTABLES_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/harmonia/interactables.json"));
-    match crate::interactables::load_feed_raw(&path) {
-        Ok(feed) if feed
-            .interactables
-            .iter()
-            .any(|item| item.kind == "engine-replacement") => "present",
-        Ok(_) => "absent",
+    match crate::ledger::has_proposal_kind("engine-replacement") {
+        Ok(true) => "present",
+        Ok(false) => "absent",
         Err(_) => "not-observed",
     }
 }

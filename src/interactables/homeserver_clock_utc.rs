@@ -335,7 +335,7 @@ fn reconcile_observation(
     if observed_timezone.trim().is_empty() {
         return Err("homeserver-clock-utc-observed-timezone-empty".to_string());
     }
-    let path = crate::interactables::feed_path_for_command();
+    let path = crate::ledger::database_path();
     let feed = crate::interactables::load_feed_raw(&path)?;
     let matching = feed
         .interactables

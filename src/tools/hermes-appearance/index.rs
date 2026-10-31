@@ -208,9 +208,9 @@ pub(crate) fn execute_validated_step(
         });
     };
     let homes = enumerate_homes(&runtime, true)?;
-    let feed_path = crate::interactables::feed_path();
-    let feed = crate::interactables::load_feed(&feed_path)?;
-    let adopted = adopted_homes(&feed, MODULE_ID);
+    let state_path = crate::ledger::database_path();
+    let feed = crate::interactables::load_feed(&state_path)?;
+    let adopted = adopted_homes(&feed, MODULE_ID)?;
     let mut snapshots = Vec::new();
     for home in homes {
         if adopted.contains(home.path.to_string_lossy().as_ref()) {
@@ -230,7 +230,7 @@ pub(crate) fn execute_validated_step(
     };
     let requested_offer = entry.is_some();
     let writes = persist_feed_with_intent(
-        &feed_path,
+        &state_path,
         FeedPersistenceIntent::HermesAppearanceOffer {
             module_id: MODULE_ID.into(),
             entry,
@@ -254,7 +254,7 @@ pub(crate) fn execute_validated_step(
 }
 
 pub(crate) fn run_interactable(
-    feed_path: &Path,
+    state_path: &Path,
     item: &Interactable,
 ) -> Result<(), String> {
     if item.kind != KIND || item.module_id != MODULE_ID {
@@ -274,11 +274,11 @@ pub(crate) fn run_interactable(
         .ok_or_else(|| "hermes-appearance-source-absent".to_string())?;
     let asset_bytes = read_source_asset(source)?;
     let Some(runtime) = discover_runtime()? else {
-        return record_preflight_failure(feed_path, item, &evidence, seat, "hermes-appearance-no-existing-hermes-home", None);
+        return record_preflight_failure(state_path, item, &evidence, seat, "hermes-appearance-no-existing-hermes-home", None);
     };
     let current_homes = match enumerate_homes(&runtime, false) {
         Ok(homes) => homes,
-        Err(_) => return record_preflight_failure(feed_path, item, &evidence, seat, "hermes-appearance-home-discovery-failed", None),
+        Err(_) => return record_preflight_failure(state_path, item, &evidence, seat, "hermes-appearance-home-discovery-failed", None),
     };
     let by_path = current_homes.iter().map(|home| (home.path.to_string_lossy().into_owned(), home.clone())).collect::<BTreeMap<_, _>>();
     let mut plans = Vec::new();
@@ -347,7 +347,7 @@ pub(crate) fn run_interactable(
         first_missing.get_or_insert("hermes-appearance-snapshot-invalid");
     }
     if plans.len() != evidence.homes.len() || first_missing.is_some() {
-        return persist_preflight_failure(feed_path, item, &evidence, seat, first_missing.unwrap_or("hermes-appearance-preflight-failed"), &observed);
+        return persist_preflight_failure(state_path, item, &evidence, seat, first_missing.unwrap_or("hermes-appearance-preflight-failed"), &observed);
     }
     let mut shell = build_receipt(item, false, false, &evidence, &plans, None);
     seat.validate(&shell).map_err(|_| "hermes-appearance-receipt-seat-desync".to_string())?;
@@ -358,7 +358,7 @@ pub(crate) fn run_interactable(
         if plan.before.selected_skin != Some(SKIN_NAME.to_string()) {
             match adapter(&runtime, "backup", &plan.home, None) {
                 Ok(reply) if reply.ok => plan.config_backup = reply.backup_path,
-                _ => return persist_preflight_failure(feed_path, item, &evidence, seat, "hermes-appearance-config-backup-failed", &observed),
+                _ => return persist_preflight_failure(state_path, item, &evidence, seat, "hermes-appearance-config-backup-failed", &observed),
             }
         }
     }
@@ -375,7 +375,7 @@ pub(crate) fn run_interactable(
             }
             plan.created_skins_dir = true;
         }
-        match install_asset(&plan.home, &asset_bytes, item, feed_path) {
+        match install_asset(&plan.home, &asset_bytes, item, state_path) {
             Ok(change) => {
                 plan.skin_changed = true;
                 if let Some(change) = change {
@@ -426,7 +426,7 @@ pub(crate) fn run_interactable(
         }
     }
     if let Some(signal) = failure {
-        let rollback_signal = rollback(&runtime, &mut plans, &mut asset_changes, &asset_bytes, item, feed_path);
+        let rollback_signal = rollback(&runtime, &mut plans, &mut asset_changes, &asset_bytes, item, state_path);
         let actual = observe_final_homes(&runtime, &plans);
         let mut receipt = build_receipt(item, false, false, &evidence, &plans, Some(signal));
         apply_actual_rows(&mut receipt, &plans, &actual, false);
@@ -434,7 +434,7 @@ pub(crate) fn run_interactable(
             receipt["rollback_signal"] = json!(rollback_signal);
         }
         seat.validate(&receipt).map_err(|_| "hermes-appearance-receipt-seat-desync".to_string())?;
-        persist_feed_with_intent(feed_path, FeedPersistenceIntent::CompleteHermesAppearance {
+        persist_feed_with_intent(state_path, FeedPersistenceIntent::CompleteHermesAppearance {
             module_id: MODULE_ID.into(),
             item_id: item.id.clone(),
             receipt: receipt.clone(),
@@ -449,17 +449,17 @@ pub(crate) fn run_interactable(
     let changed = receipt.get("homes").and_then(Value::as_array).is_some_and(|rows| rows.iter().any(|row| row.get("changed").and_then(Value::as_bool) == Some(true)));
     receipt["changed"] = json!(changed);
     seat.validate(&receipt).map_err(|_| "hermes-appearance-receipt-seat-desync".to_string())?;
-    if let Err(error) = persist_feed_with_intent(feed_path, FeedPersistenceIntent::CompleteHermesAppearance {
+    if let Err(error) = persist_feed_with_intent(state_path, FeedPersistenceIntent::CompleteHermesAppearance {
         module_id: MODULE_ID.into(),
         item_id: item.id.clone(),
         receipt: receipt.clone(),
     }) {
-        let rollback_signal = rollback(&runtime, &mut plans, &mut asset_changes, &asset_bytes, item, feed_path);
+        let rollback_signal = rollback(&runtime, &mut plans, &mut asset_changes, &asset_bytes, item, state_path);
         let actual = observe_final_homes(&runtime, &plans);
         let mut failed = build_receipt(item, false, false, &evidence, &plans, Some("hermes-appearance-completion-persist-failed"));
         apply_actual_rows(&mut failed, &plans, &actual, false);
         if let Some(signal) = rollback_signal { failed["rollback_signal"] = json!(signal); }
-        let _ = persist_feed_with_intent(feed_path, FeedPersistenceIntent::CompleteHermesAppearance {
+        let _ = persist_feed_with_intent(state_path, FeedPersistenceIntent::CompleteHermesAppearance {
             module_id: MODULE_ID.into(), item_id: item.id.clone(), receipt: failed,
         });
         return Err(format!("hermes-appearance-completion-persist-failed: {error}"));
@@ -468,18 +468,8 @@ pub(crate) fn run_interactable(
     Ok(())
 }
 
-pub(crate) fn has_current_successful_completion(feed: &InteractablesFeed, item_id: &str) -> bool {
-    feed.receipts.iter().rev().find(|receipt| {
-        receipt.get("schema").and_then(Value::as_str) == Some(RECEIPT_SCHEMA)
-            && receipt.get("module_id").and_then(Value::as_str) == Some(MODULE_ID)
-    }).is_some_and(|receipt| {
-        receipt.get("id").and_then(Value::as_str) == Some(item_id)
-            && receipt.get("kind").and_then(Value::as_str) == Some(KIND)
-            && receipt.get("ok").and_then(Value::as_bool) == Some(true)
-            && receipt.get("homes").and_then(Value::as_array).is_some_and(|homes| {
-                !homes.is_empty() && homes.iter().all(|home| home.get("ok").and_then(Value::as_bool) == Some(true))
-            })
-    })
+pub(crate) fn has_current_successful_completion(_feed: &InteractablesFeed, item_id: &str) -> Result<bool, String> {
+    crate::ledger::appearance_completed(MODULE_ID, item_id)
 }
 
 fn discover_runtime() -> Result<Option<Runtime>, String> {
@@ -762,12 +752,8 @@ fn offer_id(homes: &[HomeEvidence]) -> Result<String, String> {
 fn json_string<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".into())
 }
-fn adopted_homes(feed: &InteractablesFeed, module_id: &str) -> BTreeSet<String> {
-    feed.receipts.iter().filter(|receipt| receipt.get("schema").and_then(Value::as_str) == Some(RECEIPT_SCHEMA)
-        && receipt.get("module_id").and_then(Value::as_str) == Some(module_id))
-        .flat_map(|receipt| receipt.get("homes").and_then(Value::as_array).into_iter().flatten())
-        .filter(|home| home.get("ok").and_then(Value::as_bool) == Some(true))
-        .filter_map(|home| home.get("home").and_then(Value::as_str).map(str::to_owned)).collect()
+fn adopted_homes(_feed: &InteractablesFeed, module_id: &str) -> Result<BTreeSet<String>, String> {
+    crate::ledger::adopted_homes(module_id)
 }
 
 fn read_source_asset(path: &Path) -> Result<Vec<u8>, String> {
@@ -814,7 +800,7 @@ fn create_skins_dir(home: &Home) -> Result<(), String> {
     result
 }
 
-fn install_asset(home: &Home, bytes: &[u8], item: &Interactable, feed_path: &Path) -> Result<Option<AssetChange>, String> {
+fn install_asset(home: &Home, bytes: &[u8], item: &Interactable, state_path: &Path) -> Result<Option<AssetChange>, String> {
     match fs::symlink_metadata(&home.asset) {
         Ok(meta) => {
             if !meta.is_file() || meta.file_type().is_symlink() || meta.uid() != home.uid || meta.gid() != home.gid {
@@ -823,7 +809,7 @@ fn install_asset(home: &Home, bytes: &[u8], item: &Interactable, feed_path: &Pat
             let prior_bytes = fs::read(&home.asset).map_err(|_| "hermes-skin-asset-backup-read-failed")?;
             if prior_bytes.len() as u64 > MAX_SKIN_BYTES { return Err("hermes-skin-asset-too-large".into()); }
             if format!("{:x}", Sha256::digest(&prior_bytes)) == SKIN_SHA256 { return Ok(None); }
-            let backup = create_asset_backup_path(feed_path, &item.id, home);
+            let backup = create_asset_backup_path(state_path, &item.id, home);
             let backup_root = backup.parent().and_then(Path::parent).ok_or("hermes-appearance-backup-path-invalid")?;
             ensure_no_symlink_components(backup_root)?;
             let receipt = crate::atoms::projectio::strike(crate::atoms::projectio::Request {
@@ -886,7 +872,7 @@ fn create_asset_new(home: &Home, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
-fn rollback(runtime: &Runtime, plans: &mut [HomePlan], assets: &mut Vec<AssetChange>, source: &[u8], item: &Interactable, feed_path: &Path) -> Option<&'static str> {
+fn rollback(runtime: &Runtime, plans: &mut [HomePlan], assets: &mut Vec<AssetChange>, source: &[u8], item: &Interactable, state_path: &Path) -> Option<&'static str> {
     let mut failed = false;
     for plan in plans.iter_mut().rev() {
         if plan.config_attempted {
@@ -917,7 +903,7 @@ fn rollback(runtime: &Runtime, plans: &mut [HomePlan], assets: &mut Vec<AssetCha
                 }
                 let current_meta = match fs::symlink_metadata(&home.asset) { Ok(meta) => meta, Err(_) => { failed = true; continue; } };
                 let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-                let rollback_path = feed_path.parent().unwrap_or_else(|| Path::new(".")).join("interactables-backups").join(&item.id).join(format!("{stamp}-rollback-{}.yaml", home.name));
+                let rollback_path = state_path.parent().unwrap_or_else(|| Path::new(".")).join("interactables-backups").join(&item.id).join(format!("{stamp}-rollback-{}.yaml", home.name));
                 if crate::atoms::projectio::strike(crate::atoms::projectio::Request {
                     target: &home.asset, desired_bytes: &prior_bytes, mode,
                     uid: current_meta.uid(), gid: current_meta.gid(), backup_path: &rollback_path,
@@ -930,11 +916,11 @@ fn rollback(runtime: &Runtime, plans: &mut [HomePlan], assets: &mut Vec<AssetCha
     failed.then_some("hermes-appearance-rollback-incomplete")
 }
 
-fn record_preflight_failure(feed_path: &Path, item: &Interactable, evidence: &Evidence, seat: &crate::atoms::ask::mint_seats::Seat, signal: &str, observed: Option<&BTreeMap<String, Observation>>) -> Result<(), String> {
+fn record_preflight_failure(state_path: &Path, item: &Interactable, evidence: &Evidence, seat: &crate::atoms::ask::mint_seats::Seat, signal: &str, observed: Option<&BTreeMap<String, Observation>>) -> Result<(), String> {
     let observed = observed.cloned().unwrap_or_default();
-    persist_preflight_failure(feed_path, item, evidence, seat, signal, &observed)
+    persist_preflight_failure(state_path, item, evidence, seat, signal, &observed)
 }
-fn persist_preflight_failure(feed_path: &Path, item: &Interactable, evidence: &Evidence, seat: &crate::atoms::ask::mint_seats::Seat, signal: &str, observed: &BTreeMap<String, Observation>) -> Result<(), String> {
+fn persist_preflight_failure(state_path: &Path, item: &Interactable, evidence: &Evidence, seat: &crate::atoms::ask::mint_seats::Seat, signal: &str, observed: &BTreeMap<String, Observation>) -> Result<(), String> {
     let homes = evidence.homes.iter().map(|snapshot| {
         let current = observed.get(&snapshot.home);
         json!({
@@ -955,7 +941,7 @@ fn persist_preflight_failure(feed_path: &Path, item: &Interactable, evidence: &E
         "module_id": MODULE_ID, "homes": homes, "first_missing_signal": signal,
     });
     seat.validate(&receipt).map_err(|_| "hermes-appearance-receipt-seat-desync".to_string())?;
-    persist_feed_with_intent(feed_path, FeedPersistenceIntent::CompleteHermesAppearance {
+    persist_feed_with_intent(state_path, FeedPersistenceIntent::CompleteHermesAppearance {
         module_id: MODULE_ID.into(), item_id: item.id.clone(), receipt: receipt.clone(),
     })?;
     println!("{}", serde_json::to_string_pretty(&receipt).map_err(|_| "hermes-appearance-receipt-serialize-failed")?);
@@ -1003,9 +989,9 @@ fn observe_final_homes(runtime: &Runtime, plans: &[HomePlan]) -> BTreeMap<String
     plans.iter().filter_map(|plan| observe_home(runtime, &plan.home).ok().map(|observation| (plan.home.path.to_string_lossy().into_owned(), observation))).collect()
 }
 
-fn create_asset_backup_path(feed_path: &Path, item_id: &str, home: &Home) -> PathBuf {
+fn create_asset_backup_path(state_path: &Path, item_id: &str, home: &Home) -> PathBuf {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    feed_path.parent().unwrap_or_else(|| Path::new(".")).join("interactables-backups").join(item_id).join(format!("{stamp}-{}.yaml", home.name))
+    state_path.parent().unwrap_or_else(|| Path::new(".")).join("interactables-backups").join(item_id).join(format!("{stamp}-{}.yaml", home.name))
 }
 fn ensure_no_symlink_components(path: &Path) -> Result<(), String> {
     let mut current = PathBuf::new();
