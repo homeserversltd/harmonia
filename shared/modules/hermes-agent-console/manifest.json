@@ -13,7 +13,7 @@
       "args": {
         "owner": "hermes",
         "source_root": "/opt/hermes/hermes-agent",
-        "launcher": "/opt/hermes/hermes-agent/.hermes/bin/hermes"
+        "launcher": "/home/hermes/.local/bin/hermes"
       },
       "on_failure": "stop"
     },
