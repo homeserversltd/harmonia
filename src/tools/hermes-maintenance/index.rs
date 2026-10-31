@@ -437,6 +437,8 @@ struct RunReceipt {
     candidate_resolution: &'static str,
     candidate_taken: Option<String>,
     candidates_skipped: Vec<String>,
+    origin_before: Option<String>,
+    selected_origin: Option<String>,
     pre_sha: Option<String>,
     target_sha: Option<String>,
     post_sha: Option<String>,
@@ -1056,9 +1058,7 @@ pub(crate) fn apply(
     if current_origin != observed.origin_before {
         return Err("failed-stage=origin-changed predecessor=preserved".into());
     }
-    if observed.origin_before != observed.source_selection.candidate.url {
-        return Err("failed-stage=origin-selection-atomic-guard-unavailable predecessor=preserved".into());
-    }
+
     if updater_is_live(&observed.source_root, &owner)? {
         return Err("failed-stage=native-updater-live-retry predecessor=preserved".into());
     }
@@ -1205,6 +1205,21 @@ pub(crate) fn apply(
                     "native-updater-live-check-after-stash-failed: {error}"
                 ));
             }
+        }
+        movement.stage = "origin-selection".into();
+        if git_text(&observed.source_root, &["remote", "get-url", "origin"])? != observed.origin_before {
+            return Err("origin-changed-by-another-actor".into());
+        }
+        if observed.origin_before != observed.source_selection.candidate.url {
+            let set = git_output(&observed.source_root, &["remote", "set-url", "origin", &observed.source_selection.candidate.url])?;
+            if !set.status.success() {
+                return Err("origin-set-url-failed".into());
+            }
+        }
+        if git_text(&observed.source_root, &["remote", "get-url", "origin"])?
+            != observed.source_selection.candidate.url
+        {
+            return Err("selected-origin-effective-url-mismatch".into());
         }
         movement.stage = "native-update".into();
         let args = [
@@ -1833,8 +1848,14 @@ fn restore_snapshot(
         return Err("rollback-refused-while-native-updater-live".into());
     }
     let current_origin = git_text(&snapshot.source_root, &["remote", "get-url", "origin"])?;
-    if current_origin != snapshot.origin_before {
+    if current_origin != snapshot.origin_before && current_origin != snapshot.selected_origin {
         return Err("rollback-origin-changed-by-another-actor".into());
+    }
+    if current_origin != snapshot.origin_before {
+        let restored = git_output(&snapshot.source_root, &["remote", "set-url", "origin", &snapshot.origin_before])?;
+        if !restored.status.success() || git_text(&snapshot.source_root, &["remote", "get-url", "origin"])? != snapshot.origin_before {
+            return Err("rollback-origin-restore-failed".into());
+        }
     }
     if git_text(
         &snapshot.source_root,
@@ -2085,6 +2106,8 @@ pub(crate) fn receipt(
             candidate_taken: Some(observation.source_selection.candidate.url.clone()),
             candidates_skipped: observation.source_selection.skipped.clone(),
             pre_sha: Some(movement.pre_sha.clone()),
+            origin_before: Some(observation.origin_before.clone()),
+            selected_origin: Some(observation.source_selection.candidate.url.clone()),
             target_sha: Some(movement.target_sha.clone()),
             post_sha: movement.post_sha.clone(),
             movement: movement.movement.clone(),
@@ -2126,6 +2149,8 @@ pub(crate) fn receipt(
             candidate_taken: Some(observation.source_selection.candidate.url.clone()),
             candidates_skipped: observation.source_selection.skipped.clone(),
             pre_sha: Some(observation.anchor_sha.clone()),
+            origin_before: Some(observation.origin_before.clone()),
+            selected_origin: Some(observation.source_selection.candidate.url.clone()),
             target_sha: Some(observation.target_sha.clone()),
             post_sha: Some(observation.anchor_sha.clone()),
             movement: "none".into(),
@@ -2182,6 +2207,8 @@ pub(crate) fn failure(
         },
         candidate_taken: observation.map(|value| value.source_selection.candidate.url.clone()),
         candidates_skipped: observation.map(|value| value.source_selection.skipped.clone()).unwrap_or_else(|| skipped.to_vec()),
+        origin_before: observation.map(|value| value.origin_before.clone()),
+        selected_origin: observation.map(|value| value.source_selection.candidate.url.clone()),
         pre_sha: observation.map(|value| value.anchor_sha.clone()),
         target_sha: observation.map(|value| value.target_sha.clone()),
         post_sha: observation.map(|value| value.anchor_sha.clone()),

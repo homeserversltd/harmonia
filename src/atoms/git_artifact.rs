@@ -118,14 +118,9 @@ pub(crate) fn git_source_host(url: &str) -> Option<String> {
 }
 
 pub(crate) fn git_command_context(request: &Request) -> Result<GitCommandContext, String> {
-    let credential_path = if request.credential_selector.as_deref() == Some("owner-forge-ssh") {
-        "/home/owner/.ssh/forgejo-token"
-    } else {
-        crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL
-    };
     git_command_context_for_credential_source(
         request,
-        Path::new(credential_path),
+        Path::new(crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL),
         crate::atoms::forge_credential::ESTATE_FORGEJO_HOST,
     )
 }

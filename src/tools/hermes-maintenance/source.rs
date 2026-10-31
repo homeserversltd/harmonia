@@ -150,7 +150,7 @@ pub(super) fn git_environment(candidate: &Candidate) -> Result<BTreeMap<String, 
         ("GIT_CONFIG_KEY_0".into(), "credential.helper".into()),
         ("GIT_CONFIG_VALUE_0".into(), "".into()),
     ]);
-    if is_forge && candidate.selector.is_some() {
+    if is_forge {
         let request = crate::atoms::git_artifact::Request::new(Some(candidate.url.clone()), PathBuf::new(), "main".into(), "origin".into())
             .with_credential_selector(candidate.selector.clone());
         let context = crate::atoms::git_artifact::git_command_context(&request)?;
