@@ -136,6 +136,7 @@ impl StampObservation {
             "stamp_source": self.stamp_source.as_deref().map(safe_source_label),
             "key_id": self.key_id,
             "terms": self.terms,
+            "foreign_members": self.terms.keys().filter(|name| !MEMBERS.contains(&name.as_str())).collect::<Vec<_>>(),
             "declared_members": self.declared_members,
             "candidate_attempts": self.attempts,
             "observed": {
@@ -1057,6 +1058,25 @@ fn observe_fire_seal(
             };
         }
     };
+    // Fire-seal grant semantics are outside the collective-stamp change.
+    if parsed.ordered_terms.len() != MEMBERS.len() {
+        return FireSealObservation {
+            profile: profile.to_owned(),
+            status: "UNKNOWN".into(),
+            source: Some(safe_source_label(&locator)),
+            signal: "stamp-grant-term-count-foreign".into(),
+            ..FireSealObservation::default()
+        };
+    }
+    if parsed.ordered_terms.iter().zip(MEMBERS).any(|((name, _), member)| name != member) {
+        return FireSealObservation {
+            profile: profile.to_owned(),
+            status: "INVALID".into(),
+            source: Some(safe_source_label(&locator)),
+            signal: "wukong-staff-stamp-terms-invalid".into(),
+            ..FireSealObservation::default()
+        };
+    }
     let expected_product = format!("wukong-fire-{profile}");
     if parsed.product != expected_product {
         return FireSealObservation {
@@ -1722,13 +1742,16 @@ fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)>
     if parsed.product != "wukong-staff" {
         return Err(("INVALID".into(), "wukong-staff-stamp-terms-invalid".into()));
     }
-    let concatenated = MEMBERS
+    let concatenated = parsed.ordered_terms
         .iter()
-        .map(|member| parsed.terms.get(*member).expect("fixed grant order").as_str())
+        .map(|(_, sha)| sha.as_str())
         .collect::<String>();
     let expected_band = format!("{:x}", Sha256::digest(concatenated.as_bytes()));
     if parsed.stamp_sha != expected_band {
         return Err(("INVALID".into(), "wukong-staff-stamp-band-invalid".into()));
+    }
+    if MEMBERS.iter().any(|member| !parsed.terms.contains_key(*member)) {
+        return Err(("UNKNOWN".into(), "wukong-staff-stamp-member-missing".into()));
     }
     Ok(parsed)
 }
@@ -1739,6 +1762,7 @@ struct ParsedStamp {
     key_id: String,
     stamp_sha: String,
     terms: std::collections::BTreeMap<String, String>,
+    ordered_terms: Vec<(String, String)>,
     licensee: String,
     issued: String,
     product: String,
@@ -1784,13 +1808,7 @@ fn parse_mgla(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
         values.insert(name.to_owned(), value.to_owned());
     }
     let grant = values.get("grant").map(String::as_str).unwrap_or_default();
-    let parsed_terms = grant.split(',').collect::<Vec<_>>();
-    if parsed_terms.len() != MEMBERS.len() {
-        return Err((
-            "UNKNOWN".into(),
-            "stamp-grant-term-count-foreign".into(),
-        ));
-    }
+
 
     let key_id = values.get("key").cloned().unwrap_or_default();
     if !lower_hex(&key_id, 16) {
@@ -1803,14 +1821,16 @@ fn parse_mgla(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
         .map_err(|_| ("INVALID".into(), "wukong-staff-signature-invalid".into()))?;
 
     let mut terms = std::collections::BTreeMap::new();
-    for (item, member) in parsed_terms.iter().zip(MEMBERS) {
+    let mut ordered_terms = Vec::new();
+    for item in grant.split(',') {
         let Some((name, sha)) = item.split_once(':') else {
             return Err(("INVALID".into(), "wukong-staff-stamp-terms-invalid".into()));
         };
-        if name != member || !lower_hex(sha, 40) {
+        if !safe_repo_segment(name) || !lower_hex(sha, 40) || terms.contains_key(name) {
             return Err(("INVALID".into(), "wukong-staff-stamp-terms-invalid".into()));
         }
-        terms.insert(member.to_owned(), sha.to_owned());
+        terms.insert(name.to_owned(), sha.to_owned());
+        ordered_terms.push((name.to_owned(), sha.to_owned()));
     }
     if values.get("expiry").map(String::as_str) != Some("never") {
         return Err(("INVALID".into(), "wukong-staff-stamp-terms-invalid".into()));
@@ -1821,6 +1841,7 @@ fn parse_mgla(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
         key_id,
         stamp_sha: values.get("band").cloned().unwrap_or_default(),
         terms,
+        ordered_terms,
         licensee: values.get("licensee").cloned().unwrap_or_default(),
         issued: values.get("issued").cloned().unwrap_or_default(),
         product: values.get("product").cloned().unwrap_or_default(),
