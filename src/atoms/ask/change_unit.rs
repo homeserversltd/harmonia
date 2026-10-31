@@ -59,6 +59,7 @@ pub(crate) struct Observation {
 pub(crate) struct ConditionSnapshot {
     pub(crate) load_state: String,
     pub(crate) active_state: String,
+    pub(crate) sub_state: String,
     pub(crate) condition_result: String,
     // systemd 257 may return "[unprintable]" here; preserve it, never parse it.
     pub(crate) conditions: String,
@@ -257,13 +258,13 @@ pub(crate) fn observe_systemd_state(
 }
 
 fn parse_condition_snapshot(output: &str) -> Result<ConditionSnapshot, String> {
-    let expected = ["LoadState", "ActiveState", "ConditionResult", "Conditions"];
+    let expected = ["LoadState", "ActiveState", "SubState", "ConditionResult", "Conditions"];
     let mut properties = std::collections::BTreeMap::new();
     for line in output.lines() {
         let Some((key, value)) = line.split_once('=') else {
             return Err("systemd-condition-show-malformed".to_string());
         };
-        if !expected.contains(&key) || value.is_empty() {
+        if !expected.contains(&key) || (value.is_empty() && key != "ConditionResult" && key != "Conditions") {
             return Err("systemd-condition-show-invalid-property".to_string());
         }
         if properties.insert(key, value).is_some() {
@@ -283,14 +284,14 @@ fn parse_condition_snapshot(output: &str) -> Result<ConditionSnapshot, String> {
     ) || !matches!(
         active_state,
         "active" | "reloading" | "inactive" | "failed" | "activating" | "deactivating"
-    ) || !matches!(condition_result, "yes" | "no")
-        || conditions.trim().is_empty()
+    ) || !matches!(condition_result, "yes" | "no" | "")
     {
         return Err("systemd-condition-show-invalid-value".to_string());
     }
     Ok(ConditionSnapshot {
         load_state: load_state.to_string(),
         active_state: active_state.to_string(),
+        sub_state: properties["SubState"].to_string(),
         condition_result: condition_result.to_string(),
         conditions: conditions.to_string(),
         status: None,
@@ -1064,7 +1065,7 @@ pub(crate) fn systemctl(
         }
         "condition-show" => args.extend([
             "show".to_string(),
-            "--property=ActiveState,ConditionResult,Conditions,LoadState".to_string(),
+            "--property=ActiveState,SubState,ConditionResult,Conditions,LoadState".to_string(),
             service.to_string(),
         ]),
         "condition-status" => args.extend([

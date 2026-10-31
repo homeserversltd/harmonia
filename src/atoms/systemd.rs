@@ -132,13 +132,7 @@ pub(crate) fn condition_skip_evidence(
         }
     }
 
-    let status = snapshot.status.as_ref()?;
-    if snapshot.condition_result != "no"
-        || status.code != 3
-        || snapshot.failed_conditions.is_empty()
-        || snapshot.condition_name.is_none()
-        || snapshot.condition_name_source.is_none()
-    {
+    if snapshot.condition_result != "no" {
         return None;
     }
     Some(json!({
@@ -154,7 +148,7 @@ pub(crate) fn condition_skip_evidence(
         "live_condition_evidence": snapshot.live_condition_evidence,
         "needs_daemon_reload": observation.needs_reload,
         "systemctl_show": observation.condition_show,
-        "systemctl_status": status,
+        "systemctl_status": snapshot.status,
         "systemctl_cat": snapshot.condition_cat,
         "journal_condition_evidence": snapshot.condition_journal,
         "systemctl_is_active": probe,
@@ -945,6 +939,24 @@ fn run_action_with_material_gate(
             outcome.changed,
         ),
     )?;
+    if action == "is-active-probe" {
+        let snapshot = before.condition_snapshot.as_ref();
+        let probe_state = if condition_skip_evidence.is_some() {
+            "condition-unmet"
+        } else if before.probe.as_ref().is_some_and(|probe| probe.ok) {
+            "active"
+        } else if before.probe.as_ref().is_some_and(|probe| probe.code == 3 && probe.stdout.trim() == "inactive") {
+            "inactive"
+        } else {
+            "unknown"
+        };
+        attest_change_unit::augment_comparison_receipt(receipt_dir, name, json!({
+            "probe_state": probe_state,
+            "active_state": snapshot.map(|s| &s.active_state),
+            "sub_state": snapshot.map(|s| &s.sub_state),
+            "condition_result": snapshot.map(|s| &s.condition_result),
+        }))?;
+    }
     crate::atoms::attest::change_unit::attest_change_unit(
         receipt_dir,
         name,
