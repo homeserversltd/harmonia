@@ -789,9 +789,8 @@ pub(crate) fn selector_is_safe(selector: &str) -> bool {
 }
 
 /// Bridge configured candidates into the owner-only Git acquisition lane.
-/// A configured credential selector is validated metadata and is deliberately
-/// ignored: every Git child executes as owner over SSH and no engine credential
-/// material is resolved or carried.
+/// Selectors remain metadata until that lane can protect credential-bearing
+/// command output and report the selected credential scope correctly.
 pub(crate) fn bridge_acquisition_plan(
     resolution: &SourceResolution,
     destination: PathBuf,

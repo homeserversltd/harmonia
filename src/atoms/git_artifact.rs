@@ -57,6 +57,7 @@ pub struct Request {
     pub remote: String,
     pub bearer: String,
     pub ssh_key_path: Option<PathBuf>,
+    pub credential_selector: Option<String>,
     /// Exact declared checkout paths trusted only for this Git child.
     pub safe_directories: Vec<PathBuf>,
 }
@@ -70,6 +71,7 @@ impl Request {
             remote,
             bearer: DEFAULT_BEARER.to_string(),
             ssh_key_path: None,
+            credential_selector: None,
             safe_directories: Vec::new(),
         }
     }
@@ -84,6 +86,11 @@ impl Request {
         self
     }
 
+    pub fn with_credential_selector(mut self, selector: Option<String>) -> Self {
+        self.credential_selector = selector;
+        self
+    }
+
     pub fn with_safe_directory(mut self, path: impl Into<PathBuf>) -> Self {
         self.safe_directories.push(path.into());
         self
@@ -95,10 +102,30 @@ pub(crate) struct GitCommandContext {
     pub(crate) config_args: Vec<String>,
 }
 
+pub(crate) fn git_source_host(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("git@") {
+        let host = rest.split_once(':')?.0;
+        return (!host.is_empty() && !host.contains('@')).then(|| host.to_ascii_lowercase());
+    }
+    if let Some(rest) = url.strip_prefix("ssh://git@") {
+        let authority = rest.split('/').next()?;
+        if authority.contains('@') || authority.is_empty() {
+            return None;
+        }
+        return Some(authority.split(':').next()?.to_ascii_lowercase());
+    }
+    crate::atoms::forge_credential::url_host(url)
+}
+
 pub(crate) fn git_command_context(request: &Request) -> Result<GitCommandContext, String> {
+    let credential_path = if request.credential_selector.as_deref() == Some("owner-forge-ssh") {
+        "/home/owner/.ssh/forgejo-token"
+    } else {
+        crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL
+    };
     git_command_context_for_credential_source(
         request,
-        Path::new(crate::atoms::forge_credential::ROOT_PLANE_FORGEJO_CREDENTIAL),
+        Path::new(credential_path),
         crate::atoms::forge_credential::ESTATE_FORGEJO_HOST,
     )
 }
@@ -108,6 +135,18 @@ fn git_command_context_for_credential_source(
     credential_path: &Path,
     estate_host: &str,
 ) -> Result<GitCommandContext, String> {
+    if let Some(selector) = request.credential_selector.as_deref() {
+        if selector != "owner-forge-ssh"
+            || request.repo.as_deref().and_then(git_source_host).as_deref() != Some(estate_host)
+        {
+            return Err("git-credential-selector-refused".into());
+        }
+        if request.repo.as_deref().is_some_and(|url| url.starts_with("ssh://") || url.starts_with("git@"))
+            && request.ssh_key_path.is_none()
+        {
+            return Err("git-credential-selector-key-unbound".into());
+        }
+    }
     let mut env = git_ssh_env(request.ssh_key_path.as_deref())?;
     env.insert("GIT_OPTIONAL_LOCKS".into(), "0".into());
     let credential_helper = match request.repo.as_deref() {
@@ -322,7 +361,8 @@ pub(crate) fn scoped_request(
         plan.reference.clone(),
         "origin".into(),
     )
-    .with_bearer(plan.bearer.clone());
+    .with_bearer(plan.bearer.clone())
+    .with_credential_selector(if candidate.kind == SourceCandidateKind::Git { candidate.credential_selector.clone() } else { None });
     if candidate.kind == SourceCandidateKind::LocalCheckout {
         request = request.with_safe_directory(path);
     }

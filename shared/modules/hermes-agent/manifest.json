@@ -1,0 +1,53 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "hermes-agent",
+  "version": "1.0.0",
+  "description": "Keep the Hermes agent current.",
+  "optional": false,
+  "constants": {},
+  "ladder": [
+    {
+      "step_id": "hermes-agent-maintenance-converge",
+      "tool": "hermes-maintenance",
+      "permutation": "converge",
+      "args": {
+        "owner": "hermes",
+        "source_root": "/opt/hermes/hermes-agent",
+        "launcher": "/opt/hermes/hermes-agent/.hermes/bin/hermes"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-agent-user-daemon-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "user": "hermes",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-agent-gateway-restart",
+      "tool": "systemd",
+      "permutation": "user-restart",
+      "args": {
+        "service": "hermes-gateway.service",
+        "user": "hermes",
+        "timeout_secs": 300
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-agent-dashboard-restart",
+      "tool": "systemd",
+      "permutation": "user-restart",
+      "args": {
+        "service": "hermes-dashboard.service",
+        "user": "hermes",
+        "timeout_secs": 300
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

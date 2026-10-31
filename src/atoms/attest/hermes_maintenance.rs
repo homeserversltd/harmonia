@@ -15,6 +15,7 @@ pub(crate) fn failure(
     apply: bool,
     stage: &str,
     error: &str,
+    skipped: &[String],
 ) -> Result<(), String> {
-    crate::tools::hermes_maintenance::failure(request, observation, apply, stage, error)
+    crate::tools::hermes_maintenance::failure(request, observation, apply, stage, error, skipped)
 }

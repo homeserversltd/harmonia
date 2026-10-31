@@ -1,5 +1,6 @@
 //! Observe and repair the declared Hermes installation through its native updater.
 mod daily_window;
+mod source;
 use crate::atoms::comparison::{ActionAuthorization, DiffDecision};
 use crate::atoms::r#do::InvocationKey;
 use crate::{OperationOutcome, SoftwareApplyAuthorization};
@@ -156,6 +157,7 @@ fn validate_caller_identity(owner: &OwnerContext) -> Result<(), String> {
 struct CapturedOutput {
     status: CapturedStatus,
     stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 struct CapturedStatus {
     success: bool,
@@ -226,6 +228,7 @@ fn run_owner_command(
             code: output.status.code(),
         },
         stdout: output.stdout,
+        stderr: output.stderr,
     })
 }
 
@@ -308,6 +311,8 @@ pub(crate) struct Observation {
     pub(crate) launcher: PathBuf,
     pub(crate) anchor_sha: String,
     pub(crate) target_sha: String,
+    source_selection: source::Selection,
+    origin_before: String,
     pub(crate) launcher_sha256: String,
     pub(crate) branch: Option<String>,
     native_stamp_fields: Option<InstallStampFields>,
@@ -326,6 +331,7 @@ pub(crate) struct ObservationBinding {
     launcher: PathBuf,
     owner_uid: u32,
     target_sha: String,
+    source_selection: source::Selection,
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +345,8 @@ struct RollbackSnapshot {
     launcher_directory_dev: u64,
     launcher_directory_ino: u64,
     pre_sha: String,
+    origin_before: String,
+    selected_origin: String,
     branch: Option<String>,
     launchers: Vec<LauncherSnapshot>,
     owner_uid: u32,
@@ -582,13 +590,14 @@ pub(crate) fn execute_step_with_outputs(
     let binding_slot = std::cell::RefCell::new(None::<ObservationBinding>);
     let initial_slot = std::cell::RefCell::new(None::<Observation>);
     let movement_slot = std::cell::RefCell::new(None::<Movement>);
+    let source_skipped = std::cell::RefCell::new(Vec::<String>::new());
     let run = crate::atoms::declaration::execute(
         "hermes-maintenance",
         "converge",
         || {
             let observation = {
                 let mut binding = binding_slot.borrow_mut();
-                crate::atoms::ask::hermes_maintenance::observe(&request, &mut binding)?
+                crate::atoms::ask::hermes_maintenance::observe(&request, &mut binding, &mut source_skipped.borrow_mut())?
             };
             if initial_slot.borrow().is_none() {
                 *initial_slot.borrow_mut() = Some(observation.clone());
@@ -764,6 +773,7 @@ pub(crate) fn execute_step_with_outputs(
                     apply,
                     "observe-or-act",
                     &error,
+                    &source_skipped.borrow(),
                 )?;
             }
             Err(error)
@@ -844,13 +854,7 @@ pub(crate) fn validate_args(args: &BTreeMap<String, Value>) -> Result<(), String
     {
         return Err("upstream-url-must-be-string".into());
     }
-    if args
-        .get("upstream_url")
-        .and_then(Value::as_str)
-        .is_some_and(|url| !official_url(url))
-    {
-        return Err("upstream-url-must-be-official-hermes-agent".into());
-    }
+
     if args
         .get("branch")
         .is_some_and(|value| value.as_str().is_none())
@@ -911,10 +915,8 @@ fn official_url(url: &str) -> bool {
 pub(crate) fn observe(
     request: &Request,
     retained: &mut Option<ObservationBinding>,
+    skipped: &mut Vec<String>,
 ) -> Result<Observation, String> {
-    if !official_url(&request.upstream_url) {
-        return Err("upstream-url-must-be-official-hermes-agent".into());
-    }
     if request.branch != "main" {
         return Err("upstream-branch-must-be-main".into());
     }
@@ -926,11 +928,19 @@ pub(crate) fn observe(
     let first = retained.is_none();
     let root = canonical_install_root(&request.source_root, owner.uid)?;
     let launcher = canonical_parent_file(&request.launcher)?;
-    validate_origin(&root)?;
+    let catalog = if let Some(binding) = retained.as_ref() {
+        binding.source_selection.catalog.clone()
+    } else {
+        source::Catalog::load()?
+    };
+    if !catalog.allows(&request.upstream_url) {
+        return Err("upstream-url-not-declared".into());
+    }
+    let origin_before = validate_origin(&root, &catalog)?;
     if updater_is_live(&root, &owner)? {
         return Err("native-updater-live-retry".into());
     }
-    let target_sha = if let Some(binding) = retained.as_ref() {
+    let selection = if let Some(binding) = retained.as_ref() {
         if binding.owner != request.owner
             || binding.declared_source_root != request.source_root
             || binding.declared_launcher != request.launcher
@@ -940,11 +950,14 @@ pub(crate) fn observe(
         {
             return Err("maintenance-observation-custody-binding-changed".into());
         }
-        binding.target_sha.clone()
+        binding.source_selection.clone()
     } else {
-        resolve_remote_main(&request.upstream_url)?
+        catalog.select(skipped)?
     };
-    validate_origin(&root)?;
+    if validate_origin(&root, &catalog)? != origin_before {
+        return Err("origin-changed-during-observation".into());
+    }
+    let target_sha = selection.target_sha.clone();
     let pre_sha = git_text(&root, &["rev-parse", "HEAD"])?;
     validate_sha(&pre_sha, "installed-head")?;
     let branch = git_optional_text(&root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
@@ -975,6 +988,9 @@ pub(crate) fn observe(
     let native_state = inspect_native_install_state(&root, &launcher, &owner, &pre_sha)?;
     let dirty = !source_status_is_clean(&status.stdout, native_state.stamp_coherent);
     let mut reasons = native_state.reasons.clone();
+    if origin_before != selection.candidate.url {
+        reasons.push("origin-differs-from-declared-source".into());
+    }
     let target_or_retained_descendant =
         pre_sha == target_sha || (!first && is_ancestor(&root, &target_sha, &pre_sha)?);
     if !target_or_retained_descendant {
@@ -996,6 +1012,8 @@ pub(crate) fn observe(
         launcher: launcher.clone(),
         anchor_sha: pre_sha,
         target_sha: target_sha.clone(),
+        source_selection: selection.clone(),
+        origin_before,
         launcher_sha256: digest(&launcher_bytes),
         branch,
         native_stamp_fields: native_state.stamp_fields.clone(),
@@ -1011,6 +1029,7 @@ pub(crate) fn observe(
             launcher,
             owner_uid: owner.uid,
             target_sha,
+            source_selection: selection,
         });
     }
     Ok(observation)
@@ -1032,8 +1051,14 @@ pub(crate) fn apply(
         .map_err(|_| "failed-stage=custody-euid predecessor=preserved".to_string())?;
     prepare_receipt_directory(&request.receipt_dir, request.receipt_custody)?;
     validate_receipt_output_custody(request)?;
-    validate_origin(&observed.source_root)
+    let current_origin = validate_origin(&observed.source_root, &observed.source_selection.catalog)
         .map_err(|error| format!("failed-stage=foreign-origin predecessor=preserved: {error}"))?;
+    if current_origin != observed.origin_before {
+        return Err("failed-stage=origin-changed predecessor=preserved".into());
+    }
+    if observed.origin_before != observed.source_selection.candidate.url {
+        return Err("failed-stage=origin-selection-atomic-guard-unavailable predecessor=preserved".into());
+    }
     if updater_is_live(&observed.source_root, &owner)? {
         return Err("failed-stage=native-updater-live-retry predecessor=preserved".into());
     }
@@ -1069,6 +1094,8 @@ pub(crate) fn apply(
         launcher_directory_dev: launcher_directory.dev,
         launcher_directory_ino: launcher_directory.ino,
         pre_sha: pre_sha.clone(),
+        origin_before: observed.origin_before.clone(),
+        selected_origin: observed.source_selection.candidate.url.clone(),
         branch: observed.branch.clone(),
         launchers,
         owner_uid: owner.uid,
@@ -1183,30 +1210,30 @@ pub(crate) fn apply(
         let args = [
             "update",
             "--yes",
+            "--no-backup",
             "--no-gateway-restart",
             "--branch",
             "main",
         ];
+        let mut updater_env = source::git_environment(&observed.source_selection.candidate)?;
+        updater_env.insert("TMPDIR".into(), action_scratch.path.to_string_lossy().into_owned());
+        let authenticated = updater_env.contains_key("HARMONIA_FORGEJO_TOKEN");
         let result = run_owner_updater(
             &observed.launcher.to_string_lossy(),
             &args,
             Some(&observed.source_root),
-            BTreeMap::from([
-                ("GIT_TERMINAL_PROMPT".into(), "0".into()),
-                (
-                    "TMPDIR".into(),
-                    action_scratch.path.to_string_lossy().into_owned(),
-                ),
-            ]),
+            updater_env,
             UPDATER_TIMEOUT_SECS,
         );
         match result {
             Ok(output) => {
                 movement.updater_exit_code = output.status.code();
-                movement.updater_stdout_tail = output.stdout_tail;
-                movement.updater_stderr_tail = output.stderr_tail;
+                if !authenticated {
+                    movement.updater_stdout_tail = output.stdout_tail.clone();
+                    movement.updater_stderr_tail = output.stderr_tail.clone();
+                }
                 if let Some(error) = output.error {
-                    return Err(format!("native-updater-capture-failed: {error}"));
+                    return Err(if authenticated { "native-updater-capture-failed".into() } else { format!("native-updater-capture-failed: {error}") });
                 }
                 if !output.status.success() {
                     return Err("native-updater-returned-nonzero".into());
@@ -1220,7 +1247,9 @@ pub(crate) fn apply(
         if !is_ancestor(&observed.source_root, &observed.target_sha, &post_sha)? {
             return Err("post-update-head-is-not-target-or-descendant".into());
         }
-        validate_origin(&observed.source_root)?;
+        if validate_origin(&observed.source_root, &observed.source_selection.catalog)? != observed.source_selection.candidate.url {
+            return Err("post-update-origin-changed".into());
+        }
         let post_branch = git_optional_text(
             &observed.source_root,
             &["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -1264,6 +1293,7 @@ pub(crate) fn apply(
         movement.native_update_receipt_path =
             current_native_receipt.filter(|path| Some(path) != previous_native_receipt.as_ref());
         movement.changed = post_sha != pre_sha
+            || observed.origin_before != observed.source_selection.candidate.url
             || post_branch != observed.branch
             || digest(&launcher_after) != observed.launcher_sha256
             || native_state.stamp_fields != observed.native_stamp_fields;
@@ -1802,6 +1832,10 @@ fn restore_snapshot(
     if updater_is_live(&snapshot.source_root, &owner)? {
         return Err("rollback-refused-while-native-updater-live".into());
     }
+    let current_origin = git_text(&snapshot.source_root, &["remote", "get-url", "origin"])?;
+    if current_origin != snapshot.origin_before {
+        return Err("rollback-origin-changed-by-another-actor".into());
+    }
     if git_text(
         &snapshot.source_root,
         &[
@@ -2047,9 +2081,9 @@ pub(crate) fn receipt(
             timeout_secs: UPDATER_TIMEOUT_SECS,
             source_root: observation.source_root.to_string_lossy().into_owned(),
             launcher: observation.launcher.to_string_lossy().into_owned(),
-            candidate_resolution: "legacy-single-url",
-            candidate_taken: Some(request.upstream_url.clone()),
-            candidates_skipped: Vec::new(),
+            candidate_resolution: if observation.source_selection.catalog.declared { "declared-candidates" } else { "legacy-single-url" },
+            candidate_taken: Some(observation.source_selection.candidate.url.clone()),
+            candidates_skipped: observation.source_selection.skipped.clone(),
             pre_sha: Some(movement.pre_sha.clone()),
             target_sha: Some(movement.target_sha.clone()),
             post_sha: movement.post_sha.clone(),
@@ -2088,9 +2122,9 @@ pub(crate) fn receipt(
             timeout_secs: UPDATER_TIMEOUT_SECS,
             source_root: observation.source_root.to_string_lossy().into_owned(),
             launcher: observation.launcher.to_string_lossy().into_owned(),
-            candidate_resolution: "legacy-single-url",
-            candidate_taken: Some(request.upstream_url.clone()),
-            candidates_skipped: Vec::new(),
+            candidate_resolution: if observation.source_selection.catalog.declared { "declared-candidates" } else { "legacy-single-url" },
+            candidate_taken: Some(observation.source_selection.candidate.url.clone()),
+            candidates_skipped: observation.source_selection.skipped.clone(),
             pre_sha: Some(observation.anchor_sha.clone()),
             target_sha: Some(observation.target_sha.clone()),
             post_sha: Some(observation.anchor_sha.clone()),
@@ -2126,6 +2160,7 @@ pub(crate) fn failure(
     apply: bool,
     stage: &str,
     error: &str,
+    skipped: &[String],
 ) -> Result<(), String> {
     let owner = current_owner_context()?;
     let receipt = RunReceipt {
@@ -2139,9 +2174,14 @@ pub(crate) fn failure(
         timeout_secs: UPDATER_TIMEOUT_SECS,
         source_root: request.source_root.to_string_lossy().into_owned(),
         launcher: request.launcher.to_string_lossy().into_owned(),
-        candidate_resolution: "legacy-single-url",
-        candidate_taken: observation.map(|_| request.upstream_url.clone()),
-        candidates_skipped: Vec::new(),
+        candidate_resolution: match observation {
+            Some(value) if value.source_selection.catalog.declared => "declared-candidates",
+            Some(_) => "legacy-single-url",
+            None if !skipped.is_empty() => "attempted-candidates",
+            None => "unresolved",
+        },
+        candidate_taken: observation.map(|value| value.source_selection.candidate.url.clone()),
+        candidates_skipped: observation.map(|value| value.source_selection.skipped.clone()).unwrap_or_else(|| skipped.to_vec()),
         pre_sha: observation.map(|value| value.anchor_sha.clone()),
         target_sha: observation.map(|value| value.target_sha.clone()),
         post_sha: observation.map(|value| value.anchor_sha.clone()),
@@ -2776,12 +2816,12 @@ fn resolve_remote_main(url: &str) -> Result<String, String> {
     Ok(sha.to_ascii_lowercase())
 }
 
-fn validate_origin(root: &Path) -> Result<(), String> {
+fn validate_origin(root: &Path, catalog: &source::Catalog) -> Result<String, String> {
     let origin = git_text(root, &["remote", "get-url", "origin"])?;
-    if !official_url(&origin) {
+    if !catalog.allows(&origin) {
         return Err("foreign-origin-preserved".into());
     }
-    Ok(())
+    Ok(origin)
 }
 
 fn update_marker_present(root: &Path, owner: &OwnerContext) -> Result<bool, String> {

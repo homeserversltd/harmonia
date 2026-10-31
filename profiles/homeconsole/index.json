@@ -42,6 +42,7 @@
     "screen-supervisor",
     "cua-driver",
     "hermes-seat",
+    "hermes-agent-console",
     "sway-seat-arch-config",
     "sway-seat-arch-wayvnc-config",
     "hermes-sway-config",
