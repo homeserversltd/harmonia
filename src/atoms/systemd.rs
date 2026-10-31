@@ -128,6 +128,12 @@ pub(crate) fn condition_skip_evidence(
             }
             // A fresh all-met result defeats a stale ConditionResult=no record.
             "met" => return None,
+            // An inconsistent declaration cannot establish that an old no
+            // still describes a currently met path; do not turn uncertainty
+            // into a quiet result.
+            "unknown" if live.conditions.iter().any(|condition| {
+                condition.evaluated_result == "met"
+            }) => return None,
             _ => {}
         }
     }
