@@ -373,6 +373,9 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
     if profile.dotfile_pool.is_none() {
         profile.dotfile_pool = Some(base.dotfile_pool.clone().unwrap_or_else(|| base.id.clone()));
     }
+    if profile.dotfile_overlay_pools.is_none() {
+        profile.dotfile_overlay_pools = base.dotfile_overlay_pools.clone();
+    }
     let excluded_module_ids = raw
         .get("excludes")
         .map(|value| parse_excluded_module_ids(value, &profile.id, path))

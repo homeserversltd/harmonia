@@ -214,6 +214,11 @@ pub(crate) fn capsule_pack_with_invocation(
                 materialized["dotfile_pool"] = serde_json::json!(pool);
             }
         }
+        if materialized.get("dotfile_overlay_pools").is_none_or(serde_json::Value::is_null) {
+            if let Some(pools) = profile.dotfile_overlay_pools.as_ref() {
+                materialized["dotfile_overlay_pools"] = serde_json::json!(pools);
+            }
+        }
         if let Some(object) = materialized.as_object_mut() {
             object.remove("extends");
             object.remove("excludes");

@@ -325,6 +325,13 @@ fn molt_from_source_kind_inner(
                 materialized["dotfile_pool"] = serde_json::json!(pool);
             }
         }
+        if matches!(source_kind, MoltSourceKind::EngineSource)
+            && materialized.get("dotfile_overlay_pools").is_none_or(serde_json::Value::is_null)
+        {
+            if let Some(pools) = profile.dotfile_overlay_pools.as_ref() {
+                materialized["dotfile_overlay_pools"] = serde_json::json!(pools);
+            }
+        }
         // Keep source lineage as inert metadata. Runtime profile selection uses
         // the flattened modules and must not resolve another installed profile.
         if let Some(object) = materialized.as_object_mut() {

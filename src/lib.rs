@@ -44,6 +44,8 @@ struct Profile {
     #[serde(default)]
     dotfile_pool: Option<String>,
     #[serde(default)]
+    dotfile_overlay_pools: Option<Vec<String>>,
+    #[serde(default)]
     package_authority: Option<PackageAuthority>,
     #[serde(default)]
     modules: Vec<String>,

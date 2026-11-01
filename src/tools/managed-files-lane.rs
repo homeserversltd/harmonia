@@ -330,7 +330,7 @@ fn profile_fragment_selectors<'a>(
 fn profile_fragment_selectors_for_body(
     profile: &Value,
     profile_index: &Path,
-) -> Result<(String, String, String), String> {
+) -> Result<(String, String, String, Vec<String>), String> {
     let mut resolved = profile.clone();
     let needs_package_authority = profile
         .get("package_authorities")
@@ -339,7 +339,11 @@ fn profile_fragment_selectors_for_body(
         .get("extends")
         .is_some_and(|value| !value.is_null())
         && profile.get("dotfile_pool").is_none_or(Value::is_null);
-    if needs_package_authority || inherits_dotfile_pool {
+    let inherits_overlay_pools = profile
+        .get("extends")
+        .is_some_and(|value| !value.is_null())
+        && profile.get("dotfile_overlay_pools").is_none_or(Value::is_null);
+    if needs_package_authority || inherits_dotfile_pool || inherits_overlay_pools {
         let loaded = crate::bands::stage_profile::load_profile(profile_index).map_err(|error| {
             let signal = if needs_package_authority {
                 "compile-fragments-profile-authority-read-failed"
@@ -363,13 +367,24 @@ fn profile_fragment_selectors_for_body(
                 resolved["dotfile_pool"] = serde_json::json!(pool);
             }
         }
+        if inherits_overlay_pools {
+            if let Some(pools) = loaded.dotfile_overlay_pools.as_ref() {
+                resolved["dotfile_overlay_pools"] = serde_json::json!(pools);
+            }
+        }
     }
     let (appliance, platform, behavioral_pool) =
         profile_fragment_selectors(&resolved, profile_index)?;
+    let overlay_pools = match resolved.get("dotfile_overlay_pools") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(value) => serde_json::from_value::<Vec<String>>(value.clone())
+            .map_err(|error| format!("compile-fragments-profile-overlay-pool-invalid {}: {error}", profile_index.display()))?,
+    };
     Ok((
         appliance.to_owned(),
         platform.to_owned(),
         behavioral_pool.to_owned(),
+        overlay_pools,
     ))
 }
 
@@ -398,8 +413,26 @@ pub(crate) fn compile_fragments(
     platform: &str,
     behavioral_pool: &str,
 ) -> Result<Vec<u8>, String> {
+    compile_fragments_with_overlays(source_root, platform, behavioral_pool, &[])
+}
+
+fn compile_fragments_with_overlays(
+    source_root: &Path,
+    platform: &str,
+    behavioral_pool: &str,
+    overlay_pools: &[String],
+) -> Result<Vec<u8>, String> {
     validate_fragment_path_component(platform, "platform")?;
     validate_fragment_path_component(behavioral_pool, "behavioral-pool")?;
+    let mut seen = std::collections::BTreeSet::new();
+    for pool in overlay_pools {
+        if validate_fragment_path_component(pool, "overlay-pool").is_err()
+            || pool == behavioral_pool || pool == "all" || pool == "platform"
+            || !seen.insert(pool)
+        {
+            return Err(format!("compile-fragments-profile-overlay-pool-invalid {pool}"));
+        }
+    }
     let mut bytes = Vec::new();
     let directory = source_root.join("all");
     for path in fragment_files(&directory)? {
@@ -439,6 +472,14 @@ pub(crate) fn compile_fragments(
             fs::read(&path)
                 .map_err(|error| format!("compile-fragments-read-{}: {error}", path.display()))?,
         );
+    }
+    for pool in overlay_pools {
+        for path in fragment_files(&source_root.join(pool))? {
+            bytes.extend(
+                fs::read(&path)
+                    .map_err(|error| format!("compile-fragments-read-{}: {error}", path.display()))?,
+            );
+        }
     }
     Ok(bytes)
 }
@@ -607,7 +648,7 @@ pub(crate) fn compile_fragments_step(
                 profile_index.display()
             )
         })?;
-    let (appliance, platform, behavioral_pool) =
+    let (appliance, platform, behavioral_pool, overlay_pools) =
         profile_fragment_selectors_for_body(&profile, &profile_index)?;
     let target = step
         .args
@@ -629,7 +670,7 @@ pub(crate) fn compile_fragments_step(
     } else {
         None
     };
-    let bytes = compile_fragments(&source_root, &platform, &behavioral_pool)?;
+    let bytes = compile_fragments_with_overlays(&source_root, &platform, &behavioral_pool, &overlay_pools)?;
     if bytes.is_empty() {
         crate::place_file::write_compile_fragments_no_claim_projection(
             module_dir,
