@@ -36,7 +36,7 @@ server {
     # Proxy API requests to Flask
     location /api/ {
         if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.tail13aff.ts.net' always;
+            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.insertyourshere.ts.net' always;
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
             add_header 'Access-Control-Allow-Headers' 'Authorization,Content-Type,X-Requested-With,Origin' always;
             add_header 'Access-Control-Allow-Credentials' 'true' always;
@@ -79,7 +79,7 @@ server {
     # SPA fallback: serve index.html for all other routes
     location / {
         if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.tail13aff.ts.net' always;
+            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.insertyourshere.ts.net' always;
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
             add_header 'Access-Control-Allow-Headers' 'Authorization,Content-Type,X-Requested-With,Origin' always;
             add_header 'Access-Control-Allow-Credentials' 'true' always;
@@ -102,11 +102,11 @@ server {
     error_page 500 502 503 504 = @fallback;
 }
 
-# Tailscale React app server (remote access via home.tail13aff.ts.net)
+# Tailscale React app server (remote access via home.insertyourshere.ts.net)
 # Note: Individual services now use direct port access (e.g., https://[tailscale-ip]:18096)
 server {
     listen 443 ssl;
-    server_name home.tail13aff.ts.net;
+    server_name home.insertyourshere.ts.net;
 
     ssl_certificate /etc/ssl/home.arpa/cert.pem;
     ssl_certificate_key /etc/ssl/home.arpa/key.pem;
@@ -117,7 +117,7 @@ server {
     # Proxy API requests to Flask
     location /api/ {
         if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.tail13aff.ts.net' always;
+            add_header 'Access-Control-Allow-Origin' 'https://home.arpa, https://home.insertyourshere.ts.net' always;
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
             add_header 'Access-Control-Allow-Headers' 'Authorization,Content-Type,X-Requested-With,Origin' always;
             add_header 'Access-Control-Allow-Credentials' 'true' always;
