@@ -1,8 +1,6 @@
 #editor
 alias nano='nano --smarthome --multibuffer --const --autoindent'
-alias add='chezmoi add'
 alias edit="$EDITOR"
-alias gitpush='/home/anon/bin/gitpush.sh'
 alias fastfetch='fastfetch -c neofetch.jsonc'
 alias neofetch='fastfetch'
 alias fetch='fastfetch'
@@ -141,27 +139,3 @@ if [[ -x "$(command -v systemctl)" ]]; then
 	alias service.enable='sudo systemctl enable'
 	alias service.disable='sudo systemctl disable'
 fi
-
-# Homeserver development shortcuts
-alias hs='ssh homeserver'
-alias hscp='scp homeserver:'
-alias hsmount='sudo mount -t cifs //192.168.123.1/webroot /mnt/temp -o username=root,vers=3.0'
-alias hsumount='sudo umount /mnt/temp'
-
-# Homeserver service management ('ssh homeserver' lands as owner since 2026-07-10;
-# sudo carries the root-scoped remote commands, dedicated root lane is 'homeserver-root')
-alias hsrestart='ssh homeserver "sudo systemctl restart gunicorn.service"'
-alias hsstatus='ssh homeserver "systemctl status gunicorn.service"'
-alias hslogs='ssh -t homeserver "sudo journalctl -u gunicorn.service -f"'
-
-# Homeserver development workflow
-alias hsbuild='ssh homeserver "cd /var/www/homeserver && sudo npm run build"'
-alias hsinstall='ssh homeserver "cd /var/www/homeserver && sudo npm install"'
-alias hstabs='ssh homeserver "sudo python3 /var/www/homeserver/premium/installer.py --installed"'
-alias hsreinstall='ssh homeserver "sudo python3 /var/www/homeserver/premium/installer.py reinstall"'
-alias git-check="check_authorship"
-
-# piper-tts prompt script
-alias nv='~/bin/piper-tts-prompt.sh'
-alias nvm='~/bin/piper-tts-prompt.sh'  # male voice (default)
-alias nvf='~/bin/piper-tts-prompt.sh -f'  # female voice (libritts_r-medium)

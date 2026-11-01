@@ -23,7 +23,7 @@ if [ -f /usr/share/doc/pkgfile/command-not-found.zsh ]; then
 fi
 export TERM=xterm-256color
 export LOCAL_IP=$(ip route get 1 | awk '{print $7}')
-export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/sbin:/usr/sbin:/opt/android-studio/bin:$HOME/.atuin/bin:$PATH"
+export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/sbin:/usr/sbin:$HOME/.atuin/bin:$PATH"
 
 # Check for 'moar' first; if not found, check for 'less'; if neither, default to 'more'
 if command -v moar &> /dev/null; then
@@ -36,8 +36,6 @@ elif command -v less &> /dev/null; then
 elif command -v more &> /dev/null; then
     export PAGER=more
 fi
-export WOODPECKER_SERVER='https://ci.home.arpa'
-
 
 setopt CORRECT
 
@@ -75,7 +73,6 @@ export SAVEHIST=10000  # Optional, for in-session buffer
 if [ -f ~/bin/nnn_opener.sh ]; then
 export NNN_OPENER=~/bin/nnn_opener.sh
 fi
-#/home/anon/.config/nnn/plugins/nuke
 export NNN_PAGER="$PAGER"
 export NNN_PLUG="p:preview-tui;f:fzcd"
 export NNN_FCOLORS='c1e2B32e006033f7c6d6abc4'
@@ -224,10 +221,6 @@ if [[ "$STARTUP_TIMER" == "true" ]]; then
         echo "Shell startup time: ${STARTUP_TIME_S} seconds and ${STARTUP_TIME_MS} milliseconds"
     fi
 fi
-
-# Android SDK configuration
-export ANDROID_HOME=/opt/android-sdk
-export ANDROID_SDK_ROOT=/opt/android-sdk
 
 export _ZO_DOCTOR=0
 
