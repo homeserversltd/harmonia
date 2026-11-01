@@ -325,9 +325,7 @@ fn molt_from_source_kind_inner(
                 materialized["dotfile_pool"] = serde_json::json!(pool);
             }
         }
-        if matches!(source_kind, MoltSourceKind::EngineSource)
-            && materialized.get("dotfile_overlay_pools").is_none_or(serde_json::Value::is_null)
-        {
+        if materialized.get("dotfile_overlay_pools").is_none_or(serde_json::Value::is_null) {
             if let Some(pools) = profile.dotfile_overlay_pools.as_ref() {
                 materialized["dotfile_overlay_pools"] = serde_json::json!(pools);
             }
