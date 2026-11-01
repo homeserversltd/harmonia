@@ -20,12 +20,14 @@ fn response(
     proposals: Option<usize>,
     signal: &str,
     cached_roots: &[String],
+    kernel_purge_plan: &[String],
 ) -> Value {
     json!({"ok":ok,"pending":pending,"pending_software_steps":software,
           "config_proposals":proposals,"first_missing_signal":signal,
           "index_refresh":"never",
           "freshness":"relative-to-cached-package-indexes",
           "cached_index_roots_consulted":cached_roots,
+          "kernel_purge_plan":kernel_purge_plan,
           "coverage":"certificate profile; files/converge, managed-files, metadata, symlink/remove observers, and per-upgrade-step cached package comparisons; unobserved actuators fail closed"})
 }
 
@@ -42,7 +44,7 @@ pub(crate) fn invoke_check(args: &[String]) -> Option<i32> {
     }
     Some(match parse_check_args(&args[1..]) {
         Ok(()) => match observe() {
-            Ok((pending, software, proposals, roots)) => {
+            Ok((pending, software, proposals, roots, kernel_plan)) => {
                 let code = if pending { 0 } else { 7 };
                 emit(
                     response(
@@ -52,13 +54,14 @@ pub(crate) fn invoke_check(args: &[String]) -> Option<i32> {
                         Some(proposals),
                         "none",
                         &roots,
+                        &kernel_plan,
                     ),
                     code,
                 )
             }
-            Err(signal) => emit(response(false, None, None, None, &signal, &[]), 1),
+            Err(signal) => emit(response(false, None, None, None, &signal, &[], &[]), 1),
         },
-        Err(signal) => emit(response(false, None, None, None, &signal, &[]), 1),
+        Err(signal) => emit(response(false, None, None, None, &signal, &[], &[]), 1),
     })
 }
 
@@ -94,7 +97,7 @@ fn parse_check_args(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn observe() -> Result<(bool, usize, usize, Vec<String>), String> {
+fn observe() -> Result<(bool, usize, usize, Vec<String>, Vec<String>), String> {
     let (mut profile, profile_path) = crate::device_profile::resolve_certificate_profile()
         .map_err(|e| format!("update-check-certificate-profile-unavailable:{e}"))?;
     let policy = crate::read_device_module_policy()
@@ -114,6 +117,7 @@ fn observe() -> Result<(bool, usize, usize, Vec<String>), String> {
     let mut config_proposals = BTreeSet::new();
     let mut package_updates = Vec::new();
     let mut cached_roots = Vec::new();
+    let mut kernel_plan = Vec::new();
 
     for (module_id, projected) in &projection.modules {
         let manifest = match &projected.loaded {
@@ -251,8 +255,11 @@ fn observe() -> Result<(bool, usize, usize, Vec<String>), String> {
             PackageBackend::Pacman => (query_pacman()?, query_pacman_ignored()?),
             PackageBackend::Apt => (query_apt()?, BTreeSet::new()),
         };
+        if backend == PackageBackend::Apt && package_updates.iter().any(|update| update.kernel_purge) {
+            kernel_plan = query_kernel_purge()?;
+        }
         for update in package_updates {
-            let mut step_pending = false;
+            let mut step_pending = update.kernel_purge && !kernel_plan.is_empty();
             for (name, current, candidate) in &entries {
                 let base_name = name.split_once(':').map_or(name.as_str(), |(base, _)| base);
                 if !update.scope.is_empty()
@@ -291,11 +298,12 @@ fn observe() -> Result<(bool, usize, usize, Vec<String>), String> {
         }
     }
     let software = pending_steps.len();
-    Ok((software > 0, software, config_proposals.len(), cached_roots))
+    Ok((software > 0, software, config_proposals.len(), cached_roots, kernel_plan))
 }
 
 struct PackageUpdateScope {
     label: String,
+    kernel_purge: bool,
     scope: BTreeSet<String>,
     pins: BTreeSet<String>,
     ceilings: std::collections::BTreeMap<String, String>,
@@ -411,6 +419,7 @@ fn collect_package_scope(
     }
     Ok(PackageUpdateScope {
         label: format!("{module_id}:{}", step.step_id),
+        kernel_purge: step.permutation == "upgrade",
         scope,
         pins: manifest.package_pins.keys().cloned().collect(),
         ceilings: manifest.package_ceilings.clone(),
@@ -913,6 +922,18 @@ fn apt_candidate_within_ceiling(candidate: &str, ceiling: &str) -> Result<bool, 
             result.stderr.trim()
         )),
     }
+}
+
+fn query_kernel_purge() -> Result<Vec<String>, String> {
+    let args = ["-s", "-o", "Debug::NoLocking=1", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "-o", "Dir::Log::History=/dev/null", "-o", "Dir::Log::Terminal=/dev/null", "-o", "Dir::Log::Planner=", "autoremove"]
+        .iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    let result = crate::atoms::ask::read_only_command_with_timeout_and_limit(
+        "/usr/bin/apt-get", &args, CHECK_TIMEOUT, PACKAGE_OUTPUT_LIMIT,
+    );
+    if !result.ok || result.stdout.len() >= PACKAGE_OUTPUT_LIMIT || result.stderr.len() >= STDERR_OUTPUT_LIMIT {
+        return Err(format!("update-check-kernel-purge-query-failed:{}", result.stderr));
+    }
+    Ok(crate::atoms::ask::kernel_purge::kernel_plan(&result.stdout))
 }
 
 fn query_apt() -> Result<Vec<(String, String, String)>, String> {

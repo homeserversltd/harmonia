@@ -1286,6 +1286,46 @@ fn apt_preferences_bytes(
     Ok(out.into_bytes())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn purge_removable_kernels(
+    authorization: &ActionAuthorization,
+    ceiling: Option<&CeilingAuthorization>,
+    invocation: &InvocationKey,
+    receipt_dir: &Path,
+    name: &str,
+    timeout: u64,
+    pins: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<String>, String> {
+    let program = apt_program();
+    let probe = command::capture_with_timeout(&program, &["-s", "autoremove"], timeout);
+    if !probe.ok {
+        return Err(if probe.stderr.is_empty() { probe.stdout } else { probe.stderr });
+    }
+    let plan = crate::atoms::ask::kernel_purge::kernel_plan(&probe.stdout);
+    if plan.is_empty() { return Ok(plan); }
+    let mut simulation_args = vec!["-s".to_string(), "purge".into(), "--".into()];
+    simulation_args.extend(plan.iter().cloned());
+    let simulation = run_apt_command(receipt_dir, name, &program, simulation_args, timeout, pins);
+    if !simulation.ok {
+        return Err(if simulation.stderr.is_empty() { simulation.stdout } else { simulation.stderr });
+    }
+    let expected: std::collections::BTreeSet<_> = plan.iter().cloned().collect();
+    let actual: std::collections::BTreeSet<_> = crate::atoms::ask::kernel_purge::purge_transaction_names(&simulation.stdout).into_iter().collect();
+    if actual != expected || simulation.stdout.lines().any(|line| line.starts_with("Inst ")) {
+        return Err("apt purge simulation would change packages outside the kernel plan".into());
+    }
+    let mut args = vec!["purge".into(), "--yes".into(), "--".into()];
+    args.extend(plan.iter().cloned());
+    let result = if let Some(ceiling) = ceiling {
+        run_apt_command_authorized_with_ceiling(authorization, ceiling, invocation, receipt_dir, name, &program, args, timeout, pins)
+    } else {
+        run_apt_command_authorized(authorization, invocation, receipt_dir, name, &program, args, timeout, pins)
+    };
+    if result.ok { Ok(plan) } else {
+        Err(if result.stderr.is_empty() { result.stdout } else { result.stderr })
+    }
+}
+
 fn package_update_tool(
     r: &Path,
     n: &str,
@@ -1316,8 +1356,25 @@ fn package_update_tool_inner(
     // A check remains a query even if a caller carries software apply authority.
     let apply = apply && !(b == PackageBackend::Apt && a == "check");
     let pre = observe_update(r, a, t, b, pins);
+    let kernel_probe = (b == PackageBackend::Apt && a == "upgrade").then(|| {
+        command::capture_with_timeout(&apt_program(), &["-s", "autoremove"], t)
+    });
+    let kernel_plan = kernel_probe.as_ref().filter(|probe| probe.ok)
+        .map(|probe| crate::atoms::ask::kernel_purge::kernel_plan(&probe.stdout))
+        .unwrap_or_default();
+    if b == PackageBackend::Apt && a == "upgrade" && pre.probe_ok
+        && pre.pending_count == 0 && kernel_plan.is_empty()
+        && kernel_probe.as_ref().is_some_and(|probe| probe.ok)
+    {
+        return Ok(OperationOutcome {
+            ok: true, changed: false, skipped: true,
+            message: "package upgrade already current; no kernel purge pending".into(),
+            command: Some(pre.query.clone()),
+        });
+    }
     write_pin_witness(r, n, pins, b)?;
-    let different = !pre.probe_ok || pre.pending_count > 0;
+    let different = !pre.probe_ok || pre.pending_count > 0 || !kernel_plan.is_empty()
+        || kernel_probe.as_ref().is_some_and(|probe| !probe.ok);
     let release_info_change_accepted = match b {
         PackageBackend::Apt => apt_release_info_change_accepted(&pre.refresh_command),
         PackageBackend::Pacman => false,
@@ -1331,9 +1388,18 @@ fn package_update_tool_inner(
         }
     } else if pre.pending_count > 0 {
         if !apply { "pending-package-updates-report-only" } else { "pending-package-updates-not-converged" }
+    } else if !kernel_plan.is_empty() {
+        if !apply { "pending-kernel-purge-report-only" } else { "pending-kernel-purge-not-converged" }
+    } else if kernel_probe.as_ref().is_some_and(|probe| !probe.ok) {
+        "kernel-purge-probe-unavailable"
     } else {
         "none"
     });
+    if b == PackageBackend::Apt && a == "upgrade" {
+        out["kernel_purge_plan"] = serde_json::json!(kernel_plan);
+        out["kernel_purged"] = serde_json::json!([]);
+        out["converged"] = serde_json::json!(pre.probe_ok && !different);
+    }
     if let PackageBackend::Apt = b {
         out["release_info_change_accepted"] = serde_json::json!(release_info_change_accepted);
     }
@@ -1350,8 +1416,8 @@ fn package_update_tool_inner(
             m,
             false,
         )
-    } else if pre.pending_count == 0 || !apply {
-        let m = if pre.pending_count == 0 {
+    } else if !different || !apply {
+        let m = if !different {
             format!(
                 "package {a} already current; pending_count=0 db_synced_at={}",
                 pre.db_synced_at.as_deref().unwrap_or("unknown")
@@ -1365,7 +1431,7 @@ fn package_update_tool_inner(
         };
         (
             OperationOutcome {
-                ok: pre.pending_count == 0,
+                ok: !different,
                 changed: false,
                 skipped: true,
                 message: m.clone(),
@@ -1399,6 +1465,10 @@ fn package_update_tool_inner(
                             t,
                         ),
                     ),
+                    PackageBackend::Apt if a == "upgrade" && pre.pending_count == 0 => (
+                        None,
+                        CmdResult { ok: true, code: 0, stdout: String::new(), stderr: String::new() },
+                    ),
                     PackageBackend::Apt => {
                         let u = if let Some(ceiling) = ceiling_authorization { run_apt_command_authorized_with_ceiling(authorization, ceiling, invocation, r, n, &apt_program(), vec!["update".into(), "--allow-releaseinfo-change".into()], t, pins) } else { run_apt_command_authorized(
                             authorization,
@@ -1420,10 +1490,13 @@ fn package_update_tool_inner(
                         }
                     }
                 };
-                Ok(pair)
+                let purge = if b == PackageBackend::Apt && a == "upgrade" && pair.1.ok {
+                    Some(purge_removable_kernels(authorization, ceiling_authorization, invocation, r, n, t, pins))
+                } else { None };
+                Ok((pair.0, pair.1, purge))
             },
         )?;
-        let (refresh, act) = match authorized {
+        let (refresh, act, purge) = match authorized {
             comparison::ComparisonRun::Moved { movement, .. } => movement,
             comparison::ComparisonRun::Current { .. } => unreachable!("different update must act"),
         };
@@ -1439,7 +1512,18 @@ fn package_update_tool_inner(
             upgraded = fallback_upgraded(b, &pre.pending, t);
         }
         let post = observe_update(r, a, t, b, pins);
-        let changed = act.ok && !upgraded.is_empty();
+        let purged = match &purge {
+            Some(Ok(names)) => names.clone(),
+            _ => Vec::new(),
+        };
+        if let Some(Err(sentence)) = &purge {
+            out["first_missing_signal"] = "kernel-purge-failed".into();
+            out["kernel_purge_error"] = sentence.clone().into();
+        } else if act.ok && post.probe_ok && post.pending_count == 0 {
+            out["first_missing_signal"] = "none".into();
+        }
+        if purge.is_some() { out["kernel_purged"] = serde_json::json!(purged); }
+        let changed = act.ok && (!upgraded.is_empty() || !purged.is_empty());
         let converged = act.ok && post.probe_ok && post.pending_count == 0;
         let m = if converged {
             format!("package {a}")
