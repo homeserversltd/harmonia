@@ -1,0 +1,15 @@
+# Owner environment for every zsh, read first: ssh 'command', agents, cron,
+# scripts and interactive shells alike. Environment only: no output, no commands.
+for _zshenv_dir in /usr/local/sbin /usr/sbin /sbin "$HOME/bin" "$HOME/.local/bin"; do
+  case ":$PATH:" in
+    *":$_zshenv_dir:"*) ;;
+    *) PATH="${PATH:+$PATH:}$_zshenv_dir" ;;
+  esac
+done
+unset _zshenv_dir
+export PATH
+export LANG="${LANG:-C.UTF-8}"
+# A shell nobody is typing into never parks on a pager.
+if [[ ! -o interactive ]]; then
+  export PAGER=cat GIT_PAGER=cat MANPAGER=cat SYSTEMD_PAGER=
+fi
