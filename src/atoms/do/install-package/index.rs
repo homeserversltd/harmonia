@@ -467,10 +467,24 @@ fn package_tool_with_policy_for_backend_and_ceilings_inner(
     let posture = if first_blocker.is_some() { "preserved" } else { "authorized" };
     let receipt = serde_json::json!({"schema":"harmonia.package_ceiling.v1","module_seat":"pins/pins","entries":entries,"first_blocker":first_blocker,"posture":posture});
     write_json(&receipt_dir.join(format!("{name}.ceiling.json")), &receipt)?;
+    let kernel_only = comparison == crate::atoms::comparison::CeilingComparison::Empty
+        && action == "upgrade"
+        && {
+            let probe = command::capture_with_timeout(&apt_program(), &["-s", "autoremove"], timeout_secs);
+            if !probe.ok {
+                return Err(format!("kernel-purge-probe-unavailable: {}", probe.stderr.trim()));
+            }
+            !crate::atoms::ask::kernel_purge::kernel_plan(&probe.stdout).is_empty()
+        };
+    let action_comparison = if kernel_only {
+        crate::atoms::comparison::CeilingComparison::DifferentAndWithinCeiling
+    } else {
+        comparison
+    };
     let run = crate::atoms::comparison::execute_with_ceiling(
         "package",
         || Ok::<_, String>(()),
-        |_| comparison,
+        |_| action_comparison,
         |_action_authorization, ceiling_authorization, _| {
             package_update_tool(
                 receipt_dir,
@@ -483,6 +497,7 @@ fn package_tool_with_policy_for_backend_and_ceilings_inner(
                 pins,
                 invocation,
                 Some(&ceiling_authorization),
+                kernel_only,
             )
         },
     )?;
@@ -619,6 +634,7 @@ fn package_tool_with_policy_for_backend_and_pins_inner(
                 pins,
                 invocation,
                 None,
+                false,
             )
         }
         PackageBackend::Pacman => Err(format!("unsupported package action {action}")),
@@ -634,6 +650,7 @@ fn package_tool_with_policy_for_backend_and_pins_inner(
                 pins,
                 invocation,
                 None,
+                false,
             )
         }
         PackageBackend::Apt => Err(format!("unsupported package action {action}")),
@@ -1337,8 +1354,9 @@ fn package_update_tool(
     pins: &std::collections::BTreeMap<String, String>,
     invocation: Option<&InvocationKey>,
     ceiling_authorization: Option<&CeilingAuthorization>,
+    kernel_only: bool,
 ) -> Result<OperationOutcome, String> {
-    package_update_tool_inner(r, n, a, packages, apply, t, b, pins, invocation, ceiling_authorization)
+    package_update_tool_inner(r, n, a, packages, apply, t, b, pins, invocation, ceiling_authorization, kernel_only)
 }
 
 fn package_update_tool_inner(
@@ -1352,6 +1370,7 @@ fn package_update_tool_inner(
     pins: &std::collections::BTreeMap<String, String>,
     invocation: Option<&InvocationKey>,
     ceiling_authorization: Option<&CeilingAuthorization>,
+    kernel_only: bool,
 ) -> Result<OperationOutcome, String> {
     // A check remains a query even if a caller carries software apply authority.
     let apply = apply && !(b == PackageBackend::Apt && a == "check");
@@ -1380,6 +1399,9 @@ fn package_update_tool_inner(
         PackageBackend::Pacman => false,
     };
     let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":pre.observed_state.clone(),"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"ignored_upgrades":pre.ignored_upgrades,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":pre.probe_ok && pre.pending_count == 0,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
+    if kernel_only {
+        out["desired_state"] = "no-removable-kernels-within-ceiling".into();
+    }
     out["first_missing_signal"] = serde_json::json!(if !pre.probe_ok {
         if b == PackageBackend::Pacman {
             "pacman-update-probe-unavailable"
@@ -1465,7 +1487,7 @@ fn package_update_tool_inner(
                             t,
                         ),
                     ),
-                    PackageBackend::Apt if a == "upgrade" && pre.pending_count == 0 => (
+                    PackageBackend::Apt if a == "upgrade" && (kernel_only || pre.pending_count == 0) => (
                         None,
                         CmdResult { ok: true, code: 0, stdout: String::new(), stderr: String::new() },
                     ),
@@ -1507,8 +1529,8 @@ fn package_update_tool_inner(
                 .map(|m| read_appended(m).unwrap_or_default())
                 .collect::<Vec<_>>(),
         };
-        let mut upgraded = parse_upgraded(b, &texts);
-        if upgraded.is_empty() && act.ok {
+        let mut upgraded = if kernel_only { Vec::new() } else { parse_upgraded(b, &texts) };
+        if !kernel_only && upgraded.is_empty() && act.ok {
             upgraded = fallback_upgraded(b, &pre.pending, t);
         }
         let post = observe_update(r, a, t, b, pins);
@@ -1519,12 +1541,13 @@ fn package_update_tool_inner(
         if let Some(Err(sentence)) = &purge {
             out["first_missing_signal"] = "kernel-purge-failed".into();
             out["kernel_purge_error"] = sentence.clone().into();
-        } else if act.ok && post.probe_ok && post.pending_count == 0 {
+        } else if act.ok && post.probe_ok && (kernel_only || post.pending_count == 0) {
             out["first_missing_signal"] = "none".into();
         }
         if purge.is_some() { out["kernel_purged"] = serde_json::json!(purged); }
         let changed = act.ok && (!upgraded.is_empty() || !purged.is_empty());
-        let converged = act.ok && post.probe_ok && post.pending_count == 0;
+        let upgrade_ok = act.ok && post.probe_ok && (kernel_only || post.pending_count == 0);
+        let converged = upgrade_ok && (!kernel_only || matches!(&purge, Some(Ok(_))));
         let m = if converged {
             format!("package {a}")
         } else if !act.ok {
@@ -1550,14 +1573,14 @@ fn package_update_tool_inner(
         out["skipped"] = false.into();
         (
             OperationOutcome {
-                ok: converged,
+                ok: upgrade_ok,
                 changed,
                 skipped: false,
                 message: m.clone(),
                 command: Some(act.clone()),
             },
             m,
-            act.ok && !converged,
+            act.ok && !upgrade_ok,
         )
     };
     out["ok"] = outcome.ok.into();
