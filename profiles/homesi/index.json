@@ -13,6 +13,7 @@
   "module_spine_entered": "profiles/homesi/modules",
   "modules": [
     "system-packages",
+    "root-profile",
     "dot-files",
     "keyman",
     "noesis",

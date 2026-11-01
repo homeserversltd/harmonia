@@ -1,0 +1,38 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "root-profile",
+  "title": "Administrator shell",
+  "summary": "Gives the administrator account a working command path.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Keeps a minimal command path for the administrator account.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "compile-profile",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/profile",
+        "target_path": "/root/.profile",
+        "mode": 420,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "compile-bashrc",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/bashrc",
+        "target_path": "/root/.bashrc",
+        "mode": 420,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

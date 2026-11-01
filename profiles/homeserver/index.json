@@ -54,6 +54,7 @@
     "tailscale",
     "keyman",
     "household-time",
+    "root-profile",
     "dot-files",
     "sbin",
     "documentation",

@@ -22,6 +22,7 @@
   "module_spine_entered": "profiles/homeconsole/modules",
   "modules": [
     "system-packages",
+    "root-profile",
     "dot-files",
     "keyman",
     "rust-build-toolchain",

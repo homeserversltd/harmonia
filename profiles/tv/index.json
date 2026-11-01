@@ -32,6 +32,7 @@
     "sudoers",
     "documentation",
     "mkdocs",
+    "root-profile",
     "dot-files"
   ],
   "identity": "tv",
