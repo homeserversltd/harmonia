@@ -1,0 +1,40 @@
+# Reopen a detached conversation without disturbing another client.
+_homesi_hermes_session() {
+  [[ -o interactive && -t 0 && -z ${TMUX:-} && -z ${NO_AUTO_TMUX:-} ]] || return
+  local hermes_bin tty_name preferred name attached activity last pane best='' best_pane=-1 best_activity=-1 best_last=-1
+  local -a sessions panes fields
+  command -v tmux >/dev/null 2>&1 || return
+  hermes_bin=$(command -v hermes) || return
+  tty_name=$(tty) || return
+  tty_name=${tty_name#/dev/}
+  preferred="ssh-${tty_name//\//-}"
+  sessions=("${(@f)$(tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_activity}|#{session_last_attached}' 2>/dev/null)}")
+  panes=("${(@f)$(tmux list-panes -a -F '#{session_name}|#{pane_current_command}' 2>/dev/null)}")
+  for line in "${sessions[@]}"; do
+    fields=("${(@s:|:)line}")
+    (( ${#fields} == 4 )) || continue
+    name=$fields[1] attached=$fields[2] activity=${fields[3]:-0} last=${fields[4]:-0}
+    [[ $attached == 0 && ( $name == hermes* || $name == ssh-* ) ]] || continue
+    if [[ $name == $preferred ]]; then
+      best=$name
+      break
+    fi
+    pane=0
+    for line in "${panes[@]}"; do
+      [[ $line == "$name|hermes" || $line == "$name|python" || $line == "$name|python3" ]] && pane=1
+    done
+    if (( pane > best_pane || (pane == best_pane && activity > best_activity) || (pane == best_pane && activity == best_activity && last > best_last) )); then
+      best=$name best_pane=$pane best_activity=$activity best_last=$last
+    fi
+  done
+  if [[ -z $best ]]; then
+    best=hermes
+    if tmux has-session -t '=hermes' 2>/dev/null; then
+      best="hermes-$(date +%H%M%S)-$$"
+    fi
+    tmux new-session -d -s "$best" "$hermes_bin" || return
+  fi
+  exec tmux attach-session -t "=$best"
+}
+_homesi_hermes_session
+unfunction _homesi_hermes_session

@@ -18,7 +18,8 @@ fi
 if [ -f ~/.enhanced_less_config ]; then
     source ~/.enhanced_less_config
 fi
-_TMUX_LOAD=true
+# The HomeSI .profile launcher owns login tmux.
+_TMUX_LOAD=false
 
 #############################################
 #EXPORTS
