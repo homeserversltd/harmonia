@@ -1,7 +1,7 @@
 # Reopen a detached conversation without disturbing another client.
 _homesi_hermes_session() {
   [[ -o interactive && -t 0 && -z ${TMUX:-} && -z ${NO_AUTO_TMUX:-} ]] || return
-  local hermes_bin tty_name preferred name attached activity last pane best='' best_pane=-1 best_activity=-1 best_last=-1
+  local hermes_bin tty_name preferred name attached activity last pane session_id fresh best='' best_pane=-1 best_activity=-1 best_last=-1
   local -a sessions panes fields
   command -v tmux >/dev/null 2>&1 || return
   hermes_bin=$(command -v hermes) || return
@@ -27,19 +27,22 @@ _homesi_hermes_session() {
       best=$name best_pane=$pane best_activity=$activity best_last=$last
     fi
   done
-  if [[ -z $best ]]; then
-    best=hermes
-    if tmux has-session -t '=hermes' 2>/dev/null; then
-      best="hermes-$(date +%H%M%S)-$$"
-      tmux new-session -d -s "$best" "$hermes_bin" || return
-    elif ! tmux new-session -d -s "$best" "$hermes_bin" 2>/dev/null; then
-      # Another login may have created the canonical session meanwhile.
-      tmux has-session -t '=hermes' 2>/dev/null || return
-      best="hermes-$(date +%H%M%S)-$$"
-      tmux new-session -d -s "$best" "$hermes_bin" || return
-    fi
+  fresh="hermes-$(date +%H%M%S)-$$"
+  if [[ -n $best ]]; then
+    session_id=$(tmux display-message -p -t "=$best:" '#{session_id}') || return
+    [[ -n $session_id ]] || return
+    # Decide and attach in one tmux command queue, not from the snapshot.
+    exec tmux if-shell -F -t "${session_id}:" '#{==:#{session_attached},0}' \
+      "attach-session -t ${(q)session_id}" \
+      "new-session -s ${(q)fresh} ${(q)hermes_bin}"
   fi
-  exec tmux attach-session -t "=$best"
+  if tmux has-session -t '=hermes' 2>/dev/null; then
+    exec tmux new-session -s "$fresh" "$hermes_bin"
+  fi
+  tmux new-session -s hermes "$hermes_bin" 2>/dev/null && return
+  # A concurrent login may have created the canonical session meanwhile.
+  tmux has-session -t '=hermes' 2>/dev/null || return
+  exec tmux new-session -s "$fresh" "$hermes_bin"
 }
 _homesi_hermes_session
 unfunction _homesi_hermes_session
