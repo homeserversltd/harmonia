@@ -534,11 +534,12 @@ fn materialize_from_source(
         &std::collections::BTreeSet::new(),
     )?;
     let update_plan = projection.derive_update_plan(&refreshed, installed_module_root)?;
-    let sealed_projection = crate::atoms::r#do::transaction::seal_projection(
+    let sealed_projection = crate::atoms::r#do::transaction::seal_projection_at_receipt(
         &update_plan,
         &refreshed.id,
         &refreshed.identity,
         &source_head,
+        receipt_dir,
     )?;
     let refreshed_identity = crate::atoms::r#do::transaction::RefreshedProfileIdentity {
         profile_id: refreshed.id.clone(),

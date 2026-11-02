@@ -77,6 +77,7 @@ pub(crate) struct ServiceBinding {
     pub name: String,
     pub user: bool,
     pub target_user: Option<String>,
+    pub member: String,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct UpdatePlan {
@@ -285,6 +286,7 @@ fn write_transaction_rollback_receipt(
         &mint,
         Some(failed_step),
         &txn.restored_paths,
+        &txn.restored_members,
         pointer_restores,
         &rollback_errors,
     )
@@ -300,7 +302,7 @@ fn append_errors(target: &mut String, errors: &[String]) {
 // Compatibility/profile entrypoints remain here; the durable transaction owner lives in ritual.rs.
 pub(crate) use super::ritual::{
     apply_projection, commit_projection, compute_syzygy_sha, project_update_set_v1,
-    rollback_projection, seal_projection, snapshot, snapshot_services, transaction_receipt,
+    rollback_projection, seal_projection, seal_projection_at_receipt, snapshot, snapshot_services, transaction_receipt,
     validate_exact_root, validate_exact_root_at, validate_member_scoped_target, ProjectionChild,
     ProjectionTransaction, SealedProjection, Snapshot, TransactionReceipt, TransactionState,
 };
@@ -640,7 +642,10 @@ pub(crate) fn rolling_update_run(
         )?;
         let projection = load_profile_projection(profile, module_root, &BTreeSet::new())?;
         let execution_projection = projection.clone();
-        let transaction = run_profile_engine_with_projection(
+        // Convert an unwind during the member walk into the same failure
+        // path as a red step, while the sealed projection is still owned by
+        // the carrier and can restore already-promoted members.
+        let transaction = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_profile_engine_with_projection(
             profile,
             module_root,
             &effective_receipt_dir,
@@ -653,7 +658,7 @@ pub(crate) fn rolling_update_run(
             Some(&carrier),
             Some(receipt_dir),
             true,
-        );
+        ))).unwrap_or_else(|_| Err("transaction-engine-panicked".to_owned()));
         let (changed, operation_count, transaction_failures) = carrier
             .borrow()
             .deferred_terminal_summary
@@ -714,6 +719,9 @@ pub(crate) fn rolling_update_run(
                 &carrier,
                 run_started,
             );
+            if let Some(summary) = carrier.borrow().deferred_terminal_summary.as_ref() {
+                txn.note_producer_rollbacks(&summary.module_steps);
+            }
             let mut return_error = error.clone();
             let (receipt, rollback_error) = if let Some(key) = mode.invocation() {
                 let rollback = crate::atoms::r#do::transaction::rollback_projection(&mut txn, key);

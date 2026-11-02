@@ -385,12 +385,13 @@ fn projection_add_service(
 ) {
     if !out
         .iter()
-        .any(|s| s.name == name && s.user == user && s.target_user == target_user)
+        .any(|s| s.name == name && s.user == user && s.target_user == target_user && s.member == member)
     {
         out.push(ServiceBinding {
             name,
             user,
             target_user,
+            member: member.to_owned(),
         });
     }
 }
@@ -533,6 +534,28 @@ fn projection_derive_plan_inner(
             }
         }
         for s in steps {
+            if s.tool == "release-binary" && s.permutation == "install" {
+                if let (Some(component), Some(path)) = (
+                    projection_text(&s.args, "component"),
+                    projection_text(&s.args, "path"),
+                ) {
+                    let member = if pinned_members.as_ref().is_some_and(|members| members.contains(&component)) {
+                        Some(component.as_str())
+                    } else if pinned_members.is_none() && (component == "keyman" || component == "caduceus" || component == "sbin" || gui_member.as_deref() == Some(component.as_str())) {
+                        Some(component.as_str())
+                    } else {
+                        None
+                    };
+                    if let Some(member) = member {
+                        projection_add_census_target(&mut targets, path.into(), member, emit_diagnostics)?;
+                        record_module(member, module_id);
+                        if let Some(service) = projection_text(&s.args, "service") {
+                            let user = projection_text(&s.args, "service_user");
+                            projection_add_service(&mut services, service, user.is_some(), user, member);
+                        }
+                    }
+                }
+            }
             if s.tool == "files"
                 && s.permutation == "source-shelf-sweep"
                 && (module_id == "sbin"
