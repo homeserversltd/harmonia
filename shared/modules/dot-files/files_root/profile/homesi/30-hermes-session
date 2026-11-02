@@ -1,40 +1,41 @@
 # Reopen a detached conversation without disturbing another client.
-_homesi_hermes_session() {
-  [[ -o interactive && -t 0 && -z ${TMUX:-} && -z ${NO_AUTO_TMUX:-} ]] || return
-  local hermes_bin tty_name preferred name attached activity last pane line session_id fresh best='' best_pane=-1 best_activity=-1 best_last=-1
-  local -a sessions panes fields
+_homesi_hermes_session() (
+  case $- in *i*) ;; *) return ;; esac
+  [ -t 0 ] && [ -z "${TMUX:-}" ] && [ -z "${NO_AUTO_TMUX:-}" ] || return
   command -v tmux >/dev/null 2>&1 || return
   hermes_bin=$(command -v hermes) || return
   tty_name=$(tty) || return
-  tty_name=${tty_name#/dev/}
-  preferred="ssh-${tty_name//\//-}"
-  sessions=("${(@f)$(tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_activity}|#{session_last_attached}' 2>/dev/null)}")
-  panes=("${(@f)$(tmux list-panes -a -F '#{session_name}|#{pane_current_command}' 2>/dev/null)}")
-  for line in "${sessions[@]}"; do
-    fields=("${(@s:|:)line}")
-    (( ${#fields} == 4 )) || continue
-    name=$fields[1] attached=$fields[2] activity=${fields[3]:-0} last=${fields[4]:-0}
-    [[ $attached == 0 && ( $name == hermes* || $name == ssh-* ) ]] || continue
-    if [[ $name == $preferred ]]; then
-      best=$name
-      break
-    fi
-    pane=0
-    for line in "${panes[@]}"; do
-      [[ $line == "$name|hermes" || $line == "$name|python" || $line == "$name|python3" ]] && pane=1
-    done
-    if (( pane > best_pane || (pane == best_pane && activity > best_activity) || (pane == best_pane && activity == best_activity && last > best_last) )); then
-      best=$name best_pane=$pane best_activity=$activity best_last=$last
-    fi
-  done
+  preferred="ssh-$(printf '%s' "${tty_name#/dev/}" | tr '/' '-')"
+  sessions=$(tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_activity}|#{session_last_attached}' 2>/dev/null)
+  panes=$(tmux list-panes -a -F '#{session_name}|#{pane_current_command}' 2>/dev/null)
+  best=$(printf '%s\n' "$sessions" | awk -F '|' -v preferred="$preferred" -v panes="$panes" '
+    BEGIN {
+      count = split(panes, rows, "\n")
+      for (i = 1; i <= count; i++) {
+        split(rows[i], p, "|")
+        if (p[2] == "hermes" || p[2] == "python" || p[2] == "python3") good[p[1]] = 1
+      }
+      best_pane = best_activity = best_last = -1
+    }
+    $2 == "0" && ($1 ~ /^hermes/ || $1 ~ /^ssh-/) {
+      if ($1 == preferred) { exact = $1; next }
+      pane = good[$1] + 0; activity = $3 + 0; last = $4 + 0
+      if (pane > best_pane || (pane == best_pane && activity > best_activity) ||
+          (pane == best_pane && activity == best_activity && last > best_last)) {
+        best = $1; best_pane = pane; best_activity = activity; best_last = last
+      }
+    }
+    END { if (exact != "") print exact; else if (best != "") print best }
+  ')
   fresh="hermes-$(date +%H%M%S)-$$"
-  if [[ -n $best ]]; then
+  if [ -n "$best" ]; then
     session_id=$(tmux display-message -p -t "=$best:" '#{session_id}') || return
-    [[ -n $session_id ]] || return
+    [ -n "$session_id" ] || return
     # Decide and attach in one tmux command queue, not from the snapshot.
+    quoted_hermes=$(printf '%s' "$hermes_bin" | sed "s/'/'\\\\''/g")
     exec tmux if-shell -F -t "${session_id}:" '#{==:#{session_attached},0}' \
-      "attach-session -t ${(q)session_id}" \
-      "new-session -s ${(q)fresh} ${(q)hermes_bin}"
+      "attach-session -t '$session_id'" \
+      "new-session -s '$fresh' '$quoted_hermes'"
   fi
   if tmux has-session -t '=hermes' 2>/dev/null; then
     exec tmux new-session -s "$fresh" "$hermes_bin"
@@ -43,6 +44,6 @@ _homesi_hermes_session() {
   # A concurrent login may have created the canonical session meanwhile.
   tmux has-session -t '=hermes' 2>/dev/null || return
   exec tmux new-session -s "$fresh" "$hermes_bin"
-}
+)
 _homesi_hermes_session
-unfunction _homesi_hermes_session
+unset -f _homesi_hermes_session
