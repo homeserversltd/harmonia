@@ -196,7 +196,7 @@ fi
 #RAN EVERY REFRESH
 #############################################
 
-command -v fastfetch >/dev/null 2>&1 && fastfetch
+#command -v fastfetch >/dev/null 2>&1 && fastfetch
 
 if [[ "$STARTUP_TIMER" == "true" ]]; then
     # End measuring time

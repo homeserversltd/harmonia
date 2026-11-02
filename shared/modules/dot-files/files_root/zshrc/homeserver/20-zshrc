@@ -197,7 +197,7 @@ fi
 #RAN EVERY REFRESH
 #############################################
 
-fastfetch
+#fastfetch
 
 if [[ "$STARTUP_TIMER" == "true" ]]; then
     # End measuring time
