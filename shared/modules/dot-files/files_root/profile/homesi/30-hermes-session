@@ -1,7 +1,7 @@
 # Reopen a detached conversation without disturbing another client.
 _homesi_hermes_session() {
   [[ -o interactive && -t 0 && -z ${TMUX:-} && -z ${NO_AUTO_TMUX:-} ]] || return
-  local hermes_bin tty_name preferred name attached activity last pane session_id fresh best='' best_pane=-1 best_activity=-1 best_last=-1
+  local hermes_bin tty_name preferred name attached activity last pane line session_id fresh best='' best_pane=-1 best_activity=-1 best_last=-1
   local -a sessions panes fields
   command -v tmux >/dev/null 2>&1 || return
   hermes_bin=$(command -v hermes) || return
