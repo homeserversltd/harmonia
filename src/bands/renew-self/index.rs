@@ -17,6 +17,7 @@ pub(crate) fn run(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
+    clear_content_prior_head();
     #[cfg(feature = "test-facade")]
     if env::var(RENEW_SELF_FIXTURE_ENV).as_deref() == Ok("ground-two-pass-v1") {
         return run_ground_fixture_preflight(module_root, receipt_dir, apply, invocation);
@@ -1521,6 +1522,61 @@ struct ContentSeatObservation {
     move_ok: bool,
 }
 
+thread_local! {
+    // Outer Some marks a capture, including an absent destination head.
+    static CONTENT_PRIOR_HEAD: std::cell::RefCell<Option<Option<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn content_prior_head() -> Option<String> {
+    CONTENT_PRIOR_HEAD.with(|slot| slot.borrow().as_ref().cloned().unwrap_or(None))
+}
+
+fn clear_content_prior_head() {
+    CONTENT_PRIOR_HEAD.with(|slot| {
+        slot.replace(None);
+    });
+}
+
+fn capture_content_prior_head(plan: &crate::tools::git_artifact::SourcePlan, preflight_dir: &Path) -> Result<(), String> {
+    let already_captured = CONTENT_PRIOR_HEAD.with(|slot| slot.borrow().is_some());
+    if already_captured {
+        return Ok(());
+    }
+
+    let content_seat_path = preflight_dir.join("content-seat.json");
+    // A process replacement loses thread-local state; resume only this press's receipt.
+    // Its absent/null prior_head is still authoritative, since rereading now could
+    // mistake the acquired destination head for the pre-acquisition head.
+    let previous = crate::receipts::receipt_run_id(&content_seat_path).and_then(|run_id| {
+        fs::read_to_string(&content_seat_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .filter(|seat| seat.get("run_id").and_then(Value::as_str) == Some(run_id.as_str()))
+    });
+    let prior = if let Some(seat) = previous {
+        seat.get("prior_head")
+            .and_then(Value::as_str)
+            .filter(|head| crate::atoms::git_artifact::is_lower_hex_sha(head))
+            .map(str::to_owned)
+    } else {
+        let observed = crate::atoms::ask::pull_repo::source_head(&plan.destination, &plan.bearer);
+        let head = observed
+            .ok
+            .then(|| observed.stdout.trim().to_owned())
+            .filter(|head| crate::atoms::git_artifact::is_lower_hex_sha(head));
+        if head.is_none() {
+            match fs::symlink_metadata(plan.destination.join(".git")) {
+                Ok(_) => return Err("engine-content-prior-head-unobservable".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("engine-content-prior-head-check-failed: {error}")),
+            }
+        }
+        head
+    };
+    CONTENT_PRIOR_HEAD.with(|slot| slot.replace(Some(prior)));
+    Ok(())
+}
+
 fn write_content_seat_observation(
     plan: &crate::tools::git_artifact::SourcePlan,
     expected_head: &str,
@@ -1548,6 +1604,7 @@ fn write_content_seat_observation(
             "expected_head": expected_head,
             "requested_ref": plan.reference,
             "expected_commit": plan.expected_commit,
+            "prior_head": content_prior_head(),
             "observed_head": observed_head,
             "matches": matches,
             "observed": true,
@@ -2523,6 +2580,7 @@ fn observe_or_acquire_content_seat(
     preflight_dir: &Path,
 ) -> Result<ContentSeatObservation, String> {
     let plan = exact_source_fallback_plan(resolution, expected_head);
+    capture_content_prior_head(&plan, preflight_dir)?;
     let outcome = crate::bands::pull_source::execute_source(&plan, apply, invocation);
     write_content_seat_observation(&plan, expected_head, apply, &outcome, preflight_dir)
 }
@@ -2616,6 +2674,7 @@ pub(crate) fn run_engine_preflight(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<ModuleExecution, String> {
+    clear_content_prior_head();
     let preflight_dir = receipt_dir.join("engine-preflight");
     crate::atoms::attest::prepare_receipt_parent(&preflight_dir)?;
     let certificate_path = crate::device_profile::device_profile_certificate_path();
@@ -2800,6 +2859,7 @@ pub(crate) fn run_engine_preflight(
                 source_head = Some(source_sha.clone());
                 resolved_sha = Some(source_sha.clone());
                 let pinned_plan = source_fallback_plan(&developer_resolution, &source_sha);
+                capture_content_prior_head(&pinned_plan, &preflight_dir)?;
                 let source = crate::bands::pull_source::execute_source(
                     &pinned_plan,
                     apply,

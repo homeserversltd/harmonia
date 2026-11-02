@@ -715,6 +715,8 @@ pub(crate) fn compile_fragments_step(
         let artifact = artifact_root.join(&artifact_name);
         crate::atoms::attest::write_bytes_atomic(&artifact, &bytes)?;
         let request = crate::atoms::files::FileConvergenceRequest {
+            #[cfg(not(test))]
+            prior_head: crate::bands::renew_self::content_prior_head(),
             source_root: artifact_root,
             target_root: target
                 .parent()
@@ -1171,6 +1173,8 @@ pub(crate) fn managed_files_step_with_authorization(
         }
         atoms::attest::write_bytes_atomic(&source, file.content.as_bytes())?;
         let request = crate::atoms::files::FileConvergenceRequest {
+            #[cfg(not(test))]
+            prior_head: crate::bands::renew_self::content_prior_head(),
             source_root,
             target_root: PathBuf::from("/"),
             files: vec![crate::atoms::files::FileSpec {
@@ -1719,6 +1723,8 @@ where
     }
 
     let request = crate::atoms::files::FileConvergenceRequest {
+            #[cfg(not(test))]
+            prior_head: crate::bands::renew_self::content_prior_head(),
         source_root: staged_root,
         target_root,
         files: expected
@@ -2982,6 +2988,8 @@ pub(crate) fn files_converge_step(
         })
         .collect();
     let request = crate::atoms::files::FileConvergenceRequest {
+            #[cfg(not(test))]
+            prior_head: crate::bands::renew_self::content_prior_head(),
         source_root,
         target_root,
         files,

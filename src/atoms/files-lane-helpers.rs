@@ -71,6 +71,18 @@ pub struct FileConvergenceRequest {
     pub receipt_name: String,
     pub owner: Option<String>,
     pub group: Option<String>,
+    /// Source tree head observed before this press acquired its known-goods.
+    #[cfg(not(test))]
+    pub prior_head: Option<String>,
+}
+
+impl FileConvergenceRequest {
+    pub(crate) fn prior_head(&self) -> Option<&str> {
+        #[cfg(not(test))]
+        { self.prior_head.as_deref() }
+        #[cfg(test)]
+        { None }
+    }
 }
 
 /// Classification is performed at the shared file membrane, before any

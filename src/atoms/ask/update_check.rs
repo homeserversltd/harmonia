@@ -1093,7 +1093,7 @@ fn observe_converge(
                 return Err(format!("update-check-target-refused-{reason}"))
             }
             class => {
-                match std::fs::symlink_metadata(&target) {
+                let target_exists = match std::fs::symlink_metadata(&target) {
                     Ok(metadata) if metadata.file_type().is_symlink() => {
                         return Err(format!(
                             "update-check-target-symlink-no-follow-refused-{}",
@@ -1106,15 +1106,15 @@ fn observe_converge(
                             target.display()
                         ));
                     }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(_) => true,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                     Err(error) => {
                         return Err(format!(
                             "update-check-target-kind-observe-failed-{}:{error}",
                             target.display()
                         ))
                     }
-                }
+                };
                 let observation = crate::atoms::ask::backfill_file::probe::file(
                     &target,
                     &bytes,
@@ -1127,8 +1127,12 @@ fn observe_converge(
                 })?;
                 let equal = observation.current();
                 match class {
-                    crate::atoms::files::TargetClass::Config if !equal => {
-                        config_diff.insert(target.clone());
+                    crate::atoms::files::TargetClass::Config if !equal && target_exists => {
+                        if crate::bands::propose_edits::config_offer_eligible(
+                            manifest, &source, &target,
+                        )? {
+                            config_diff.insert(target.clone());
+                        }
                     }
                     crate::atoms::files::TargetClass::Software if !equal => software_diff = true,
                     _ => {}
@@ -1180,8 +1184,18 @@ fn observe_managed_files(
                 target.display()
             )
         })?;
-        if !obs.current() {
-            config_diff.insert(target.clone());
+        if !obs.current() && target.is_file() {
+            // Managed-file content may be materialized from files_root or generated
+            // inline. The proposer resolves lineage from the actual bytes.
+            let source = manifest.files_root.as_ref()
+                .and_then(|root| target.strip_prefix("/").ok().map(|relative| manifest.base_dir.join(root).join(relative)))
+                .filter(|path| std::fs::read(path).ok().as_deref() == Some(file.content.as_bytes()))
+                .unwrap_or_default();
+            if crate::bands::propose_edits::config_offer_eligible_bytes(
+                manifest, &source, &target, file.content.as_bytes(),
+            )? {
+                config_diff.insert(target.clone());
+            }
         }
     }
     Ok((software_diff, config_diff))
@@ -1197,7 +1211,7 @@ fn observe_metadata(step: &ValidatedStep) -> Result<(bool, BTreeSet<PathBuf>), S
         return Err("update-check-metadata-files-empty".into());
     }
     let mut software_diff = false;
-    let mut config_diff = BTreeSet::new();
+    let config_diff = BTreeSet::new();
     for value in files {
         let spec: crate::atoms::r#do::change_mode::MetadataFileSpec =
             serde_json::from_value(value.clone())
@@ -1240,9 +1254,6 @@ fn observe_metadata(step: &ValidatedStep) -> Result<(bool, BTreeSet<PathBuf>), S
             || owner.prior_uid != ownership.uid
             || owner.prior_gid != ownership.gid;
         match class {
-            crate::atoms::files::TargetClass::Config if different => {
-                config_diff.insert(path.clone());
-            }
             crate::atoms::files::TargetClass::Software if different => software_diff = true,
             _ => {}
         }

@@ -760,6 +760,8 @@ pub(crate) fn execute_routine_child(
                 }
                 crate::atoms::attest::write_bytes_atomic(&proposal_source, &bytes)?;
                 let request = crate::atoms::files::FileConvergenceRequest {
+                    #[cfg(not(test))]
+                    prior_head: crate::bands::renew_self::content_prior_head(),
                     source_root,
                     target_root: Path::new("/").to_path_buf(),
                     files: vec![crate::atoms::files::FileSpec {

@@ -99,6 +99,179 @@ pub(crate) fn iso8601_now() -> String {
         utc.tm_sec
     )
 }
+enum ConfigAncestor {
+    Generated,
+    Unnamed,
+    Named { oid: String, bytes: Vec<u8> },
+}
+
+fn config_history_path(manifest: &LadderManifest, source: &Path, target: &Path, reference: &[u8]) -> Option<(PathBuf, PathBuf)> {
+    let profile_index = manifest.selected_profile_index.as_ref()?;
+    let profile = profile_index.parent()?.file_name()?.to_str()?;
+    let root = crate::bands::renew_self::engine_source_root().canonicalize().ok()?;
+    let module = crate::bands::stage_profile::source_module_path(&root, profile, &manifest.id).ok()?.canonicalize().ok()?;
+    if !module.starts_with(&root) { return None; }
+    let path = if let Ok(relative) = source.strip_prefix(&manifest.base_dir) {
+        crate::atoms::files::validate_relative_path(relative).ok()?;
+        module.join(relative)
+    } else {
+        let files_root = manifest.files_root.as_ref()?;
+        let relative = target.strip_prefix("/").ok()?;
+        crate::atoms::files::validate_relative_path(relative).ok()?;
+        module.join(files_root).join(relative)
+    };
+    if fs::read(&path).ok()?.as_slice() != reference { return None; }
+    let relative = path.strip_prefix(&root).ok()?.to_path_buf();
+    crate::atoms::files::validate_relative_path(&relative).ok()?;
+    Some((root, relative))
+}
+
+fn history_command(root: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command.arg("--no-optional-locks").arg("-c").arg(format!("safe.directory={}", root.display())).arg("-C").arg(root)
+        .env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY").env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+    command
+}
+
+fn history_git(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut command = history_command(root);
+    command.args(args)
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = command.spawn().map_err(|error| format!("config-history-git-start: {error}"))?;
+    if let Some(bytes) = input {
+        child.stdin.take().ok_or("config-history-stdin-missing")?.write_all(bytes)
+            .map_err(|error| format!("config-history-stdin: {error}"))?;
+    }
+    let output = child.wait_with_output().map_err(|error| format!("config-history-git-wait: {error}"))?;
+    if !output.status.success() { return Err("config-history-git-failed".into()); }
+    Ok(output.stdout)
+}
+
+fn git_oid(bytes: &[u8]) -> Option<String> {
+    let oid = std::str::from_utf8(bytes).ok()?.trim();
+    if matches!(oid.len(), 40 | 64) && oid.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        Some(oid.to_owned())
+    } else { None }
+}
+
+fn history_blob_at(root: &Path, commit: &str, path: &Path) -> Option<(String, Vec<u8>)> {
+    if git_oid(commit.as_bytes()).is_none() { return None; }
+    let spec = format!("{}:{}", commit, path.to_str()?);
+    let oid = git_oid(&history_git(root, &["rev-parse", "--verify", &spec], None).ok()?)?;
+    let bytes = history_git(root, &["cat-file", "blob", &oid], None).ok()?;
+    Some((oid, bytes))
+}
+
+fn resolve_config_ancestor(manifest: &LadderManifest, source: &Path, target: &Path, live: &[u8], reference: &[u8], prior: Option<&Interactable>, prior_head: Option<&str>) -> Result<ConfigAncestor, String> {
+    if let Some(oid) = prior.and_then(|item| item.extra.get("ancestor_sha")).and_then(Value::as_str) {
+        let oid = git_oid(oid.as_bytes()).ok_or("config-history-ancestor-id-invalid")?;
+        let root = crate::bands::renew_self::engine_source_root().canonicalize()
+            .map_err(|error| format!("config-history-root-unavailable: {error}"))?;
+        let bytes = history_git(&root, &["cat-file", "blob", &oid], None)?;
+        return Ok(ConfigAncestor::Named { oid, bytes });
+    }
+    let source_is_tracked_candidate = source.starts_with(&manifest.base_dir)
+        || manifest.files_root.as_ref().and_then(|root| target.strip_prefix("/").ok()
+            .map(|relative| manifest.base_dir.join(root).join(relative)))
+            .and_then(|path| fs::read(path).ok()).is_some_and(|bytes| bytes == reference);
+    let Some((root, path)) = config_history_path(manifest, source, target, reference) else {
+        return Ok(if source_is_tracked_candidate { ConfigAncestor::Unnamed } else { ConfigAncestor::Generated });
+    };
+    let live_oid = git_oid(&history_git(&root, &["hash-object", "--stdin"], Some(live))?)
+        .ok_or("config-history-live-id-invalid")?;
+    let find = format!("--find-object={live_oid}");
+    let path_text = path.to_str().ok_or("config-history-path-not-utf8")?;
+    let mut child = history_command(&root).args(["log", "--format=%H", &find, "--", path_text])
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null()).spawn()
+        .map_err(|error| format!("config-history-log-start: {error}"))?;
+    let stdout = child.stdout.take().ok_or("config-history-log-output-missing")?;
+    let mut found = None;
+    let mut read_error = None;
+    use std::io::BufRead;
+    for line in std::io::BufReader::new(stdout).lines() {
+        match line {
+            Ok(line) if found.is_none() => {
+                if let Some((oid, bytes)) = history_blob_at(&root, &line, &path) {
+                    if oid == live_oid && bytes == live { found = Some((oid, bytes)); }
+                }
+            }
+            Ok(_) => {}
+            Err(error) => { read_error = Some(error); break; }
+        }
+    }
+    let status = child.wait().map_err(|error| format!("config-history-log-wait: {error}"))?;
+    if let Some(error) = read_error { return Err(format!("config-history-log-read: {error}")); }
+    if !status.success() { return Err("config-history-log-failed".into()); }
+    if let Some((oid, bytes)) = found { return Ok(ConfigAncestor::Named { oid, bytes }); }
+    if let Some(head) = prior_head {
+        if let Some((oid, bytes)) = history_blob_at(&root, head, &path) {
+            if bytes != reference { return Ok(ConfigAncestor::Named { oid, bytes }); }
+        }
+    }
+    Ok(ConfigAncestor::Unnamed)
+}
+
+pub(crate) fn config_offer_eligible(manifest: &LadderManifest, source: &Path, target: &Path) -> Result<bool, String> {
+    let reference = read_regular_file_no_follow(source, "config-check-source")?;
+    config_offer_eligible_bytes(manifest, source, target, &reference)
+}
+
+pub(crate) fn config_offer_eligible_bytes(manifest: &LadderManifest, source: &Path, target: &Path, reference: &[u8]) -> Result<bool, String> {
+    let live = read_regular_file_no_follow(target, "config-check-target")?;
+    if live == reference || interactables::normalized_line_score(&String::from_utf8_lossy(&live), &String::from_utf8_lossy(reference)) < 0.33 { return Ok(false); }
+    let feed = interactables::load_feed(&crate::ledger::database_path())?;
+    let prior = feed.interactables.iter().find(|item| item.target_path.as_deref() == Some(target));
+    let tracked_candidate = source.starts_with(&manifest.base_dir)
+        || manifest.files_root.as_ref().and_then(|root| target.strip_prefix("/").ok()
+            .map(|relative| manifest.base_dir.join(root).join(relative)))
+            .and_then(|path| fs::read(path).ok()).is_some_and(|bytes| bytes == reference);
+    if prior.is_none() && tracked_candidate
+        && config_history_path(manifest, source, target, reference).is_none()
+    {
+        // A read-only check cannot identify the pre-acquisition head of a
+        // future press when its selected reference is not in the current tree.
+        return Err("update-check-config-provenance-unavailable".into());
+    }
+    let prior_head = crate::bands::renew_self::content_prior_head();
+    match resolve_config_ancestor(manifest, source, target, &live, reference, prior, prior_head.as_deref())? {
+        ConfigAncestor::Generated => Ok(true),
+        ConfigAncestor::Unnamed => Ok(prior.is_some()),
+        ConfigAncestor::Named { bytes, .. } => {
+            if bytes == reference { return Ok(false); }
+            let (merged, _) = land_config_slice(&bytes, &live, reference)?;
+            Ok(merged != live)
+        }
+    }
+}
+
+fn land_config_slice(ancestor: &[u8], live: &[u8], reference: &[u8]) -> Result<(Vec<u8>, &'static str), String> {
+    let ancestor = std::str::from_utf8(ancestor).map_err(|_| "config-slice-ancestor-not-utf8")?;
+    let live = std::str::from_utf8(live).map_err(|_| "config-slice-live-not-utf8")?;
+    let reference = std::str::from_utf8(reference).map_err(|_| "config-slice-reference-not-utf8")?;
+    let options = threeway_merge::MergeOptions::default();
+    let observed = threeway_merge::merge_strings(ancestor, live, reference, &options)
+        .map_err(|error| format!("config-slice-merge-failed: {error}"))?;
+    let conflict = observed.has_conflicts();
+    let bytes = if conflict {
+        let favor = threeway_merge::MergeOptions {
+            favor: Some(threeway_merge::MergeFavor::Theirs),
+            ..options
+        };
+        threeway_merge::merge_strings(ancestor, live, reference, &favor)
+            .map_err(|error| format!("config-slice-merge-failed: {error}"))?.content
+    } else {
+        observed.content
+    };
+    let case = if conflict { "conflict" } else if ancestor == live { "default-moved" } else { "default-rolled" };
+    Ok((bytes.into_bytes(), case))
+}
+
 fn proposal_diff(target: &Path, live: &[u8], proposed: &[u8]) -> Option<String> {
     const LIMIT: usize = 256 * 1024;
     if live == proposed || live.len() > LIMIT || proposed.len() > LIMIT {
@@ -548,15 +721,19 @@ fn refresh_interactables_at_path_with_policy_and_step(
             continue;
         }
         let target_absent = !entry.target_exists_before;
-        let config_target = matches!(
-            crate::atoms::files::classify_target(&entry.target),
-            crate::atoms::files::TargetClass::Config
-        );
-        if target_absent
-            && (!config_target
-                || outcome.config_state
-                    != Some(crate::atoms::files::ConfigConvergenceState::ProposalEligible))
-        {
+        if target_absent {
+            // An absent target has no owner file to recognize or change. Keep
+            // legacy rows, but retire offers this lane can identify as its own.
+            for prior in feed.interactables.iter().filter(|item| item.target_path.as_deref() == Some(entry.target.as_path())) {
+                if !prior.extra.contains_key("ancestor_sha")
+                    && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true)
+                {
+                    remember_config_proposal(&prior.id);
+                } else {
+                    remove_ids.insert(prior.id.clone());
+                }
+            }
+            feed.interactables.retain(|item| !remove_ids.contains(&item.id));
             continue;
         }
         let drift = DriftSummary {
@@ -664,11 +841,7 @@ fn refresh_interactables_at_path_with_policy_and_step(
             .ok_or_else(|| "config-recognition-no-known-good".to_string())?
         };
         let score = recognized.score;
-        let threshold = if target_absent || compiled_artifact_authoritative {
-            0.0
-        } else {
-            0.33
-        };
+        let threshold = 0.33;
         let state = if score >= threshold {
             "interactable"
         } else {
@@ -681,39 +854,102 @@ fn refresh_interactables_at_path_with_policy_and_step(
                 "reference_sha": reference_sha.clone(), "threshold": threshold,
                 "reference_id": reference_source.clone()
             });
-        // Refused recognition has no live proposal. Its evidence belongs only
-        // to this invocation's reply, never an orphan row or a stale sidecar.
-        CURRENT_CONFIG_RECOGNITIONS.with(|state| {
-            state.borrow_mut().insert(id.clone(), config_state.clone());
-        });
         if score < threshold {
+            if let Some(prior) = prior_for_target.as_ref().filter(|prior| !prior.extra.contains_key("ancestor_sha") && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true)) {
+                remember_config_proposal(&prior.id);
+                continue;
+            }
+            // A refusal is an observation, not a proposal row.
+            CURRENT_CONFIG_RECOGNITIONS.with(|state| {
+                state.borrow_mut().insert(id.clone(), config_state.clone());
+            });
             remove_ids.extend(
-                feed.interactables
-                    .iter()
+                feed.interactables.iter()
                     .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
                     .map(|item| item.id.clone()),
             );
-            feed.interactables
-                .retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
+            feed.interactables.retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
             recognitions.push(ConfigRecognition {
-                config_state: state.to_string(),
-                score,
-                reference_id: Some(recognized.reference_id),
-                nearest_reference: Some(reference_source.clone()),
-                target: entry.target.clone(),
-                live_sha: live_sha.clone(),
-                target_absent,
-                reference_sha: reference_sha.clone(),
+                config_state: state.to_string(), score,
+                reference_id: Some(recognized.reference_id.clone()),
+                nearest_reference: Some(reference_source.clone()), target: entry.target.clone(),
+                live_sha: live_sha.clone(), target_absent, reference_sha: reference_sha.clone(),
                 interactable_id: None,
             });
             continue;
         }
+        if prior_for_target.as_ref().is_some_and(|prior|
+            !prior.extra.contains_key("ancestor_sha")
+                && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true))
+        {
+            let prior = prior_for_target.as_ref().expect("legacy row checked above");
+            // Preserve the old row even if a historical ancestor is now discoverable.
+            remember_config_proposal(&prior.id);
+            recognitions.push(ConfigRecognition {
+                config_state: "interactable".to_string(), score,
+                reference_id: Some(recognized.reference_id.clone()),
+                nearest_reference: prior.reference_source_path.clone(), target: entry.target.clone(),
+                live_sha: live_sha.clone(), target_absent, reference_sha: reference_sha.clone(),
+                interactable_id: Some(prior.id.clone()),
+            });
+            continue;
+        }
+        let resolved = if target_absent || compiled_artifact_authoritative {
+            ConfigAncestor::Generated
+        } else {
+            resolve_config_ancestor(manifest, &entry.source, &entry.target, &live_bytes, &reference_bytes, prior_for_target.as_ref(), request.prior_head())?
+        };
+        if matches!(resolved, ConfigAncestor::Unnamed) {
+            continue;
+        }
+        if let ConfigAncestor::Named { bytes, .. } = &resolved {
+            if bytes == &reference_bytes {
+                if let Some(prior) = prior_for_target.as_ref().filter(|prior| !prior.extra.contains_key("ancestor_sha")) {
+                    remember_config_proposal(&prior.id);
+                    continue;
+                }
+                remove_ids.extend(feed.interactables.iter()
+                    .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
+                    .map(|item| item.id.clone()));
+                feed.interactables.retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
+                continue;
+            }
+        }
         let config_act_binding = step_id
             .map(|step_id| config_act_binding(manifest, step_id))
             .transpose()?;
-        let proposal_diff_text = proposal_diff(&entry.target, &live_bytes, &reference_bytes);
+        let generated_config = matches!(resolved, ConfigAncestor::Generated);
+        let (proposal_bytes, slice) = match resolved {
+            ConfigAncestor::Named { oid, bytes } => {
+                let (merged, case) = land_config_slice(&bytes, &live_bytes, &reference_bytes)?;
+                let sentence = match case {
+                    "default-moved" => "HomeServer updated this file's default.",
+                    "default-rolled" => "HomeServer updated this file's default. Your own changes stay as they are.",
+                    _ => "HomeServer updated a line you also changed. Yes keeps HomeServer's line there; your other changes stay.",
+                };
+                (merged, Some((oid, serde_json::json!({"case": case, "sentence": sentence}))))
+            }
+            _ => (reference_bytes.clone(), None),
+        };
+        if !target_absent && proposal_bytes == live_bytes {
+            if let Some(prior) = prior_for_target.as_ref() {
+                if !prior.extra.contains_key("ancestor_sha")
+                    && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true)
+                {
+                    remember_config_proposal(&prior.id);
+                } else {
+                    remove_ids.insert(prior.id.clone());
+                    feed.interactables.retain(|item| item.id != prior.id);
+                }
+            }
+            continue;
+        }
+        CURRENT_CONFIG_RECOGNITIONS.with(|state| {
+            state.borrow_mut().insert(id.clone(), config_state.clone());
+        });
+        let proposal_diff_text = proposal_diff(&entry.target, &live_bytes, &proposal_bytes);
         config.push(crate::ledger::ConfigProposal {
-            id: id.clone(), state: config_state, source: reference_bytes,
+            id: id.clone(), state: config_state, source: proposal_bytes,
         });
         let interactable_id = id.clone();
         let mut refreshed = Interactable {
@@ -756,6 +992,16 @@ fn refresh_interactables_at_path_with_policy_and_step(
             refreshed.has_run = prior.has_run;
             refreshed.evidence = prior.evidence.clone();
             refreshed.extra = prior.extra.clone();
+        }
+        refreshed.extra.remove("ancestor_sha");
+        refreshed.extra.remove("slice");
+        refreshed.extra.remove("generated_config");
+        if generated_config {
+            refreshed.extra.insert("generated_config".into(), Value::Bool(true));
+        }
+        if let Some((oid, details)) = slice {
+            refreshed.extra.insert("ancestor_sha".into(), Value::String(oid));
+            refreshed.extra.insert("slice".into(), details);
         }
         if target_absent {
             refreshed.extra.insert(

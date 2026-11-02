@@ -2423,6 +2423,8 @@ fn run_toolchain_ratchet(
             })
             .collect();
         let request = crate::tools::files::FileConvergenceRequest {
+            #[cfg(not(test))]
+            prior_head: crate::bands::renew_self::content_prior_head(),
             source_root: files_root,
             target_root: PathBuf::from("/"),
             files,
