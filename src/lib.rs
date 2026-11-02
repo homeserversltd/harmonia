@@ -1593,7 +1593,7 @@ pub(crate) fn usage() -> Result<(), String> {
         "  harmonia xenia render-unit --register <path> --id <id> [--caduceus-bind <host:port>] [--schema-base <url>]"
     );
     println!("  harmonia config-proposal list [--json]");
-    println!("  harmonia config-proposal accept <id> owner");
+    println!("  harmonia config-proposal accept <id>");
     println!("  harmonia interactable inspect <id> [--json]");
     println!("  harmonia interactable reconcile");
     println!("  harmonia install-timer [--systemd-root <path>] [--dry-run]");
