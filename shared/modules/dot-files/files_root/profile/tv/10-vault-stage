@@ -1,0 +1,39 @@
+# Ask for the vault only at an interactive terminal login, outside tmux.
+if case $- in *i*) true ;; *) false ;; esac &&
+   { if [ -n "${ZSH_VERSION-}" ]; then [[ -o login ]]; else case $0 in -*) true ;; *) false ;; esac; fi; } &&
+   [ -t 0 ] && [ -t 1 ] && [ -z "${TMUX-}" ] && [ -z "${NO_VAULT_STAGE+x}" ] && [ -z "${_VAULT_STAGE_SEEN+x}" ]; then
+    _VAULT_STAGE_SEEN=1
+    (
+        set +ax
+        unset _vault_password
+        if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+            printf '%s\n' 'Vault service unavailable; login will continue.'
+            exit 0
+        fi
+        _vault_url="http://127.0.0.1:${VAULT_STAGE_PORT:-3014}/api/v1"
+        if ! _vault_gate=$(curl -fsS --connect-timeout 1 --max-time 2 "$_vault_url/access/gate" 2>/dev/null); then
+            printf '%s\n' 'Vault service unavailable; login will continue.'
+            exit 0
+        fi
+        if ! printf '%s' "$_vault_gate" | jq -e '.vault.unlock_required == true' >/dev/null 2>&1; then
+            exit 0
+        fi
+        _vault_tty=$(stty -g) || exit 0
+        trap 'stty "$_vault_tty" 2>/dev/null' 0
+        trap 'exit 1' HUP INT TERM
+        stty -echo || exit 0
+        printf 'Vault password: ' >&2
+        IFS= read -r _vault_password || exit 0
+        stty "$_vault_tty"
+        trap - 0 HUP INT TERM
+        printf '\n' >&2
+        _vault_reply=$(printf '%s' "$_vault_password" | jq -Rs '{password: .}' | curl -sS --connect-timeout 1 --max-time 300 -H 'Content-Type: application/json' --data-binary @- "$_vault_url/storage/vault/unlock" 2>/dev/null)
+        _vault_status=$?
+        unset _vault_password
+        if [ "$_vault_status" -ne 0 ]; then
+            printf '%s\n' 'Vault service unavailable; login will continue.'
+        else
+            printf '%s' "$_vault_reply" | jq -r 'if .success == true then "Vault unlocked." else (.message // .firstMissingSignal // "Vault unlock refused.") end, (.warning // empty)' 2>/dev/null || printf '%s\n' 'Vault unlock failed; login will continue.'
+        fi
+    )
+fi
