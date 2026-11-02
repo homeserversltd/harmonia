@@ -551,28 +551,15 @@ fn refresh_interactables_at_path_with_policy_and_step(
             ownership: entry.ownership_changed,
         };
         if !target_absent && !drift.content && !drift.mode && !drift.ownership {
-            if compiled_artifact_authoritative {
-                remove_ids.extend(
-                    feed.interactables
-                        .iter()
-                        .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
-                        .filter(|item| {
-                            item.extra
-                                .get("compiled_target_absent")
-                                .and_then(Value::as_bool)
-                                == Some(true)
-                        })
-                        .map(|item| item.id.clone()),
-                );
-                feed.interactables.retain(|item| {
-                    item.target_path.as_deref() != Some(entry.target.as_path())
-                        || item
-                            .extra
-                            .get("compiled_target_absent")
-                            .and_then(Value::as_bool)
-                            != Some(true)
-                });
-            }
+            let is_own_config = |item: &Interactable| {
+                is_config_proposal_id(&item.id)
+                    && item.module_id == manifest.id
+                    && item.target_path.as_deref() == Some(entry.target.as_path())
+            };
+            remove_ids.extend(
+                feed.interactables.iter().filter(|item| is_own_config(item)).map(|item| item.id.clone()),
+            );
+            feed.interactables.retain(|item| !is_own_config(item));
             continue;
         }
         crate::tools::files::validate_interactable_target(&entry.target)?;
