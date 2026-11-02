@@ -125,6 +125,42 @@ pub(crate) fn fetch_external_archive(
     result
 }
 
+/// Fetch an exact third-party release; its declared digest is checked by the caller.
+/// The unpinned external and release.flag paths are deliberately unchanged.
+pub(crate) fn fetch_pinned_external_archive(
+    kind: &str, locator: &str, asset_name: &str, tag: &str,
+) -> Result<Vec<u8>, String> {
+    let (host, owner, repo) = external_release_candidate_shape(kind, locator, asset_name)?;
+    if matches!(tag, "" | "." | ".." | "latest") || !tag.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'+')) {
+        return Err("pinned-release-tag-invalid".into());
+    }
+    let base_url = if kind == "github-release" { "https://api.github.com".to_string() } else { format!("https://{host}") };
+    let credential = if kind == "forgejo-release" {
+        crate::atoms::forge_credential::credential_for_url(&base_url)?
+    } else { None };
+    let request = ReleaseRequest {
+        kind: kind.into(), base_url: base_url.clone(), owner: owner.into(), repo: repo.into(),
+        credential_scope_found: credential.is_some(), credential,
+        credential_host: crate::atoms::forge_credential::url_host(&base_url),
+        cache_dir: std::env::temp_dir().join(format!("harmonia-pinned-release-{}", unique_temp_suffix())),
+    };
+    let result = (|| {
+        let metadata = lookup_release_metadata_single(&request, tag, true)?
+            .ok_or("pinned-release-tag-missing")?;
+        if metadata.tag_name.as_deref() != Some(tag) || metadata.draft {
+            return Err("pinned-release-tag-mismatch-or-draft".into());
+        }
+        let assets = metadata.assets.as_array().ok_or("pinned-release-assets-invalid")?;
+        if assets.iter().filter(|entry| entry.get("name").and_then(Value::as_str) == Some(asset_name)).count() != 1 {
+            return Err("pinned-release-asset-missing-or-duplicate".into());
+        }
+        let url = release_asset_url(&metadata, tag, asset_name)?;
+        download_release_asset(&request, &url, asset_name, true)
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result
+}
+
 pub(crate) fn unique_temp_suffix() -> String {
     format!(
         "{}-{}",

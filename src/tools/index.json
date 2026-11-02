@@ -1785,7 +1785,10 @@
             {"name": "path", "kind": "string", "required": true},
             {"name": "mode", "kind": "integer", "required": true},
             {"name": "archive_member", "kind": "string", "required": false},
-            {"name": "service", "kind": "string", "required": false}
+            {"name": "service", "kind": "string", "required": false},
+            {"name": "release_tag", "kind": "string", "required": false},
+            {"name": "archive_sha256", "kind": "string", "required": false},
+            {"name": "binary_sha256", "kind": "string", "required": false}
           ],
           "placement": "RatchetBinaries"
         }

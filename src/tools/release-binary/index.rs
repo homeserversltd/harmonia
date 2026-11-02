@@ -87,6 +87,92 @@ fn bounded_unzip(args: &[&str], limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+struct PinnedArchive<'a> {
+    tag: &'a str,
+    archive_sha256: &'a str,
+    binary_sha256: &'a str,
+}
+
+fn pinned_external_archive(component: &str, asset: &str, tag: &str, digest: &str) -> Result<(String, Vec<u8>), String> {
+    let config_path = crate::bands::pull_source::appliance_config_path();
+    let config: Value = serde_json::from_slice(&fs::read(&config_path)
+        .map_err(|_| "external-release-sources-unreadable".to_string())?)
+        .map_err(|_| "external-release-sources-invalid".to_string())?;
+    let source = config.get("sources").and_then(|s| s.get(component))
+        .ok_or_else(|| format!("external-release-source-missing component={component}"))?;
+    if source.get("asset").and_then(Value::as_str) != Some(asset) {
+        return Err("external-release-declared-asset-mismatch".into());
+    }
+    let candidates = source.get("candidates").and_then(Value::as_array)
+        .filter(|c| !c.is_empty()).ok_or("external-release-candidates-missing")?;
+    let mut refusals = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let kind = candidate.get("kind").and_then(Value::as_str).unwrap_or("");
+        let locator = candidate.get("url").and_then(Value::as_str).unwrap_or("");
+        match crate::atoms::ask::fetch_artifact::fetch_pinned_external_archive(kind, locator, asset, tag) {
+            Ok(bytes) => {
+                if !crate::atoms::file_sha256(&bytes).eq_ignore_ascii_case(digest) {
+                    return Err("pinned-release-archive-digest-mismatch".into());
+                }
+                return Ok((kind.to_owned(), bytes));
+            }
+            Err(reason) => refusals.push(format!("candidate={} kind={} signal={}", index + 1, kind, reason)),
+        }
+    }
+    Err(format!("pinned-release-candidates-exhausted component={component} {}", refusals.join("; ")))
+}
+
+fn safe_nested_member(member: &str) -> bool {
+    !member.is_empty() && member.split('/').all(safe_asset)
+}
+
+/// GNU tar lists and streams a single regular member, never extracting paths.
+/// Escaped listings plus the restricted member alphabet make duplicate and type
+/// checks unambiguous even if the archive contains malicious filenames.
+fn extract_pinned_tar(archive: &[u8], member: &str) -> Result<Vec<u8>, String> {
+    if !safe_nested_member(member) { return Err("pinned-release-member-invalid".into()); }
+    let path = std::env::temp_dir().join(format!("harmonia-pinned-archive-{}", crate::atoms::ask::fetch_artifact::unique_temp_suffix()));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|e| format!("pinned-release-archive-stage-failed: {e}"))?;
+    let result = (|| {
+        file.write_all(archive).map_err(|e| format!("pinned-release-archive-stage-failed: {e}"))?;
+        drop(file);
+        let archive_path = path.to_str().ok_or("pinned-release-stage-path-invalid")?;
+        let list = bounded_tar(&["--list", "--gzip", "--file", archive_path, "--quoting-style=escape"], 1024 * 1024)?;
+        let list = std::str::from_utf8(&list).map_err(|_| "pinned-release-member-list-invalid")?;
+        if list.lines().filter(|line| *line == member).count() != 1 {
+            return Err("pinned-release-member-missing-or-duplicate".into());
+        }
+        let detail = bounded_tar(&["--list", "--verbose", "--gzip", "--file", archive_path, "--quoting-style=escape", "--no-wildcards", "--", member], 1024 * 1024)?;
+        let detail = std::str::from_utf8(&detail).map_err(|_| "pinned-release-member-type-invalid")?;
+        if detail.lines().count() != 1 || !detail.starts_with('-') {
+            return Err("pinned-release-member-not-regular-or-symlink".into());
+        }
+        let bytes = bounded_tar(&["--extract", "--to-stdout", "--gzip", "--file", archive_path, "--no-wildcards", "--", member], MAX_ARCHIVE_MEMBER_BYTES)?;
+        if bytes.is_empty() { return Err("pinned-release-member-empty".into()); }
+        Ok(bytes)
+    })();
+    let _ = fs::remove_file(&path);
+    result
+}
+
+fn bounded_tar(args: &[&str], limit: u64) -> Result<Vec<u8>, String> {
+    let mut child = std::process::Command::new("/usr/bin/tar")
+        .env_remove("TAR_OPTIONS").env_remove("GZIP")
+        .args(args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
+        .spawn().map_err(|e| format!("pinned-release-tar-unavailable: {e}"))?;
+    let mut bytes = Vec::new();
+    let read = child.stdout.take().ok_or("pinned-release-tar-output-missing")?
+        .take(limit + 1).read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() as u64 > limit {
+        let _ = child.kill(); let _ = child.wait();
+        return Err("pinned-release-tar-output-too-large-or-unreadable".into());
+    }
+    let status = child.wait().map_err(|e| format!("pinned-release-tar-wait-failed: {e}"))?;
+    if !status.success() { return Err("pinned-release-tar-failed".into()); }
+    Ok(bytes)
+}
+
 fn running_service_sha(service: &str) -> Result<String, String> {
     let observe = || crate::atoms::ask::systemd_state_query("main-pid", service, false, None, 30);
     let first = observe();
@@ -105,14 +191,28 @@ fn running_service_sha(service: &str) -> Result<String, String> {
 fn execute_external_archive(
     component: &str, asset: &str, member: &str, service: &str, path: &Path, mode: u32,
     receipt_dir: &Path, apply: bool, invocation: Option<&crate::atoms::r#do::InvocationKey>,
-    observed: &InstalledObservation,
+    observed: &InstalledObservation, pinned: Option<PinnedArchive<'_>>,
 ) -> Result<crate::OperationOutcome, String> {
     if !safe_asset(service) || !service.ends_with(".service") {
         return Err("external-release-service-invalid".into());
     }
     let old_sha = observed.sha256.as_deref().ok_or("external-release-birth-binary-missing")?;
-    let (provider, tag, archive) = external_archive(component, asset)?;
-    let binary = extract_archive_member(&archive, member)?;
+    let (provider, tag, binary) = if let Some(pin) = pinned {
+        if !safe_nested_member(member) { return Err("pinned-release-member-invalid".into()); }
+        if !asset.ends_with(".tar.gz") { return Err("pinned-release-archive-kind-unsupported".into()); }
+        if !valid_sha256(pin.archive_sha256) { return Err("pinned-release-archive-digest-invalid".into()); }
+        if !valid_sha256(pin.binary_sha256) { return Err("pinned-release-binary-digest-invalid".into()); }
+        let (provider, archive) = pinned_external_archive(component, asset, pin.tag, pin.archive_sha256)?;
+        let binary = extract_pinned_tar(&archive, member)?;
+        if !crate::atoms::file_sha256(&binary).eq_ignore_ascii_case(pin.binary_sha256) {
+            return Err("pinned-release-binary-digest-mismatch".into());
+        }
+        (provider, pin.tag.to_owned(), binary)
+    } else {
+        let (provider, tag, archive) = external_archive(component, asset)?;
+        let binary = extract_archive_member(&archive, member)?;
+        (provider, tag, binary)
+    };
     let desired_sha = crate::atoms::file_sha256(&binary);
     if stable_installed_observation(path)? != *observed {
         return Err("external-release-standing-target-changed-during-resolution".into());
@@ -536,9 +636,19 @@ pub(crate) fn execute(
 
     // A missing birth parent is established before any schema or network door.
     let observed = stable_installed_observation(path)?;
+    if ["release_tag", "archive_sha256", "binary_sha256"].iter().any(|key| args.contains_key(*key)) {
+        let pin = PinnedArchive {
+            tag: required_string(args, "release_tag")?,
+            archive_sha256: required_string(args, "archive_sha256")?,
+            binary_sha256: required_string(args, "binary_sha256")?,
+        };
+        let member = required_string(args, "archive_member")?;
+        let service = required_string(args, "service")?;
+        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed, Some(pin));
+    }
     if let Some(member) = args.get("archive_member").and_then(Value::as_str) {
         let service = required_string(args, "service")?;
-        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed);
+        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed, None);
     }
     let seat = crate::atoms::ask::mint_seats::at_start()
         .release_flag

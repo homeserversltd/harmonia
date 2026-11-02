@@ -2,5 +2,5 @@
   "schema": "harmonia.recursive-rust-band.v1",
   "name": "release-binary",
   "children": ["observe", "act", "report-home"],
-  "args": ["component", "asset", "path", "mode", "archive_member", "service"]
+  "args": ["component", "asset", "path", "mode", "archive_member", "service", "release_tag", "archive_sha256", "binary_sha256"]
 }
