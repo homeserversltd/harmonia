@@ -347,49 +347,7 @@
           }
         ]
       },
-      {
-        "tool": "install-package",
-        "permutations": [
-          {
-            "name": "update-installed-packages",
-            "deed": "install-package",
-            "inputs": [
-              {
-                "name": "packages",
-                "kind": "string_array",
-                "required": true
-              },
-              {
-                "name": "conflict_policy",
-                "kind": "string",
-                "required": false
-              },
-              {
-                "name": "conflict_paths",
-                "kind": "string_array",
-                "required": false
-              },
-              {
-                "name": "timeout_secs",
-                "kind": "integer",
-                "required": false
-              }
-            ],
-            "comparison": "package-state",
-            "phases": [
-              "observe",
-              "compare",
-              "act",
-              "attest"
-            ],
-            "permission": "mutate",
-            "ownership": "shared-ritual",
-            "no_follow": false,
-            "restoration": "none",
-            "attest": "do-and-attest"
-          }
-        ]
-      },
+
       {
         "tool": "check-health",
         "permutations": [

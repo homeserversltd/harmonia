@@ -270,63 +270,6 @@ pub(crate) fn pacman_mutate_packages_with_ignores(
 }
 use crate::atoms::comparison::ActionAuthorization;
 
-pub(crate) fn package_install(
-    authorization: &ActionAuthorization,
-    invocation: &InvocationKey,
-    receipt_dir: &Path,
-    packages: &[String],
-    conflict_policy: Option<&str>,
-    conflict_paths: &[String],
-    timeout_secs: u64,
-) -> Result<CommandObservation, String> {
-    package_install_with_ignores(
-        authorization,
-        invocation,
-        receipt_dir,
-        packages,
-        &[],
-        conflict_policy,
-        conflict_paths,
-        timeout_secs,
-    )
-}
-
-pub(crate) fn package_install_with_ignores(
-    authorization: &ActionAuthorization,
-    invocation: &InvocationKey,
-    receipt_dir: &Path,
-    packages: &[String],
-    ignored: &[String],
-    conflict_policy: Option<&str>,
-    conflict_paths: &[String],
-    timeout_secs: u64,
-) -> Result<CommandObservation, String> {
-    let result = pacman_mutate_packages_with_ignores(
-        authorization,
-        invocation,
-        receipt_dir,
-        false,
-        packages,
-        ignored,
-        conflict_policy,
-        conflict_paths,
-        timeout_secs,
-    )?;
-    Ok(CommandObservation {
-        program: crate::atoms::package::pacman_program(),
-        args: {
-            let mut a = vec!["-S".into(), "--noconfirm".into(), "--needed".into()];
-            for p in ignored {
-                a.extend(["--ignore".into(), p.clone()]);
-            }
-            a
-        },
-        ok: result.ok,
-        code: Some(result.code),
-        stdout: result.stdout,
-        stderr: result.stderr,
-    })
-}
 
 use crate::atoms::comparison::{self, CeilingAuthorization, DiffDecision};
 use crate::{OperationOutcome, PackageBackend};

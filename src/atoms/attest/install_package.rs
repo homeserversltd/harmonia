@@ -68,15 +68,6 @@ pub(crate) fn package_receipt_fields(
     })
 }
 
-pub(crate) fn write_install_package_guard_receipt(
-    receipt_dir: &Path,
-    name: &str,
-    before: &PackageObservation,
-    movement: &OperationOutcome,
-    after: &PackageObservation,
-) -> Result<(), String> {
-    write_guard_receipts(receipt_dir, name, before, movement, after)
-}
 
 pub(crate) fn write_guard_receipts(
     receipt_dir: &Path,
@@ -249,19 +240,6 @@ pub(crate) fn write_keyring_receipt(
 }
 
 
-pub(crate) fn write_guard_receipt(
-    receipt_dir: &Path, name: &str, before: &PackageObservation, movement: &OperationOutcome, after: &PackageObservation,
-) -> Result<(), String> {
-    write_install_package_guard_receipt(receipt_dir, name, before, movement, after)
-}
-
-pub(crate) fn write_receipts(
-    receipt_dir: &Path, name: &str, observation: &PackageObservation, decision: DiffDecision, movement: Option<&OperationOutcome>, outcome: &OperationOutcome,
-) -> Result<(), String> {
-    write_json(&receipt_dir.join(format!("{name}.comparison.json")), &package_receipt_fields(observation, decision, movement, outcome.changed))?;
-    write_package_receipt(receipt_dir, name, "update-installed-packages", outcome)?;
-    attest_step(receipt_dir, name, "update-installed-packages", Ok(outcome))
-}
 
 pub(crate) fn attest_step(
     receipt_dir: &Path,

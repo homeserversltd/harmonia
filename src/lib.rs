@@ -12,8 +12,7 @@ mod demo_registry;
 pub mod filesystem;
 pub(crate) mod known_good_ledger;
 pub(crate) use atoms::attest::hyalos;
-#[path = "tools/install-package/index.rs"]
-pub(crate) mod install_package;
+
 #[path = "tools/place-file/index.rs"]
 mod place_file;
 #[path = "tools/pull-repo/index.rs"]

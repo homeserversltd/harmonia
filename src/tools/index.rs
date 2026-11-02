@@ -33,10 +33,6 @@ const ACT_RUNG_INDEXES: &[(&str, &str)] = &[
         include_str!("hermes-appearance/index.json"),
     ),
 
-    (
-        "install-package",
-        include_str!("install-package/index.json"),
-    ),
     ("make-symlink", include_str!("make-symlink/index.json")),
     ("place-file", include_str!("place-file/index.json")),
     ("pull-repo", include_str!("pull-repo/index.json")),
