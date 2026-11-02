@@ -12,7 +12,9 @@ fn atomic_install(destination: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or("fetch-artifact-destination-parent-missing")?;
-    fs::create_dir_all(parent).map_err(|e| format!("fetch-artifact-parent-create-failed: {e}"))?;
+    if !parent.exists() {
+        return Err(format!("fetch-artifact-destination-parent-absent {}; birth places the parent", parent.display()));
+    }
     let name = destination
         .file_name()
         .and_then(|n| n.to_str())

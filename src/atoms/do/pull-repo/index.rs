@@ -120,6 +120,17 @@ fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::Pull
         format!("requested_ref={}", request.branch),
         format!("credential_scope={}", credential_scope(request)),
     ];
+    if observation.destination_kind == "absent" || !request.path.exists() {
+        return SyncResult {
+            command: CommandReceipt {
+                ok: false,
+                code: 2,
+                stdout: initial_transcript.join("\n"),
+                stderr: format!("pull-repo-destination-absent {}; birth places the destination", request.path.display()),
+            },
+            changed: false,
+        };
+    }
     let preparation = match prepare_bearer_writable_path(request) {
         Ok(preparation) => preparation,
         Err(stderr) => {
@@ -153,20 +164,6 @@ fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::Pull
                 &transcript,
             );
         };
-        if let Some(parent) = request.path.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                return ownership_prepared_result(
-                    CommandReceipt {
-                        ok: false,
-                        code: 2,
-                        stdout: String::new(),
-                        stderr: format!("create parent failed {}: {err}", parent.display()),
-                    },
-                    ownership_changed,
-                    &transcript,
-                );
-            }
-        }
         if request.path.exists() {
             let preserved = preserved_non_git_path(&request.path);
             match fs::rename(&request.path, &preserved) {
@@ -190,21 +187,6 @@ fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::Pull
                 }
             }
         }
-        let preparation = match prepare_bearer_writable_path(request) {
-            Ok(preparation) => preparation,
-            Err(stderr) => {
-                return SyncResult {
-                    command: CommandReceipt {
-                        ok: false,
-                        code: -1,
-                        stdout: transcript.join("\n"),
-                        stderr,
-                    },
-                    changed: ownership_changed,
-                };
-            }
-        };
-        transcript.extend(preparation.transcript);
         let clone = capture_git(
             request,
             &[
@@ -393,21 +375,7 @@ fn prepare_bearer_writable_path(request: &Request) -> Result<BearerPathPreparati
         return Ok(BearerPathPreparation::default());
     }
     let (uid, gid) = bearer_ids(&request.bearer)?;
-    if request.path.exists() {
-        return repair_tree_owned_by_bearer(&request.path, uid, gid);
-    }
-    fs::create_dir_all(&request.path).map_err(|err| {
-        format!(
-            "git-owner-source-path-create-failed {}: {err}",
-            request.path.display()
-        )
-    })?;
-    let mut preparation = BearerPathPreparation::default();
-    if let Some(transcript) = chown_new_bearer_path(&request.path, uid, gid)? {
-        preparation.changed = true;
-        preparation.transcript.push(transcript);
-    }
-    Ok(preparation)
+    repair_tree_owned_by_bearer(&request.path, uid, gid)
 }
 
 fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
@@ -501,6 +469,9 @@ pub(crate) fn acquire_source(
         Some(parent) => parent,
         None => return source_failure(attempts, "destination-has-no-parent", false),
     };
+    if !parent.exists() {
+        return source_failure(attempts, &format!("source-acquire-destination-parent-absent {}; birth places the parent", parent.display()), false);
+    }
     let stem = plan
         .destination
         .file_name()
@@ -964,12 +935,9 @@ fn prepare_source_acquisition_parent(plan: &SourcePlan) -> Result<BearerPathPrep
         .destination
         .parent()
         .ok_or_else(|| "destination-has-no-parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|err| {
-        format!(
-            "source-acquire-candidate-parent-create-failed {}: {err}",
-            parent.display()
-        )
-    })?;
+    if !parent.exists() {
+        return Err(format!("source-acquire-destination-parent-absent {}; birth places the parent", parent.display()));
+    }
     let (uid, gid) = bearer_ids(&plan.bearer)?;
     let mut preparation = BearerPathPreparation::default();
     match chown_new_bearer_path(parent, uid, gid)? {
@@ -1233,6 +1201,10 @@ pub(crate) fn apply(
     request: &Request,
     invocation: &crate::atoms::r#do::InvocationKey,
 ) -> Outcome {
+    if !request.path.exists() {
+        let signal = format!("pull-repo-destination-absent {}; birth places the destination", request.path.display());
+        return Outcome { ok: false, changed: false, message: signal.clone(), command: CmdResult { ok: false, code: 2, stdout: String::new(), stderr: signal } };
+    }
     let run = crate::atoms::comparison::execute_mode(
         "pull-repo",
         || Ok::<_, String>(crate::atoms::ask::pull_repo::observe_request(request)),
@@ -1349,6 +1321,11 @@ pub(crate) fn acquire_source(
             },
         };
     };
+    if let Some(parent) = plan.destination.parent() {
+        if !parent.exists() {
+            return super::source_failure(Vec::new(), &format!("source-acquire-destination-parent-absent {}; birth places the parent", parent.display()), false);
+        }
+    }
     let staged = RefCell::new(None::<(usize, PathBuf)>);
     let before = RefCell::new(None::<Vec<crate::atoms::ask::pull_repo::SourceObservation>>);
     let preserved_attempts = RefCell::new(Vec::<git_artifact::SourceAttemptReceipt>::new());
