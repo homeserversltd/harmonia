@@ -5,7 +5,7 @@
   "summary": "Keeps the screen-control helper current and its support screen ready.",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Keep the pinned 0.28.2 CUA release upkeep helper with local currentness observation; the profile lists the shared screen supervisor separately.",
+  "description": "Keep the born CUA driver current at the pinned upstream release; the profile lists the shared screen supervisor separately.",
   "constants": {
     "release_repo": "trycua/cua",
     "release_tag": "cua-driver-rs-v0.28.2",
@@ -15,52 +15,21 @@
     "binary_member": "cua-driver-rs-0.28.2-linux-x86_64/cua-driver",
     "entrypoint": "/usr/local/bin/cua-driver"
   },
-  "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "cua-driver-maintenance-helper",
-      "tool": "files",
-      "permutation": "compile-fragments",
-      "args": {
-        "source_root": "files_root/fragments/cua-driver-maintain",
-        "target_path": "/usr/local/libexec/sway-seat/cua-driver-maintain",
-        "mode": 493,
-        "uid": 0,
-        "gid": 0,
-        "backup_existing": true
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "cua-driver-pinned-release-currentness",
-      "tool": "command",
-      "permutation": "act",
+      "tool": "release-binary",
+      "permutation": "install",
       "args": {
-        "program": "/usr/local/libexec/sway-seat/cua-driver-maintain",
-        "args": [
-          "apply",
-          "$constants.release_repo",
-          "$constants.release_tag",
-          "$constants.archive",
-          "$constants.archive_sha256",
-          "$constants.binary_member",
-          "$constants.binary_sha256"
-        ],
-        "timeout_secs": 180,
-        "observation": {
-          "program": "/usr/local/libexec/sway-seat/cua-driver-maintain",
-          "args": [
-            "observe",
-            "$constants.release_repo",
-            "$constants.release_tag",
-            "$constants.archive",
-            "$constants.archive_sha256",
-            "$constants.binary_member",
-            "$constants.binary_sha256"
-          ],
-          "expected_exit_code": 0,
-          "expected_stdout": "current"
-        }
+        "component": "cua-driver",
+        "asset": "$constants.archive",
+        "path": "$constants.entrypoint",
+        "mode": 493,
+        "archive_member": "$constants.binary_member",
+        "service": "cua-driver.service",
+        "release_tag": "$constants.release_tag",
+        "archive_sha256": "$constants.archive_sha256",
+        "binary_sha256": "$constants.binary_sha256"
       },
       "on_failure": "stop"
     }

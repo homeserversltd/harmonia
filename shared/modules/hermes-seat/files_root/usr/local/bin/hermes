@@ -1,9 +1,0 @@
-#!/bin/sh
-# Run Hermes with the live owner desktop environment and session toggle.
-set -eu
-if [ -r /run/sway-seat/session.env ]; then
-    set -a
-    . /run/sway-seat/session.env
-    set +a
-fi
-exec /opt/hermes/venv/bin/hermes "$@"
