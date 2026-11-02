@@ -159,7 +159,7 @@ pub struct Declaration {
     pub restoration: Restoration,
     pub permutations: &'static [DeclarationPermutation],
 }
-const SEATS: [&str; 14] = [
+const SEATS: [&str; 13] = [
     "place-file",
     "remove-file",
     "make-symlink",
@@ -173,7 +173,7 @@ const SEATS: [&str; 14] = [
     "check-health",
     "ratchet-aur-package",
     "hermes-maintenance",
-    "mem0-maintenance",
+
 ];
 #[derive(Deserialize)]
 struct Root {
