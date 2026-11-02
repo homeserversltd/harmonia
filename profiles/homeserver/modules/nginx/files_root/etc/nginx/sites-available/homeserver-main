@@ -105,7 +105,7 @@ server {
 # Tailscale React app server (remote access via home.insertyourshere.ts.net)
 # Note: Individual services now use direct port access (e.g., https://[tailscale-ip]:18096)
 server {
-    listen 443 ssl;
+    listen 443 ssl default_server;
     server_name home.insertyourshere.ts.net;
 
     ssl_certificate /etc/ssl/home.arpa/cert.pem;
