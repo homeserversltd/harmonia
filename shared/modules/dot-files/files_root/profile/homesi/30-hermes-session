@@ -35,19 +35,21 @@ _homesi_hermes_session() (
       quoted_hermes=$(printf '%s' "$hermes_bin" | sed "s/'/'\\\\''/g")
       tmux if-shell -F -t "${session_id}:" '#{==:#{session_attached},0}' \
         "attach-session -t '$session_id'" \
-        "new-session -s '$fresh' '$quoted_hermes'" 2>/dev/null && return
-      # Do not hide a real attach or creation error on an existing session.
-      tmux has-session -t "$session_id" 2>/dev/null && return
+        "new-session -s '$fresh' /usr/bin/env '$quoted_hermes'" 2>/dev/null && return
+      # A failed attach or fresh-name collision gets one separate retry.
+      if tmux has-session -t "$session_id" 2>/dev/null; then
+        exec tmux new-session -s "${fresh}-retry" /usr/bin/env "$hermes_bin"
+      fi
     fi
     # The selected session disappeared; fall back to a new session.
   fi
   if tmux has-session -t '=hermes' 2>/dev/null; then
-    exec tmux new-session -s "$fresh" "$hermes_bin"
+    exec tmux new-session -s "$fresh" /usr/bin/env "$hermes_bin"
   fi
-  tmux new-session -s hermes "$hermes_bin" 2>/dev/null && return
+  tmux new-session -s hermes /usr/bin/env "$hermes_bin" 2>/dev/null && return
   # A concurrent login may have created the canonical session meanwhile.
   tmux has-session -t '=hermes' 2>/dev/null || return
-  exec tmux new-session -s "$fresh" "$hermes_bin"
+  exec tmux new-session -s "$fresh" /usr/bin/env "$hermes_bin"
 )
 _homesi_hermes_session
 unset -f _homesi_hermes_session
