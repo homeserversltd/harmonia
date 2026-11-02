@@ -31,8 +31,13 @@ _homesi_hermes_session() {
     best=hermes
     if tmux has-session -t '=hermes' 2>/dev/null; then
       best="hermes-$(date +%H%M%S)-$$"
+      tmux new-session -d -s "$best" "$hermes_bin" || return
+    elif ! tmux new-session -d -s "$best" "$hermes_bin" 2>/dev/null; then
+      # Another login may have created the canonical session meanwhile.
+      tmux has-session -t '=hermes' 2>/dev/null || return
+      best="hermes-$(date +%H%M%S)-$$"
+      tmux new-session -d -s "$best" "$hermes_bin" || return
     fi
-    tmux new-session -d -s "$best" "$hermes_bin" || return
   fi
   exec tmux attach-session -t "=$best"
 }
