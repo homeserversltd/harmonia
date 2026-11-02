@@ -15,4 +15,4 @@ if [ -f "/usr/local/sbin/mountvault.sh" ]; then
     fi
 fi
 
-. "$HOME/.atuin/bin/env"
+[ -f "$HOME/.atuin/bin/env" ] && . "$HOME/.atuin/bin/env"
