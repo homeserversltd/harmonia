@@ -27,6 +27,7 @@
         "mode": 493,
         "archive_member": "$constants.binary_member",
         "service": "cua-driver.service",
+        "service_user": "hermes",
         "release_tag": "$constants.release_tag",
         "archive_sha256": "$constants.archive_sha256",
         "binary_sha256": "$constants.binary_sha256"
