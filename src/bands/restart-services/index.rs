@@ -102,6 +102,12 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             .get("release_repo")
             .and_then(Value::as_str)
             .is_some_and(|v| !v.trim().is_empty());
+        if native_release {
+            if let Some(root) = args.get("source_dir").and_then(Value::as_str)
+                .and_then(|source| crate::atoms::r#do::fetch_artifact::ReleaseStagingRoot::from_source(Path::new(source))) {
+                manifest.release_staging_roots.insert(step.step_id.clone(), root);
+            }
+        }
         let registry_fetch = args
             .get("registry_base")
             .and_then(Value::as_str)

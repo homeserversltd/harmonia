@@ -3,17 +3,55 @@ use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::InvocationKey;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-fn atomic_install(destination: &Path, bytes: &[u8]) -> Result<(), String> {
+/// The private Release scratch seat derived from an existing source checkout.
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseStagingRoot {
+    source: PathBuf,
+    root: PathBuf,
+}
+
+impl ReleaseStagingRoot {
+    pub(crate) fn from_source(source: &Path) -> Option<Self> {
+        if !source.is_absolute() || source.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+            return None;
+        }
+        Some(Self { source: source.to_path_buf(), root: source.join("target/harmonia-release") })
+    }
+}
+
+fn atomic_install(destination: &Path, bytes: &[u8], staging: Option<&ReleaseStagingRoot>) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or("fetch-artifact-destination-parent-missing")?;
-    if !parent.exists() {
-        return Err(format!("fetch-artifact-destination-parent-absent {}; birth places the parent", parent.display()));
+    let absent = || format!("fetch-artifact-destination-parent-absent {}; birth places the parent", parent.display());
+    let within_staging = staging.and_then(|root| parent.strip_prefix(&root.root).ok().map(|relative| (root, relative)));
+    if let Some((staging, relative)) = within_staging {
+        // Inspect existing as well as absent components: exists() follows
+        // symlinks and must not turn a Release seat into an outside write.
+        if relative.components().any(|c| !matches!(c, Component::Normal(_)))
+            || !fs::symlink_metadata(&staging.source).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+            || !fs::canonicalize(&staging.source).is_ok_and(|path| path == staging.source) {
+            return Err(absent());
+        }
+        let mut path = staging.source.clone();
+        for component in Path::new("target/harmonia-release").components().chain(relative.components()) {
+            path.push(component.as_os_str());
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {},
+                Ok(_) => return Err(format!("fetch-artifact-staging-path-invalid {}", path.display())),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(&path).map_err(|e| format!("fetch-artifact-staging-create-failed {}: {e}", path.display()))?;
+                }
+                Err(err) => return Err(format!("fetch-artifact-staging-stat-failed {}: {err}", path.display())),
+            }
+        }
+    } else if !parent.exists() {
+        return Err(absent());
     }
     let name = destination
         .file_name()
@@ -61,10 +99,20 @@ pub(crate) fn install(
     destination: &Path,
     download: &Download,
 ) -> Result<(), String> {
+    install_release_staging(authorization, invocation, destination, download, None)
+}
+
+pub(crate) fn install_release_staging(
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
+    destination: &Path,
+    download: &Download,
+    staging: Option<&ReleaseStagingRoot>,
+) -> Result<(), String> {
     // These unforgeable capabilities are the permission boundary: only the comparison gate can supply them to this mutating atom.
     let _ = (authorization, invocation);
     verify_download(download)?;
-    atomic_install(destination, &download.bytes)
+    atomic_install(destination, &download.bytes, staging)
 }
 
 fn verify_download(download: &Download) -> Result<(), String> {

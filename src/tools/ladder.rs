@@ -59,6 +59,10 @@ pub(crate) struct LadderManifest {
     pub(crate) base_dir: PathBuf,
     #[serde(skip)]
     pub(crate) selected_profile_index: Option<PathBuf>,
+    // Runtime-only capabilities, minted by service-runtime lowering; never
+    // deserialized from module or routine arguments.
+    #[serde(skip)]
+    pub(crate) release_staging_roots: BTreeMap<String, crate::atoms::r#do::fetch_artifact::ReleaseStagingRoot>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

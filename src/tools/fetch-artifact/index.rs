@@ -33,7 +33,7 @@ pub(crate) fn execute_with_provenance(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<FetchArtifactExecution, String> {
-    execute_with_module_provenance(args, receipt_dir, apply, invocation, None)
+    execute_with_module_provenance(args, receipt_dir, apply, invocation, None, None)
 }
 
 pub(crate) fn execute_with_provenance_for_module(
@@ -43,7 +43,18 @@ pub(crate) fn execute_with_provenance_for_module(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     module_id: &str,
 ) -> Result<FetchArtifactExecution, String> {
-    execute_with_module_provenance(args, receipt_dir, apply, invocation, Some(module_id))
+    execute_with_module_provenance(args, receipt_dir, apply, invocation, Some(module_id), None)
+}
+
+pub(crate) fn execute_for_release_staging(
+    args: &BTreeMap<String, Value>,
+    receipt_dir: &Path,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    module_id: &str,
+    staging: Option<&crate::atoms::r#do::fetch_artifact::ReleaseStagingRoot>,
+) -> Result<FetchArtifactExecution, String> {
+    execute_with_module_provenance(args, receipt_dir, apply, invocation, Some(module_id), staging)
 }
 
 fn execute_with_module_provenance(
@@ -52,6 +63,7 @@ fn execute_with_module_provenance(
     apply: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     module_id: Option<&str>,
+    release_staging: Option<&crate::atoms::r#do::fetch_artifact::ReleaseStagingRoot>,
 ) -> Result<FetchArtifactExecution, String> {
     let required = |name: &str| {
         args.get(name)
@@ -104,6 +116,7 @@ fn execute_with_module_provenance(
         .unwrap_or(component);
     let destination = Path::new(required("destination")?);
     let installed_binary = Path::new(required("installed_binary")?);
+
     if source_policy != "artifact" && !crate::atoms::ask::fetch_artifact::validate_source_sha(source_sha) {
         return Err("fetch-artifact-source-sha-invalid".into());
     }
@@ -806,11 +819,12 @@ fn execute_with_module_provenance(
             }
         },
         |authorization, _| {
-            crate::atoms::r#do::fetch_artifact::install(
+            crate::atoms::r#do::fetch_artifact::install_release_staging(
                 &authorization,
                 invocation,
                 destination,
                 &download,
+                release_staging,
             )
         },
     );

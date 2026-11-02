@@ -527,6 +527,22 @@ pub(crate) fn execute_routine_child(
     apply: bool,
     invocation: Option<&crate::tools::files::InvocationKey>,
 ) -> Result<
+    (crate::OperationOutcome, std::collections::BTreeMap<String, serde_json::Value>),
+    String,
+> {
+    execute_routine_child_with_staging(tool, requested_permutation, args, manifest, receipt_dir, apply, invocation, None)
+}
+
+pub(crate) fn execute_routine_child_with_staging(
+    tool: &str,
+    requested_permutation: Option<&str>,
+    args: &std::collections::BTreeMap<String, serde_json::Value>,
+    manifest: &crate::tools::ladder::LadderManifest,
+    receipt_dir: &std::path::Path,
+    apply: bool,
+    invocation: Option<&crate::tools::files::InvocationKey>,
+    staging: Option<&crate::atoms::r#do::fetch_artifact::ReleaseStagingRoot>,
+) -> Result<
     (
         crate::OperationOutcome,
         std::collections::BTreeMap<String, serde_json::Value>,
@@ -549,12 +565,13 @@ pub(crate) fn execute_routine_child(
                 .map(Path::new);
             let prior_installed_sha = installed_binary
                 .and_then(|path| crate::known_good_ledger::sha256_file(path).ok());
-            let execution = crate::tools::fetch_artifact::execute_with_provenance_for_module(
+            let execution = crate::tools::fetch_artifact::execute_for_release_staging(
                 args,
                 receipt_dir,
                 apply,
                 invocation,
                 &manifest.id,
+                staging,
             )?;
             let outcome = execution.outcome;
             let module_release_debt = outcome

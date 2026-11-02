@@ -518,6 +518,7 @@ fn execute_routine_tool(
     software_authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     routine_id: Option<&str>,
+    release_staging: Option<&crate::atoms::r#do::fetch_artifact::ReleaseStagingRoot>,
 ) -> Result<
     (
         OperationOutcome,
@@ -604,7 +605,7 @@ fn execute_routine_tool(
             apply,
             invocation,
         ),
-        "fetch-artifact" => crate::bands::ratchet_binaries::execute_routine_child(
+        "fetch-artifact" => crate::bands::ratchet_binaries::execute_routine_child_with_staging(
             "fetch-artifact",
             requested_permutation,
             args,
@@ -612,6 +613,7 @@ fn execute_routine_tool(
             receipt_dir,
             apply,
             invocation,
+            release_staging,
         ),
         "release-binary" => {
             let authorized_apply = apply && software_authorization.is_some();
@@ -1234,6 +1236,11 @@ pub(crate) fn execute_routine(
                             software_authorization,
                             invocation,
                             Some(&source.step_id),
+                            if child.name == "build" && child.tool == "fetch-artifact" {
+                                manifest.release_staging_roots.get(&source.step_id)
+                            } else {
+                                None
+                            },
                         )
                     },
                     |error| Err(error),
