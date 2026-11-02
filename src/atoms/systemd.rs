@@ -645,6 +645,7 @@ fn run_restart(
         apply,
         service_material_changed,
         invocation,
+        false,
     )
 }
 
@@ -672,6 +673,20 @@ pub(crate) fn run_action(
         apply,
         service_material_changed,
         invocation,
+        false,
+    )
+}
+
+pub(crate) fn run_release_account_restart(
+    receipt_dir: &Path,
+    name: &str,
+    service: &str,
+    target_user: &str,
+    invocation: &crate::atoms::r#do::InvocationKey,
+) -> Result<OperationOutcome, String> {
+    run_action_with_material_gate(
+        receipt_dir, name, "restart", Some(service), true, Some(target_user),
+        30, true, true, Some(invocation), true,
     )
 }
 
@@ -687,22 +702,22 @@ fn run_action_with_material_gate(
     apply: bool,
     service_material_changed: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    direct_account: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     // Edge-trigger actions are consumed only within this comparison run.
     let edge_triggered = matches!(action, "daemon-reload" | "restart");
     let acted = Cell::new(false);
+    let observe = || {
+        if direct_account {
+            change_unit::observe_account_service_state(service, target_user.expect("account scope"), timeout_secs)
+        } else {
+            change_unit::observe_systemd_state(action, service, user, target_user, timeout_secs)
+        }
+    };
     let run = match comparison::execute(
         "systemd",
-        || {
-            Ok::<_, String>(change_unit::observe_systemd_state(
-                action,
-                service,
-                user,
-                target_user,
-                timeout_secs,
-            ))
-        },
+        || Ok::<_, String>(observe()),
         |observation| {
             if edge_triggered && acted.get() {
                 DiffDecision::Empty
@@ -713,7 +728,16 @@ fn run_action_with_material_gate(
         |authorization, before| {
             let authorization = &authorization;
             let result: Result<CmdResult, String> = if apply {
-                let command = if action == "enable-now" {
+                let command = if direct_account {
+                    if action != "restart" { return Err("systemd-account-action-unsupported".into()); }
+                    crate::atoms::r#do::change_unit::unit_restart_account(
+                        authorization, invocation.ok_or("invocation-key-missing")?, service,
+                        target_user.expect("account scope"), timeout_secs,
+                    ).map(|result| CmdResult {
+                        ok: result.ok, code: result.code.unwrap_or(if result.ok { 0 } else { -1 }),
+                        stdout: result.stdout, stderr: result.stderr,
+                    })
+                } else if action == "enable-now" {
                     crate::atoms::r#do::change_unit::unit_change_scoped(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
@@ -788,13 +812,7 @@ fn run_action_with_material_gate(
                 })
             };
             let result = result?;
-            let after = change_unit::observe_systemd_state(
-                action,
-                service,
-                user,
-                target_user,
-                timeout_secs,
-            );
+            let after = observe();
             let restart_decision = decide_restart_for_observation(before, service_material_changed);
             let changed = apply
                 && result.ok

@@ -292,6 +292,54 @@ fn systemctl_program() -> String {
     "/usr/bin/systemctl".into()
 }
 
+// Connect only to an existing account manager. Never log in to create one.
+pub(crate) fn account_manager_ids(user: &str) -> Result<(u32, u32), String> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::os::unix::net::UnixStream;
+    let valid = user.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
+        && user.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'));
+    if !valid { return Err("release-binary-service-user-invalid".into()); }
+    let name = std::ffi::CString::new(user).map_err(|_| "release-binary-service-user-invalid")?;
+    let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut entry = std::ptr::null_mut();
+    let mut buffer = vec![0u8; 65536];
+    let status = unsafe { libc::getpwnam_r(name.as_ptr(), passwd.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut entry) };
+    if status != 0 || entry.is_null() { return Err("release-binary-user-manager-absent".into()); }
+    let uid = unsafe { (*entry).pw_uid };
+    let gid = unsafe { (*entry).pw_gid };
+    let socket = format!("/run/user/{uid}/systemd/private");
+    let metadata = std::fs::symlink_metadata(&socket).map_err(|_| "release-binary-user-manager-absent")?;
+    if !metadata.file_type().is_socket() || metadata.uid() != uid || UnixStream::connect(&socket).is_err() {
+        return Err("release-binary-user-manager-absent".into());
+    }
+    Ok((uid, gid))
+}
+
+pub(crate) fn account_systemctl_args(user: &str, arguments: &[String]) -> Result<Vec<String>, String> {
+    let (uid, gid) = account_manager_ids(user)?;
+    // Drop privileges directly, without PAM session creation or its read logs.
+    let mut args = vec![format!("--reuid={uid}"), format!("--regid={gid}"), "--clear-groups".into(), "--".into(), "/usr/bin/env".into(),
+        format!("XDG_RUNTIME_DIR=/run/user/{uid}"), format!("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"),
+        systemctl_program(), "--user".into()];
+    args.extend_from_slice(arguments);
+    Ok(args)
+}
+
+pub(crate) fn account_systemd_state_query(kind: &str, unit: &str, user: &str, timeout_secs: u64) -> CommandObservation {
+    let args = match kind {
+        "is-enabled" | "is-active" => vec![kind.into(), unit.into()],
+        "load-state" | "unit-file-state" | "needs-reload" | "main-pid" => {
+            let property = match kind { "load-state" => "LoadState", "unit-file-state" => "UnitFileState", "main-pid" => "MainPID", _ => "NeedDaemonReload" };
+            vec!["show".into(), format!("--property={property}"), "--value".into(), unit.into()]
+        }
+        _ => return CommandObservation { program: "/usr/bin/setpriv".into(), args: vec![], ok: false, code: None, stdout: String::new(), stderr: format!("unsupported systemd state kind {kind}") },
+    };
+    match account_systemctl_args(user, &args) {
+        Ok(args) => read_only_command_with_timeout("/usr/bin/setpriv", &args, Duration::from_secs(timeout_secs)),
+        Err(error) => CommandObservation { program: "/usr/bin/setpriv".into(), args: vec![], ok: false, code: None, stdout: String::new(), stderr: error },
+    }
+}
+
 pub(crate) fn systemd_state_query(
     kind: &str,
     unit: &str,

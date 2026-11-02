@@ -173,26 +173,57 @@ fn bounded_tar(args: &[&str], limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn running_service_sha(service: &str) -> Result<String, String> {
-    let observe = || crate::atoms::ask::systemd_state_query("main-pid", service, false, None, 30);
+// Refuse a missing manager before any resolution or promotion.
+fn require_user_manager(user: &str) -> Result<(), String> {
+    crate::atoms::ask::account_manager_ids(user).map(|_| ())
+}
+
+fn running_service_sha(service: &str, service_user: Option<&str>) -> Result<String, String> {
+    let observe = || match service_user {
+        Some(user) => crate::atoms::ask::account_systemd_state_query("main-pid", service, user, 30),
+        None => crate::atoms::ask::systemd_state_query("main-pid", service, false, None, 30),
+    };
     let first = observe();
+    if !first.ok {
+        if let Some(user) = service_user {
+            if first.stderr == "release-binary-user-manager-absent" { return Err(first.stderr); }
+            require_user_manager(user)?;
+        }
+    }
     let pid = first.stdout.trim().parse::<u32>().ok().filter(|pid| *pid > 0)
         .filter(|_| first.ok).ok_or("external-release-service-main-pid-unavailable")?;
     let bytes = fs::read(format!("/proc/{pid}/exe"))
         .map_err(|_| "external-release-service-process-image-unreadable")?;
     let second = observe();
+    if !second.ok {
+        if let Some(user) = service_user {
+            if second.stderr == "release-binary-user-manager-absent" { return Err(second.stderr); }
+            require_user_manager(user)?;
+        }
+    }
     if !second.ok || second.stdout.trim().parse::<u32>().ok() != Some(pid) {
         return Err("external-release-service-main-pid-changed".into());
     }
     Ok(crate::atoms::file_sha256(&bytes))
 }
 
+fn restart_release_service(
+    receipt_dir: &Path, name: &str, service: &str, service_user: Option<&str>,
+    invocation: &crate::atoms::r#do::InvocationKey,
+) -> Result<crate::OperationOutcome, String> {
+    match service_user {
+        Some(user) => crate::atoms::systemd::run_release_account_restart(receipt_dir, name, service, user, invocation),
+        None => crate::atoms::systemd::run_action(receipt_dir, name, "restart", Some(service), false, None, 30, true, true, Some(invocation)),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_external_archive(
     component: &str, asset: &str, member: &str, service: &str, path: &Path, mode: u32,
     receipt_dir: &Path, apply: bool, invocation: Option<&crate::atoms::r#do::InvocationKey>,
-    observed: &InstalledObservation, pinned: Option<PinnedArchive<'_>>,
+    observed: &InstalledObservation, pinned: Option<PinnedArchive<'_>>, service_user: Option<&str>,
 ) -> Result<crate::OperationOutcome, String> {
+    if let Some(user) = service_user { require_user_manager(user)?; }
     if !safe_asset(service) || !service.ends_with(".service") {
         return Err("external-release-service-invalid".into());
     }
@@ -223,7 +254,7 @@ fn execute_external_archive(
             message: format!("{} provider={provider} tag={tag}", if current {"external-release-current"} else {"external-release-planned"}), command: None });
     }
     let invocation = invocation.ok_or("external-release-invocation-key-missing")?;
-    if running_service_sha(service)? != old_sha {
+    if running_service_sha(service, service_user)? != old_sha {
         return Err("external-release-standing-process-identity-mismatch".into());
     }
     let old_bytes = fs::read(path).map_err(|_| "external-release-standing-binary-unreadable")?;
@@ -239,24 +270,24 @@ fn execute_external_archive(
         Err(signal) => {
             let current = stable_installed_observation(path);
             let restored = match current {
-                Ok(ref now) if now.sha256.as_deref() == Some(old_sha) => running_service_sha(service).is_ok_and(|sha| sha == old_sha),
+                Ok(ref now) if now.sha256.as_deref() == Some(old_sha) => running_service_sha(service, service_user).is_ok_and(|sha| sha == old_sha),
                 Ok(ref now) if now.sha256.as_deref() == Some(desired_sha.as_str()) => {
                     crate::place_file::execute(crate::place_file::PlaceFileRequest {
                         path, declared_bytes: &old_bytes, mode: observed.mode,
                         ownership: crate::place_file::DeclaredOwnership { uid: observed.uid, gid: observed.gid },
                         backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation),
-                    }).is_ok() && running_service_sha(service).is_ok_and(|sha| sha == old_sha)
+                    }).is_ok() && running_service_sha(service, service_user).is_ok_and(|sha| sha == old_sha)
                 }
                 _ => false,
             };
             return Err(format!("external-release-placement-failed: {signal} rollback_process_verified={restored}"));
         }
     };
-    let restarted = crate::atoms::systemd::run_action(
-        receipt_dir, "external-release-restart", "restart", Some(service), false, None, 30, true, true, Some(invocation)
+    let restarted = restart_release_service(
+        receipt_dir, "external-release-restart", service, service_user, invocation
     );
     let result = match restarted {
-        Ok(outcome) if outcome.ok && outcome.changed => running_service_sha(service).and_then(|sha| {
+        Ok(outcome) if outcome.ok && outcome.changed => running_service_sha(service, service_user).and_then(|sha| {
             if sha != desired_sha { return Err("external-release-running-identity-mismatch".into()); }
             if stable_installed_observation(path)?.sha256.as_deref() != Some(desired_sha.as_str()) {
                 return Err("external-release-installed-readback-mismatch".into());
@@ -267,6 +298,12 @@ fn execute_external_archive(
         Err(error) => Err(format!("external-release-restart-failed: {error}")),
     };
     if let Err(signal) = result {
+        // Preserve a manager-loss refusal even when the systemd observation
+        // became unknown after placement; still attempt the existing rollback.
+        let signal = match service_user {
+            Some(user) if require_user_manager(user).is_err() => "release-binary-user-manager-absent".to_string(),
+            _ => signal,
+        };
         let restore = if stable_installed_observation(path).is_ok_and(|now| now.sha256.as_deref() == Some(desired_sha.as_str())) {
             crate::place_file::execute(crate::place_file::PlaceFileRequest {
                 path, declared_bytes: &old_bytes, mode: observed.mode,
@@ -275,9 +312,8 @@ fn execute_external_archive(
             })
         } else { Err("external-release-rollback-target-changed".into()) };
         let restored = match restore {
-            Ok(_) => crate::atoms::systemd::run_action(receipt_dir, "external-release-restore-restart", "restart",
-                Some(service), false, None, 30, true, true, Some(invocation))
-                .and_then(|outcome| if outcome.ok { running_service_sha(service) } else { Err("restore-restart-failed".into()) })
+            Ok(_) => restart_release_service(receipt_dir, "external-release-restore-restart", service, service_user, invocation)
+                .and_then(|outcome| if outcome.ok { running_service_sha(service, service_user) } else { Err("restore-restart-failed".into()) })
                 .is_ok_and(|sha| sha == old_sha),
             Err(_) => false,
         };
@@ -636,6 +672,11 @@ pub(crate) fn execute(
 
     // A missing birth parent is established before any schema or network door.
     let observed = stable_installed_observation(path)?;
+    let service_user = match args.get("service_user") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(user)) if !user.is_empty() => Some(user.as_str()),
+        Some(_) => return Err("release-binary-service-user-invalid".into()),
+    };
     if ["release_tag", "archive_sha256", "binary_sha256"].iter().any(|key| args.contains_key(*key)) {
         let pin = PinnedArchive {
             tag: required_string(args, "release_tag")?,
@@ -644,11 +685,12 @@ pub(crate) fn execute(
         };
         let member = required_string(args, "archive_member")?;
         let service = required_string(args, "service")?;
-        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed, Some(pin));
+        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed, Some(pin), service_user);
     }
+    if service_user.is_some() { return Err("release-binary-service-user-requires-pinned-release".into()); }
     if let Some(member) = args.get("archive_member").and_then(Value::as_str) {
         let service = required_string(args, "service")?;
-        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed, None);
+        return execute_external_archive(component, asset, member, service, path, mode, receipt_dir, apply, invocation, &observed, None, None);
     }
     let seat = crate::atoms::ask::mint_seats::at_start()
         .release_flag

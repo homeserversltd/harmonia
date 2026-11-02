@@ -197,6 +197,19 @@ pub(crate) fn restore_service_state(
     Ok(())
 }
 
+pub(crate) fn unit_restart_account(
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
+    unit: &str,
+    user: &str,
+    timeout_secs: u64,
+) -> Result<CommandObservation, String> {
+    // try-restart never starts an inactive or missing unit if it disappears
+    // between the process-identity check and the action.
+    let args = crate::atoms::ask::account_systemctl_args(user, &["try-restart".into(), unit.into()])?;
+    super::run_command::command_with_timeout(authorization, invocation, "/usr/bin/setpriv", &args, Duration::from_secs(timeout_secs))
+}
+
 pub(crate) fn unit_change_scoped(
     authorization: &ActionAuthorization,
     invocation: &InvocationKey,

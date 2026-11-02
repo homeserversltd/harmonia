@@ -208,6 +208,22 @@ fn observe_condition_snapshot(
     (Some(show), Some(snapshot), status_error)
 }
 
+pub(crate) fn observe_account_service_state(service: &str, user: &str, timeout_secs: u64) -> Observation {
+    let state = |kind| {
+        let result = super::account_systemd_state_query(kind, service, user, timeout_secs);
+        if result.code.is_none() { None } else {
+            let value = result.stdout.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        }
+    };
+    Observation {
+        enabled: state("is-enabled"), active: state("is-active"),
+        load_state: state("load-state"), unit_file_state: state("unit-file-state"),
+        needs_reload: state("needs-reload"), unit_present: None, unit_file_exists: false,
+        probe: None, condition_show: None, condition_snapshot: None, condition_probe_error: None,
+    }
+}
+
 pub(crate) fn observe_systemd_state(
     action: &str,
     service: &str,
