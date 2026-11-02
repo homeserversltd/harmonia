@@ -450,6 +450,8 @@ struct SelfUpdateReexecHandoff {
     generation: u64,
     from_sha: String,
     to_sha: String,
+    #[serde(default)]
+    prior_head: Option<String>,
     proof_battery_passed: bool,
     promotion_changed: bool,
     old_engine_preserved: bool,
@@ -498,6 +500,7 @@ fn write_self_update_reexec_handoff(
         generation: SELF_UPDATE_REEXEC_GENERATION,
         from_sha: from_sha.to_owned(),
         to_sha: to_sha.to_owned(),
+        prior_head: content_prior_head(),
         proof_battery_passed,
         promotion_changed: promotion_stdout.contains("changed=true"),
         old_engine_preserved,
@@ -632,6 +635,7 @@ fn read_self_update_reexec_handoff(
         || handoff.generation != SELF_UPDATE_REEXEC_GENERATION
         || !is_lower_hex_sha256(&handoff.from_sha)
         || !is_lower_hex_sha256(&handoff.to_sha)
+        || handoff.prior_head.as_deref().is_some_and(|head| !crate::atoms::git_artifact::is_lower_hex_sha(head))
         || handoff.from_sha == handoff.to_sha
         || !handoff.proof_battery_passed
         || !handoff.promotion_changed
@@ -1540,6 +1544,13 @@ fn clear_content_prior_head() {
 fn capture_content_prior_head(plan: &crate::tools::git_artifact::SourcePlan, preflight_dir: &Path) -> Result<(), String> {
     let already_captured = CONTENT_PRIOR_HEAD.with(|slot| slot.borrow().is_some());
     if already_captured {
+        return Ok(());
+    }
+
+    if self_update_reexec_guard_active() {
+        let prior = read_self_update_reexec_handoff(preflight_dir)?
+            .and_then(|handoff| handoff.prior_head);
+        CONTENT_PRIOR_HEAD.with(|slot| slot.replace(Some(prior)));
         return Ok(());
     }
 

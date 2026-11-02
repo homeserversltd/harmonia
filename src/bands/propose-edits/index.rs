@@ -227,17 +227,7 @@ pub(crate) fn config_offer_eligible_bytes(manifest: &LadderManifest, source: &Pa
     if live == reference || interactables::normalized_line_score(&String::from_utf8_lossy(&live), &String::from_utf8_lossy(reference)) < 0.33 { return Ok(false); }
     let feed = interactables::load_feed(&crate::ledger::database_path())?;
     let prior = feed.interactables.iter().find(|item| item.target_path.as_deref() == Some(target));
-    let tracked_candidate = source.starts_with(&manifest.base_dir)
-        || manifest.files_root.as_ref().and_then(|root| target.strip_prefix("/").ok()
-            .map(|relative| manifest.base_dir.join(root).join(relative)))
-            .and_then(|path| fs::read(path).ok()).is_some_and(|bytes| bytes == reference);
-    if prior.is_none() && tracked_candidate
-        && config_history_path(manifest, source, target, reference).is_none()
-    {
-        // A read-only check cannot identify the pre-acquisition head of a
-        // future press when its selected reference is not in the current tree.
-        return Err("update-check-config-provenance-unavailable".into());
-    }
+
     let prior_head = crate::bands::renew_self::content_prior_head();
     match resolve_config_ancestor(manifest, source, target, &live, reference, prior, prior_head.as_deref())? {
         ConfigAncestor::Generated => Ok(true),
