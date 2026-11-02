@@ -1,0 +1,17 @@
+[Unit]
+Description=Qdrant vector database
+RequiresMountsFor=/var/opt/hermes/mem0
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/var/opt/hermes/mem0/qdrant
+ExecStart=/usr/local/bin/qdrant --config-path /etc/qdrant/config.yaml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

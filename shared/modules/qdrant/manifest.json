@@ -1,0 +1,39 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "qdrant",
+  "title": "Qdrant configuration",
+  "summary": "Offers Qdrant service and configuration defaults.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Offer configuration for the Qdrant service and files placed at birth.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "qdrant-service-unit",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/service",
+        "target_path": "/etc/systemd/system/qdrant.service",
+        "mode": 420,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "qdrant-configuration",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/config",
+        "target_path": "/etc/qdrant/config.yaml",
+        "mode": 420,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

@@ -48,6 +48,7 @@
     "hermes-cua-driver-service",
     "hermes-gateway-service",
     "hermes-dashboard-service",
+    "qdrant",
     "model-shelf",
     "model-slots",
     "sunshine-homesi"

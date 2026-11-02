@@ -1,0 +1,10 @@
+storage:
+  storage_path: /var/opt/hermes/mem0/qdrant/storage
+  snapshots_path: /var/opt/hermes/mem0/qdrant/snapshots
+service:
+  host: 127.0.0.1
+  http_port: 6333
+  grpc_port: 6334
+  enable_tls: false
+telemetry_disabled: true
+log_level: INFO
