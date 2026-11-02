@@ -300,7 +300,7 @@ pub(crate) fn refresh_command_proposal(
         live_sha: Some(observed_sha),
         reference_sha: Some(manifest_sha),
         recognition_score: None,
-        diff: Some(format!("observed exit={} stdout={:?}; desired exit=0 stdout={:?}", observed_exit_code, observed_stdout, desired_stdout)),
+        diff: None,
         script: format!("harmonia interactable accept {id}"),
         show_only_if: "command_state=drift".to_string(),
         completion_check: format!("sha256:{desired_sha}"),
@@ -1125,7 +1125,19 @@ fn accept_config_file_locked(
                 .and_then(|name| name.to_str())
                 .unwrap_or("target")
         ));
-        let projectio_receipt = crate::atoms::projectio::strike(crate::atoms::projectio::Request {
+        // Bind acceptance to the owner's bytes the proposal was calculated from.
+        // Projectio rechecks this same preimage after preparing the backup.
+        let mut target_file = fs::OpenOptions::new().read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(target_path)
+            .map_err(|error| format!("interactable-target-open-failed {}: {error}", target_path.display()))?;
+        let preimage_metadata = target_file.metadata().map_err(|error| error.to_string())?;
+        let mut preimage = Vec::new();
+        target_file.read_to_end(&mut preimage).map_err(|error| error.to_string())?;
+        if item.live_sha.as_deref().is_some_and(|expected| expected != format!("{:x}", Sha256::digest(&preimage))) {
+            return Err("interactable-live-preimage-changed".to_string());
+        }
+        let projectio_receipt = crate::atoms::projectio::strike_if_current(crate::atoms::projectio::Request {
             target: target_path,
             desired_bytes: &desired_bytes,
             mode: desired_mode,
@@ -1133,7 +1145,7 @@ fn accept_config_file_locked(
             gid: desired_gid,
             backup_path: &backup,
             witness: crate::atoms::projectio::owner_acceptance(operator_hand()),
-        })?;
+        }, &preimage, &preimage_metadata)?;
         serde_json::json!({
             "schema": "harmonia.interactables.hard_stamp.receipt.v1",
             "ok": true,

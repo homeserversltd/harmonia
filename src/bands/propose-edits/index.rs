@@ -99,6 +99,20 @@ pub(crate) fn iso8601_now() -> String {
         utc.tm_sec
     )
 }
+fn proposal_diff(target: &Path, live: &[u8], proposed: &[u8]) -> Option<String> {
+    const LIMIT: usize = 256 * 1024;
+    if live == proposed || live.len() > LIMIT || proposed.len() > LIMIT {
+        return None;
+    }
+    let live = std::str::from_utf8(live).ok()?;
+    let proposed = std::str::from_utf8(proposed).ok()?;
+    Some(similar::TextDiff::from_lines(live, proposed)
+        .unified_diff()
+        .context_radius(3)
+        .header(&format!("{} (yours)", target.display()), &format!("{} (after Yes)", target.display()))
+        .to_string())
+}
+
 fn stable_id(surface: &Path, live_sha: &str, reference_sha: &str) -> String {
     let digest =
         Sha256::digest(format!("{}:{live_sha}:{reference_sha}", surface.display()).as_bytes());
@@ -697,6 +711,7 @@ fn refresh_interactables_at_path_with_policy_and_step(
         let config_act_binding = step_id
             .map(|step_id| config_act_binding(manifest, step_id))
             .transpose()?;
+        let proposal_diff_text = proposal_diff(&entry.target, &live_bytes, &reference_bytes);
         config.push(crate::ledger::ConfigProposal {
             id: id.clone(), state: config_state, source: reference_bytes,
         });
@@ -725,7 +740,7 @@ fn refresh_interactables_at_path_with_policy_and_step(
             live_sha: live_sha.clone(),
             reference_sha: Some(reference_sha.clone()),
             recognition_score: Some(score),
-            diff: entry.diff.clone(),
+            diff: proposal_diff_text,
             script: format!("harmonia interactable run {} owner", interactable_id),
             show_only_if: "config_state=interactable".into(),
             completion_check: format!("sha256:{reference_sha}"),
@@ -944,8 +959,7 @@ pub(crate) fn refresh_validated_symlink(
                 .map(|value| format!("{:x}", Sha256::digest(value.as_bytes()))),
             reference_sha: observed["source_sha256"].as_str().map(str::to_owned),
             recognition_score: None,
-            diff: Some(format!("{} -> {} (currently {})", target.display(), source.display(),
-                observed["link_target"].as_str().unwrap_or("absent"))),
+            diff: None,
             script: format!("harmonia interactable run {id}"),
             show_only_if: "link_state=drift".into(),
             completion_check: format!("symlink:{}", source.display()),
