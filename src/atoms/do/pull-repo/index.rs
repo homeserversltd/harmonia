@@ -1062,11 +1062,6 @@ pub(crate) fn git_acquire(
 }
 
 
-fn xenia_commit(request: &git_artifact::Request, cwd: &Path, expression: &str) -> Option<String> {
-    let result = crate::atoms::ask::pull_repo::git_observe(request, &["rev-parse", &format!("{expression}^{{commit}}")], cwd.to_str());
-    result.ok.then(|| result.stdout.trim().to_owned()).filter(|value| git_artifact::is_lower_hex_sha(value))
-}
-
 pub(crate) fn xenia_owner_ids(owner: &str) -> Result<(u32, u32), String> {
     #[cfg(test)]
     if owner == "xenia" {
@@ -1078,115 +1073,13 @@ pub(crate) fn xenia_owner_ids(owner: &str) -> Result<(u32, u32), String> {
         return Err(format!("xenia-owner-absent {owner}"));
     }
     let passwd = unsafe { &*passwd };
-    // The seat's group is the shared clone group `xenia`, whoever owns it: the
-    // staff band reads a 0750 seat as caduceus with exactly that one
-    // supplementary group (workflow-coronatio-xenia-clone-road-and-staff-actuation-law,
-    // amendment 2026-09-30). A body without that group keeps the owner's own.
     let group = std::ffi::CString::new("xenia").map_err(|_| "xenia-group-invalid".to_string())?;
     let shared = unsafe { libc::getgrnam(group.as_ptr()) };
-    let gid = if shared.is_null() { passwd.pw_gid } else { unsafe { (*shared).gr_gid } };
-    Ok((passwd.pw_uid, gid))
+    if shared.is_null() {
+        return Err("xenia-group-absent".into());
+    }
+    Ok((passwd.pw_uid, unsafe { (*shared).gr_gid }))
 }
-
-fn xenia_repair_seat(path: &Path, owner: &str) -> Result<bool, String> {
-    let (uid, gid) = xenia_owner_ids(owner)?;
-    let metadata = fs::metadata(path).map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
-    let mut changed = metadata.permissions().mode() & 0o777 != 0o750;
-    if changed {
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o750);
-        fs::set_permissions(path, permissions)
-            .map_err(|error| format!("xenia-seat-mode-failed: {error}"))?;
-    }
-    if unsafe { libc::geteuid() } == 0 {
-        use std::os::unix::ffi::OsStrExt;
-        let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| "xenia-seat-path-invalid".to_string())?;
-        let current = fs::metadata(path).map_err(|error| error.to_string())?;
-        if current.uid() != uid || current.gid() != gid {
-            if unsafe { libc::chown(path_c.as_ptr(), uid, gid) } != 0 {
-                return Err(format!("xenia-seat-owner-failed: {}", std::io::Error::last_os_error()));
-            }
-            changed = true;
-        }
-    } else if metadata.uid() != unsafe { libc::geteuid() } {
-        return Err("xenia-seat-owner-mismatch".into());
-    }
-    Ok(changed)
-}
-
-/// In-place clone road for Xenia. Unlike generic source acquisition this never
-/// stages or promotes a replacement directory, so an untracked target/ survives.
-/// The seat IS the clone (workflow-coronatio-xenia-clone-road-and-staff-actuation-law):
-/// the face ladder places `install.bin` into it and the guest writes its own
-/// runtime files (`listen`) beside it, so untracked paths are the road's own
-/// residue and are preserved, exactly as `target/` already is. Unsafe dirt is a
-/// tracked path the checkout would clobber: modified, deleted, renamed, or in
-/// conflict.
-pub(crate) fn unsafe_clone_dirt(status_porcelain: &str) -> bool {
-    status_porcelain.lines().any(|line| {
-        let code = line.get(..2).unwrap_or_default();
-        !line.trim().is_empty() && code != "??" && code != "!!"
-    })
-}
-
-pub(crate) fn clone_in_place(
-    request: &git_artifact::Request,
-    reference: &str,
-    owner: &str,
-) -> Result<(bool, String, String), String> {
-    if request.path.exists() && !request.path.is_dir() {
-        return Err("xenia-clone-destination-not-directory".into());
-    }
-    fs::create_dir_all(&request.path)
-        .map_err(|error| format!("xenia-clone-seat-create-failed: {error}"))?;
-    let seat_changed_before = xenia_repair_seat(&request.path, owner)?;
-    let cwd = request.path.to_str().ok_or("xenia-clone-path-invalid")?;
-    let mut transcript = Vec::new();
-    let before = xenia_commit(request, &request.path, "HEAD");
-    if !request.path.join(".git").exists() {
-        let init = crate::atoms::ask::pull_repo::git_observe(request, &["init", "-q"], Some(cwd));
-        if !init.ok { return Err(format!("xenia-clone-init-failed: {}", init.stderr)); }
-        let add = crate::atoms::ask::pull_repo::git_observe(request, &["remote", "add", "origin", request.repo.as_deref().ok_or("xenia-clone-repo-missing")?], Some(cwd));
-        if !add.ok { return Err(format!("xenia-clone-remote-failed: {}", add.stderr)); }
-    } else if let Some(repo) = request.repo.as_deref() {
-        let configured = crate::atoms::ask::pull_repo::git_observe(request, &["remote", "get-url", "origin"], Some(cwd));
-        if !configured.ok {
-            let add = crate::atoms::ask::pull_repo::git_observe(request, &["remote", "add", "origin", repo], Some(cwd));
-            if !add.ok { return Err(format!("xenia-clone-remote-failed: {}", add.stderr)); }
-        } else if configured.stdout.trim() != repo {
-            let set = crate::atoms::ask::pull_repo::git_observe(request, &["remote", "set-url", "origin", repo], Some(cwd));
-            if !set.ok { return Err(format!("xenia-clone-remote-failed: {}", set.stderr)); }
-        }
-    }
-    let fetch = crate::atoms::ask::pull_repo::git_observe(request, &["fetch", "origin", reference], Some(cwd));
-    transcript.push(format!("fetch ref={reference} exit={} ok={}", fetch.code, fetch.ok));
-    if !fetch.ok { return Err(format!("xenia-clone-fetch-failed: {}", fetch.stderr)); }
-    let target = if git_artifact::is_lower_hex_sha(reference) {
-        xenia_commit(request, &request.path, reference)
-    } else {
-        xenia_commit(request, &request.path, "FETCH_HEAD")
-            .or_else(|| xenia_commit(request, &request.path, &format!("refs/tags/{reference}")))
-            .or_else(|| xenia_commit(request, &request.path, &format!("refs/remotes/origin/{reference}")))
-    }
-    .ok_or("xenia-clone-target-unresolved")?;
-    if let Some(previous) = before.as_deref().filter(|previous| *previous != target) {
-        let ancestor = crate::atoms::ask::pull_repo::git_observe(request, &["merge-base", "--is-ancestor", previous, &target], Some(cwd));
-        if !ancestor.ok {
-            return Err("xenia-clone-diverged".into());
-        }
-    }
-    let status = crate::atoms::ask::pull_repo::git_observe(request, &["status", "--porcelain", "--untracked-files=all"], Some(cwd));
-    if !status.ok { return Err(format!("xenia-clone-status-failed: {}", status.stderr)); }
-    if unsafe_clone_dirt(&status.stdout) { return Err("xenia-clone-dirty".into()); }
-    let checkout = crate::atoms::ask::pull_repo::git_observe(request, &["checkout", "--detach", &target], Some(cwd));
-    if !checkout.ok { return Err(format!("xenia-clone-checkout-failed: {}", checkout.stderr)); }
-    let resolved = xenia_commit(request, &request.path, "HEAD").ok_or("xenia-clone-head-unresolved")?;
-    let seat_changed = xenia_repair_seat(&request.path, owner)?;
-    Ok((before.as_deref() != Some(resolved.as_str()) || seat_changed_before || seat_changed, resolved, transcript.join("\n")))
-}
-
-
 
 /// Source orchestration is owned by the pull-repo Do atom.
 pub(crate) mod source_orchestration {
@@ -1224,89 +1117,6 @@ pub(crate) fn apply(
         Err(error) => Outcome { ok: false, changed: false, message: error, command: CmdResult { ok: false, code: -1, stdout: String::new(), stderr: String::new() } },
     }
 }
-pub(crate) fn acquire_xenia_clone(
-    entry: &serde_json::Value,
-    destination: PathBuf,
-    apply: bool,
-) -> SourceOutcome {
-    let repo = entry
-        .pointer("/source/repo")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let reference = entry
-        .pointer("/source/ref")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let owner = entry
-        .pointer("/install/owner")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let locator = repo
-        .split_once('/')
-        .filter(|(owner, name)| {
-            !owner.is_empty()
-                && !name.is_empty()
-                && !name.contains('/')
-                && !repo.contains("://")
-        })
-        .map(|_| format!("https://git.home.arpa/{repo}.git"));
-    let candidate = SourceCandidate {
-        kind: SourceCandidateKind::Git,
-        locator: locator.clone().unwrap_or_else(|| repo.to_owned()),
-        credential_selector: None,
-    };
-    let failure = |detail: String| SourceOutcome {
-        ok: false,
-        changed: false,
-        receipt: SourceReceipt {
-            attempts: vec![source_attempt(1, &candidate, "failed", None, false, detail.clone())],
-            served_index: None,
-            resolved_commit: None,
-            promotion: detail,
-        },
-    };
-    if repo.is_empty() || reference.is_empty() || owner.is_empty() || locator.is_none() {
-        return failure("xenia-clone-source-incomplete".into());
-    }
-    if !apply {
-        let resolved = crate::atoms::ask::pull_repo::source_head(&destination, owner);
-        let resolved = resolved
-            .ok
-            .then(|| resolved.stdout.trim().to_owned())
-            .filter(|value| crate::atoms::git_artifact::is_lower_hex_sha(value));
-        return SourceOutcome {
-            ok: true,
-            changed: false,
-            receipt: SourceReceipt {
-                attempts: vec![source_attempt(1, &candidate, "planned", resolved.clone(), false, "in-place clone planned".into())],
-                served_index: None,
-                resolved_commit: resolved,
-                promotion: "xenia clone planned".into(),
-            },
-        };
-    }
-    let request = crate::atoms::git_artifact::Request::new(
-        locator,
-        destination,
-        reference.to_owned(),
-        "origin".into(),
-    )
-    .with_bearer(owner.to_owned());
-    match crate::atoms::r#do::pull_repo::clone_in_place(&request, reference, owner) {
-        Ok((changed, resolved, detail)) => SourceOutcome {
-            ok: true,
-            changed,
-            receipt: SourceReceipt {
-                attempts: vec![source_attempt(1, &candidate, "served-in-place", Some(resolved.clone()), false, detail)],
-                served_index: Some(1),
-                resolved_commit: Some(resolved),
-                promotion: "xenia clone fetched and checked out in place; untracked target preserved".into(),
-            },
-        },
-        Err(error) => failure(error),
-    }
-}
-
 pub(crate) fn acquire_source(
     plan: &SourcePlan,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,

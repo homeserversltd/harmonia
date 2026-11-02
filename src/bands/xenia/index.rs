@@ -2,7 +2,7 @@ use crate::tools::ladder::{LadderManifest, LadderStep, RoutineStep};
 use crate::OperationOutcome;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::ffi::{CStr, CString, OsStr, OsString};
+use std::ffi::{CString, OsStr};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -17,31 +17,6 @@ const REGISTER_PATH: &str = "/etc/appliance/xenia.json";
 const UNIT_ROOT: &str = "/etc/systemd/system";
 const HTTP_RESPONSE_CAP: usize = 1024 * 1024;
 static DEBUG_SCHEMA_BASE: OnceLock<String> = OnceLock::new();
-const FORBIDDEN_PREFIXES: &[&str] = &[
-    "MemoryHigh",
-    "MemoryMax",
-    "MemorySwapMax",
-    "MemoryMin",
-    "MemoryLow",
-    "ManagedOOM",
-    "OOMScoreAdjust",
-    "CPUQuota",
-    "TasksMax",
-    "Protect",
-    "Private",
-    "Restrict",
-    "NoNewPrivileges",
-    "ReadOnlyPaths",
-    "ReadWritePaths",
-    "InaccessiblePaths",
-    "SystemCall",
-    "LockPersonality",
-    "MemoryDenyWriteExecute",
-    "CapabilityBoundingSet",
-    "AmbientCapabilities",
-    "DynamicUser",
-];
-
 #[derive(Debug, Clone)]
 pub(crate) struct Register {
     pub raw: Value,
@@ -219,42 +194,20 @@ fn install_bin(entry: &Value) -> Option<String> {
 }
 
 fn declaration(id: &str, entry: &Value) -> Result<LadderStep, String> {
-    let clone = source_kind(entry) == Some("clone");
-    let (release_repo, requested_ref) = if clone {
-        let repo = string(entry, "/source/repo")?;
-        let reference = string(entry, "/source/ref")?;
-        (repo, Some(reference))
-    } else {
-        (string(entry, "/source/release_repo")?, None)
-    };
-    let bin = rebased_install_bin(id, entry)?;
-    if !clone && bin.is_none() {
-        return Err("xenia-install-bin-missing".into());
-    }
+    let release_repo = string(entry, "/source/release_repo")?;
+    let _reference = string(entry, "/source/ref")?;
+    let bin = rebased_install_bin(id, entry)?.ok_or("xenia-guest-not-installed")?;
     let unit = unit_name(entry, id)?;
     let owner = string(entry, "/install/owner")?;
-    let binary_name = if clone {
-        bin.as_deref()
-            .and_then(|value| Path::new(value).file_name())
-            .and_then(|value| value.to_str())
-            .map(str::to_owned)
-            .unwrap_or_else(|| repo_segment(&release_repo).to_string())
-    } else {
-        repo_segment(&release_repo).to_string()
-    };
-    let face = bin.is_some();
-    let mut args = BTreeMap::from([
+    let binary_name = repo_segment(&release_repo).to_string();
+    let args = BTreeMap::from([
         ("module_id".into(), json!("xenia")),
         ("component".into(), json!(id)),
         ("release_repo".into(), json!(release_repo)),
-        ("release_ref".into(), json!(requested_ref)),
-        ("source_kind".into(), json!(if clone { "clone" } else { "release" })),
-        ("source_policy".into(), json!(if clone { "source" } else { "artifact" })),
-        ("face".into(), json!(face)),
         ("install_bin".into(), json!(bin)),
         ("service".into(), json!(unit)),
         ("url".into(), json!(format!("xenia://{id}"))),
-        ("binary_name".into(), json!(binary_name.clone())),
+        ("binary_name".into(), json!(binary_name)),
         ("asset_name".into(), json!(format!("{binary_name}-x86_64"))),
         ("identity".into(), json!("embedded-sha")),
         ("source_dir".into(), json!(xenia_root().join(id))),
@@ -264,20 +217,10 @@ fn declaration(id: &str, entry: &Value) -> Result<LadderStep, String> {
         ("managed_files_schema".into(), json!("harmonia.xenia.files.v1")),
         ("xenia_entry".into(), entry.clone()),
     ]);
-    if !clone {
-        args.remove("release_ref");
-        args.remove("source_kind");
-        args.remove("source_policy");
-        args.remove("face");
-    }
     Ok(LadderStep {
-        step_id: format!("xenia-{id}"),
-        tool: "service-runtime".into(),
-        permutation: "converge".into(),
-        args,
-        steps: Vec::new(),
-        on_failure: crate::tools::ladder::OnFailure::Stop,
-        extra: BTreeMap::new(),
+        step_id: format!("xenia-{id}"), tool: "service-runtime".into(),
+        permutation: "converge".into(), args, steps: Vec::new(),
+        on_failure: crate::tools::ladder::OnFailure::Stop, extra: BTreeMap::new(),
     })
 }
 
@@ -333,6 +276,22 @@ pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), Str
         match (step.tool.as_str(), step.permutation.as_str()) {
             ("xenia", "converge") => {
                 for (id, entry) in &entries {
+                    if source_kind(entry) == Some("clone") {
+                        refuse_entry(manifest, &mut lowered, id, "clone-road-retired".into());
+                        continue;
+                    }
+                    if source_kind(entry) == Some("own-service") {
+                        lowered.push(LadderStep {
+                            step_id: format!("xenia-skip-{id}"),
+                            tool: "xenia-runtime".into(),
+                            permutation: "skip".into(),
+                            args: BTreeMap::from([("id".into(), json!(id))]),
+                            steps: Vec::new(),
+                            on_failure: crate::tools::ladder::OnFailure::Stop,
+                            extra: BTreeMap::new(),
+                        });
+                        continue;
+                    }
                     if let Some(reason) = register.entry_refusals.get(id) {
                         refuse_entry(manifest, &mut lowered, id, reason.clone());
                         continue;
@@ -368,21 +327,7 @@ pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), Str
                     }
                 }
             }
-            ("xenia", "retire") => {
-                lowered.push(LadderStep {
-                    step_id: "xenia-retire".into(),
-                    tool: "xenia-runtime".into(),
-                    permutation: "retire".into(),
-                    args: BTreeMap::from([
-                        ("register".into(), register.raw.clone()),
-                        ("unit_root".into(), json!(unit_root())),
-                    ]),
-                    steps: Vec::new(),
-                    on_failure: step.on_failure,
-                    extra: BTreeMap::new(),
-                });
-            }
-            _ => return Err("xenia-manifest-may-only-declare-converge-and-retire".into()),
+            _ => return Err("xenia-manifest-may-only-declare-converge".into()),
         }
     }
     manifest.ladder = lowered;
@@ -390,343 +335,88 @@ pub(crate) fn lower_xenia_steps(manifest: &mut LadderManifest) -> Result<(), Str
 }
 
 pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), String> {
-    if manifest.id != "xenia" {
-        return Ok(());
-    }
+    if manifest.id != "xenia" { return Ok(()); }
     for step in manifest.ladder.iter_mut().filter(|s| s.tool == "routine") {
-        let entry = step
-            .steps
-            .first()
-            .and_then(|c| c.args.get("xenia_entry"))
-            .cloned()
-            .or_else(|| {
-                step.steps
-                    .iter()
-                    .find_map(|c| c.args.get("xenia_entry").cloned())
-            })
+        let entry = step.steps.iter().find_map(|c| c.args.get("xenia_entry").cloned())
             .ok_or("xenia-lowered-entry-missing")?;
         let id = string(&entry, "/id")?;
         let owner = string(&entry, "/install/owner")?;
-        let rebased_bin = rebased_install_bin(&id, &entry)?;
-        let face = rebased_bin.is_some();
-        let bin = rebased_bin.unwrap_or_else(|| xenia_root().join(&id).join("__no-face__").display().to_string());
+        let bin = rebased_install_bin(&id, &entry)?.ok_or("xenia-guest-not-installed")?;
         let unit = unit_name(&entry, &id)?;
         let seat = xenia_root().join(&id).display().to_string();
-        let clone = source_kind(&entry) == Some("clone");
-        let bind = if !face {
-            String::new()
-        } else {
-            match debug_schema_base() {
-                Some(base) => base.to_owned(),
-                None => crate::atoms::ask::caduceus_door::base_url()
-                    .map(str::to_owned)
-                    .map_err(|_| "caduceus-bind-undeclared".to_string())?,
-            }
-        };
-        let environment = BTreeMap::from([
-            ("XENIA_ID".to_string(), id.clone()),
-            ("XENIA_SEAT".to_string(), seat.clone()),
-            ("XENIA_SCHEMA_BASE".to_string(), bind),
-        ]);
         for child in &mut step.steps {
             child.args.remove("xenia_entry");
-            if matches!(
-                child.name.as_str(),
-                "service-daemon-reload"
-                    | "service-enable"
-                    | "service-restart"
-                    | "service-active"
-                    | "unit-authority-proof"
-            ) {
-                child.args.remove("source_reference");
-                child.args.remove("source_remote");
+            if matches!(child.name.as_str(), "service-restart" | "service-active" | "unit-authority-proof") {
+                child.args.remove("source_reference"); child.args.remove("source_remote");
             }
             if child.name == "pull-repo" {
                 child.args.insert("authority".into(), json!("xenia-entry"));
                 child.args.insert("entry_id".into(), json!(id));
                 child.args.insert("entry".into(), entry.clone());
-                if let Some(repo) = entry
-                    .pointer("/source/repo")
-                    .and_then(Value::as_str)
-                    .or_else(|| entry.pointer("/source/release_repo").and_then(Value::as_str))
-                {
-                    child.args.insert("release_repo".into(), json!(repo));
-                    let artifact_name = if source_kind(&entry) == Some("clone") {
-                        entry
-                            .pointer("/install/bin")
-                            .and_then(Value::as_str)
-                            .and_then(|bin| Path::new(bin).file_name())
-                            .and_then(|name| name.to_str())
-                            .unwrap_or_else(|| repo_segment(repo))
-                    } else {
-                        repo_segment(repo)
-                    };
-                    child
-                        .args
-                        .insert("artifact_name".into(), json!(artifact_name));
-                }
+                let repo = string(&entry, "/source/release_repo")?;
+                child.args.insert("release_repo".into(), json!(repo));
+                child.args.insert("artifact_name".into(), json!(repo_segment(&repo)));
             }
             if child.name == "build" {
-                // Artifact roads are already stamped by pull-repo. A clone
-                // road's digest is minted by its face rung instead: release
-                // acquisition or the source fallback build.
-                if !clone {
-                    child
-                        .args
-                        .insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
-                } else {
-                    child.args.remove("expected_digest");
-                }
-                child.args.insert("road".into(), json!(if clone { "clone" } else { "artifact" }));
-            }
-            if child.name == "build" && !clone {
-                if let Some(pinned_release_sha) =
-                    entry.pointer("/source/ref").and_then(Value::as_str)
-                {
-                    child
-                        .args
-                        .insert("pinned_release_sha".into(), json!(pinned_release_sha));
-                }
+                child.args.insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
+                child.args.insert("release_tag".into(), json!({"from":"pull-repo.release_tag"}));
+                child.args.insert("road".into(), json!("artifact"));
             }
             if child.name == "binary-install" {
                 child.args.insert("owner".into(), json!(owner));
-                child
-                    .args
-                    .insert("uid".into(), json!({"from":"seat-present.uid"}));
-                child
-                    .args
-                    .insert("gid".into(), json!({"from":"seat-present.gid"}));
-                child.args.insert(
-                    "expected_digest".into(),
-                    if clone {
-                        json!({"from":"build.sha256"})
-                    } else {
-                        json!({"from":"pull-repo.digest"})
-                    },
-                );
-                child.args.insert("road".into(), json!(if clone { "clone" } else { "artifact" }));
-                child.args.insert(
-                    "digest_supplier".into(),
-                    if clone {
-                        json!({"from":"build.digest_supplier"})
-                    } else {
-                        json!("release")
-                    },
-                );
-            }
-        }
-        let pull = step
-            .steps
-            .iter()
-            .position(|c| c.name == "pull-repo")
-            .ok_or("xenia-pull-repo-missing")?;
-        let mut seat_args = BTreeMap::from([
-            ("id".into(), json!(id)),
-            ("owner".into(), json!(owner)),
-            ("seat".into(), json!(seat)),
-        ]);
-        if face {
-            seat_args.insert("bin".into(), json!(bin));
-        }
-        step.steps.insert(
-            pull,
-            RoutineStep {
-                name: "seat-present".into(),
-                tool: "xenia-runtime".into(),
-                permutation: Some("seat-present".into()),
-                args: seat_args,
-                extra: BTreeMap::new(),
-            },
-        );
-        if !face {
-            step.steps
-                .retain(|child| matches!(child.name.as_str(), "seat-present" | "pull-repo"));
-            continue;
-        }
-        let reload = step
-            .steps
-            .iter()
-            .position(|c| c.name == "service-daemon-reload")
-            .ok_or("xenia-daemon-reload-missing")?;
-        step.steps.insert(
-            reload,
-            RoutineStep {
-                name: "unit-render".into(),
-                tool: "place-file".into(),
-                permutation: Some("unit-render".into()),
-                args: BTreeMap::from([
-                    ("unit".into(), json!(unit)),
-                    ("xenia_id".into(), json!(id)),
-                    ("description".into(), json!(format!("Xenia guest {id}"))),
-                    ("exec_start".into(), json!(bin)),
-                    ("working_directory".into(), json!(seat)),
-                    ("user".into(), json!(owner)),
-                    ("group".into(), json!(owner)),
-                    ("environment".into(), json!(environment)),
-                    ("no_follow".into(), json!(true)),
-                    ("collision_policy".into(), json!("refuse")),
-                    ("rollback_policy".into(), json!("exact")),
-                    ("xattrs".into(), json!({})),
-                ]),
-                extra: BTreeMap::new(),
-            },
-        );
-        let daemon_reload = step
-            .steps
-            .iter_mut()
-            .find(|child| child.name == "service-daemon-reload")
-            .ok_or("xenia-daemon-reload-missing")?;
-        daemon_reload.args.insert(
-            "managed_files_changed".into(),
-            json!({"from":"unit-render.changed"}),
-        );
-        if let Some(health) = step.steps.iter_mut().find(|c| c.name == "health-proof") {
-            health.permutation = Some("status-door".into());
-            health.args = BTreeMap::from([
-                ("id".into(), json!(id.clone())),
-                ("resolved_commit".into(), json!({"from":"build.source_build_sha"})),
-                ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
-                ("health_route".into(), json!(health_route(&entry))),
-            ]);
-        }
-        if clone {
-            if let Some(endpoint) = discovered_endpoint(&entry) {
-                let route = health_route(&entry);
-                let restart = step
-                    .steps
-                    .iter()
-                    .position(|child| child.name == "service-restart")
-                    .ok_or("xenia-service-restart-missing")?;
-                step.steps.insert(
-                    restart,
-                    RoutineStep {
-                        name: "health-read".into(),
-                        tool: "check-health".into(),
-                        permutation: Some("probe".into()),
-                        args: BTreeMap::from([
-                            ("url".into(), json!(health_url(endpoint, &route))),
-                            ("endpoint".into(), json!(endpoint)),
-                            ("health_route".into(), json!(route)),
-                            ("xenia_health_read".into(), json!(true)),
-                        ]),
-                        extra: BTreeMap::new(),
-                    },
-                );
-            }
-        }
-        let health = step
-            .steps
-            .iter()
-            .position(|c| c.name == "health-proof")
-            .ok_or("xenia-health-missing")?;
-        let mut observe_args = BTreeMap::from([
-            ("id".into(), json!(id)),
-            (
-                "source_sha".into(),
-                json!({"from":"health-proof.running_source_sha"}),
-            ),
-            ("health".into(), json!({"from":"health-proof.health"})),
-            ("endpoint".into(), json!({"from":"health-proof.endpoint"})),
-        ]);
-        if !clone {
-            observe_args.insert("version".into(), json!({"from":"pull-repo.version"}));
-        }
-        step.steps.insert(
-            health + 1,
-            RoutineStep {
-                name: "observe-stamp".into(),
-                tool: "xenia-runtime".into(),
-                permutation: Some("observe-stamp".into()),
-                args: observe_args,
-                extra: BTreeMap::new(),
-            },
-        );
-        let has_health_read = step.steps.iter().any(|child| child.name == "health-read");
-        for child in &mut step.steps {
-            if clone {
-                child.args.insert("xenia_id".into(), json!(id.clone()));
-                if child.name == "service-restart" && has_health_read {
-                    child.args.insert(
-                        "running_source_sha".into(),
-                        json!({"from":"health-read.running_source_sha"}),
-                    );
-                }
+                child.args.insert("uid".into(), json!({"from":"seat-present.uid"}));
+                child.args.insert("gid".into(), json!({"from":"seat-present.gid"}));
+                child.args.insert("mode".into(), json!({"from":"seat-present.mode"}));
+                child.args.insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
+                child.args.insert("road".into(), json!("artifact"));
+                child.args.insert("digest_supplier".into(), json!("release"));
             }
             child.args.insert("hyalos_kind".into(), json!("xenia"));
-            child
-                .args
-                .insert("hyalos_correlation_id".into(), json!(id));
+            child.args.insert("hyalos_correlation_id".into(), json!(id));
         }
+        let pull = step.steps.iter().position(|c| c.name == "pull-repo").ok_or("xenia-pull-repo-missing")?;
+        step.steps.insert(pull, RoutineStep {
+            name: "seat-present".into(), tool: "xenia-runtime".into(), permutation: Some("seat-present".into()),
+            args: BTreeMap::from([("id".into(), json!(id)), ("owner".into(), json!(owner)),
+                ("seat".into(), json!(seat)), ("unit".into(), json!(unit)), ("bin".into(), json!(bin))]),
+            extra: BTreeMap::new(),
+        });
+        step.steps.retain(|child| !matches!(child.name.as_str(), "service-daemon-reload" | "service-enable"));
+        let restart_pos = step.steps.iter().position(|c| c.name == "service-restart").ok_or("xenia-service-restart-missing")?;
+        let restart = &mut step.steps[restart_pos];
+        restart.args.insert("xenia_id".into(), json!(id));
+        restart.args.insert("running_source_sha".into(), json!({"from":"health-read.running_source_sha"}));
+        restart.args.insert("source_sha".into(), json!({"from":"build.source_build_sha"}));
+        step.steps.insert(restart_pos, RoutineStep {
+            name: "health-read".into(), tool: "check-health".into(), permutation: Some("probe".into()),
+            args: BTreeMap::from([
+                ("url".into(), json!(format!("xenia://{id}"))),
+                ("id".into(), json!(id)),
+                ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
+                ("health_route".into(), json!(health_route(&entry))),
+                ("xenia_health_read".into(), json!(true)),
+            ]), extra: BTreeMap::new(),
+        });
+        let health = step.steps.iter_mut().find(|c| c.name == "health-proof").ok_or("xenia-health-missing")?;
+        health.permutation = Some("status-door".into());
+        health.args = BTreeMap::from([
+            ("id".into(), json!(id)), ("resolved_commit".into(), json!({"from":"build.source_build_sha"})),
+            ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
+            ("health_route".into(), json!(health_route(&entry))),
+        ]);
+        let health_pos = step.steps.iter().position(|c| c.name == "health-proof").ok_or("xenia-health-missing")?;
+        step.steps.insert(health_pos + 1, RoutineStep {
+            name: "observe-stamp".into(), tool: "xenia-runtime".into(), permutation: Some("observe-stamp".into()),
+            args: BTreeMap::from([
+                ("id".into(), json!(id)), ("source_sha".into(), json!({"from":"health-proof.running_source_sha"})),
+                ("health".into(), json!({"from":"health-proof.health"})), ("endpoint".into(), json!({"from":"health-proof.endpoint"})),
+                ("version".into(), json!({"from":"pull-repo.version"})),
+                ("binary_changed".into(), json!({"from":"binary-install.changed"})),
+                ("restart_changed".into(), json!({"from":"service-restart.changed"})),
+            ]), extra: BTreeMap::new(),
+        });
     }
     Ok(())
-}
-
-pub(crate) fn unit_render_path(args: &BTreeMap<String, Value>) -> Option<PathBuf> {
-    let unit = args.get("unit").and_then(Value::as_str)?;
-    args.get("xenia_id").and_then(Value::as_str)?;
-    Some(unit_root().join(unit))
-}
-
-pub(crate) fn render_unit(
-    unit: &str,
-    xenia_id: &str,
-    description: &str,
-    exec_start: &str,
-    working_directory: &str,
-    user: &str,
-    group: &str,
-    environment: &BTreeMap<String, String>,
-) -> Result<String, String> {
-    for (name, value) in [
-        ("unit", unit),
-        ("xenia_id", xenia_id),
-        ("description", description),
-        ("exec_start", exec_start),
-        ("working_directory", working_directory),
-        ("user", user),
-        ("group", group),
-    ] {
-        if value.trim().is_empty() || value.contains(['\n', '\r']) {
-            return Err(format!("xenia-unit-{name}-invalid"));
-        }
-    }
-    let seat = xenia_root().join(xenia_id).display().to_string();
-    if unit != format!("{xenia_id}.service")
-        || description != format!("Xenia guest {xenia_id}")
-        || working_directory != seat
-        || user != group
-        || !exec_start.starts_with(&format!("{seat}/"))
-        || environment.get("XENIA_ID").map(String::as_str) != Some(xenia_id)
-        || environment.get("XENIA_SEAT").map(String::as_str) != Some(seat.as_str())
-        || !environment
-            .get("XENIA_SCHEMA_BASE")
-            .is_some_and(|value| value.starts_with("http://") && !value.contains(['\n', '\r']))
-        || environment.len() != 3
-    {
-        return Err("xenia-unit-contract-mismatch".into());
-    }
-    let bytes = format!("[Unit]\nDescription={description}\nX-Xenia-Id={xenia_id}\nAfter=network.target caduceus.service\n\n[Service]\nType=simple\nUser={user}\nGroup={group}\nWorkingDirectory={working_directory}\nEnvironment=XENIA_ID={}\nEnvironment=XENIA_SEAT={}\nEnvironment=XENIA_SCHEMA_BASE={}\nExecStart={exec_start}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n", environment["XENIA_ID"], environment["XENIA_SEAT"], environment["XENIA_SCHEMA_BASE"]);
-    let forbidden = forbidden_directives(&bytes);
-    if !forbidden.is_empty() {
-        return Err(format!(
-            "xenia-unit-forbidden-directives {}",
-            forbidden.join(",")
-        ));
-    }
-    Ok(bytes)
-}
-
-pub(crate) fn forbidden_directives(bytes: &str) -> Vec<String> {
-    bytes
-        .lines()
-        .filter_map(|line| line.split_once('=').map(|(key, _)| key.trim()))
-        .filter(|key| {
-            FORBIDDEN_PREFIXES
-                .iter()
-                .any(|prefix| key.starts_with(prefix))
-        })
-        .map(str::to_owned)
-        .collect()
 }
 
 fn base_url(explicit: Option<&str>) -> Result<String, String> {
@@ -821,61 +511,6 @@ fn http(
     Ok((status, value))
 }
 
-struct XeniaSeatFile {
-    name: OsString,
-    labels: Vec<String>,
-    file: Option<File>,
-    before: Option<std::fs::Metadata>,
-}
-
-fn xenia_user_name(uid: u32) -> Option<String> {
-    let account = unsafe { libc::getpwuid(uid as libc::uid_t) };
-    if account.is_null() {
-        return None;
-    }
-    let name = unsafe { (*account).pw_name };
-    if name.is_null() {
-        return None;
-    }
-    Some(
-        unsafe { CStr::from_ptr(name) }
-            .to_string_lossy()
-            .into_owned(),
-    )
-}
-
-fn xenia_group_name(gid: u32) -> Option<String> {
-    let group = unsafe { libc::getgrgid(gid as libc::gid_t) };
-    if group.is_null() {
-        return None;
-    }
-    let name = unsafe { (*group).gr_name };
-    if name.is_null() {
-        return None;
-    }
-    Some(
-        unsafe { CStr::from_ptr(name) }
-            .to_string_lossy()
-            .into_owned(),
-    )
-}
-
-fn xenia_owner_label(uid: u32, gid: u32) -> String {
-    format!(
-        "{}:{}",
-        xenia_user_name(uid).unwrap_or_else(|| uid.to_string()),
-        xenia_group_name(gid).unwrap_or_else(|| gid.to_string())
-    )
-}
-
-fn xenia_mode_label(mode: u32) -> String {
-    format!("{:04o}", mode & 0o7777)
-}
-
-fn xenia_same_inode(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    left.dev() == right.dev() && left.ino() == right.ino()
-}
-
 fn open_xenia_seat_parent(path: &Path) -> Result<(File, CString), String> {
     if !path.is_absolute() || path == Path::new("/") {
         return Err("xenia-seat-path-invalid".into());
@@ -943,43 +578,6 @@ fn open_xenia_seat_directory(path: &Path) -> Result<File, String> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn create_xenia_seat_directory(path: &Path) -> Result<File, String> {
-    let (parent, name) = open_xenia_seat_parent(path)?;
-    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o750) } != 0 {
-        let error = std::io::Error::last_os_error();
-        return match error.raw_os_error() {
-            Some(libc::EEXIST) => Err("xenia-seat-path-changed-before-create".into()),
-            Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
-                Err("xenia-seat-path-symlink-or-not-directory".into())
-            }
-            _ => Err(format!("xenia-seat-create-failed: {error}")),
-        };
-    }
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        let error = std::io::Error::last_os_error();
-        return Err(format!("xenia-seat-created-open-failed: {error}"));
-    }
-    let created = unsafe { File::from_raw_fd(fd) };
-    let created_metadata = created
-        .metadata()
-        .map_err(|error| format!("xenia-seat-created-stat-failed: {error}"))?;
-    let named = open_xenia_seat_directory(path)?;
-    let named_metadata = named
-        .metadata()
-        .map_err(|error| format!("xenia-seat-created-final-stat-failed: {error}"))?;
-    if !xenia_same_inode(&created_metadata, &named_metadata) {
-        return Err("xenia-seat-path-changed-after-create".into());
-    }
-    Ok(created)
-}
-
 fn open_xenia_seat_file(directory: &File, name: &OsStr) -> Result<Option<File>, String> {
     let name_c =
         CString::new(name.as_bytes()).map_err(|_| "xenia-seat-entry-name-invalid".to_string())?;
@@ -1026,306 +624,46 @@ fn open_xenia_seat_file(directory: &File, name: &OsStr) -> Result<Option<File>, 
     Ok(Some(file))
 }
 
-fn xenia_fchown(file: &File, uid: u32, gid: u32, target: &str) -> Result<(), String> {
-    if unsafe { libc::fchown(file.as_raw_fd(), uid as libc::uid_t, gid as libc::gid_t) } != 0 {
-        return Err(format!(
-            "xenia-seat-chown-failed {target}: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-fn xenia_fchmod(file: &File, mode: u32, target: &str) -> Result<(), String> {
-    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 {
-        return Err(format!(
-            "xenia-seat-chmod-failed {target}: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
 fn xenia_seat_present(
     args: &BTreeMap<String, Value>,
-    apply: bool,
+    _apply: bool,
 ) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
-    args.get("id")
-        .and_then(Value::as_str)
-        .ok_or("xenia-id-missing")?;
-    let owner = args
-        .get("owner")
-        .and_then(Value::as_str)
-        .ok_or("xenia-owner-missing")?;
-    let seat = args
-        .get("seat")
-        .and_then(Value::as_str)
-        .ok_or("xenia-seat-missing")?;
+    let id = args.get("id").and_then(Value::as_str).ok_or("xenia-id-missing")?;
+    let owner = args.get("owner").and_then(Value::as_str).ok_or("xenia-owner-missing")?;
+    let seat = Path::new(args.get("seat").and_then(Value::as_str).ok_or("xenia-seat-missing")?);
+    let bin = Path::new(args.get("bin").and_then(Value::as_str).ok_or("xenia-guest-not-installed")?);
+    let unit = args.get("unit").and_then(Value::as_str).ok_or("xenia-guest-not-installed")?;
+    if seat != xenia_root().join(id) || bin.parent() != Some(seat) || unit != format!("{id}.service") {
+        return Err("xenia-install-path-mismatch".into());
+    }
+    let directory = open_xenia_seat_directory(seat).map_err(|error| {
+        if error == "seat-absent" || error == "xenia-seat-parent-absent" {
+            "xenia-guest-not-installed".to_string()
+        } else { error }
+    })?;
+    let binary = open_xenia_seat_file(&directory, bin.file_name().ok_or("xenia-guest-not-installed")?)?
+        .ok_or("xenia-guest-not-installed")?;
+    let meta = binary.metadata().map_err(|e| format!("xenia-binary-stat-failed: {e}"))?;
+    if !unit_root().join(unit).is_file() {
+        return Err("xenia-guest-not-installed".into());
+    }
+    let service = crate::atoms::ask::change_unit::observe_systemd_state("restart", unit, false, None, 30);
+    if service.load_state.as_deref() != Some("loaded")
+        || !matches!(service.active.as_deref(), Some("active" | "inactive" | "failed")) {
+        return Err("xenia-unit-not-ready-for-update".into());
+    }
     let (uid, gid) = crate::atoms::r#do::pull_repo::xenia_owner_ids(owner)
         .map_err(|_| "xenia-install-owner-unknown".to_string())?;
-    let seat_path = Path::new(seat);
-
-    let mut requested_files = Vec::<(String, OsString)>::new();
-    if let Some(value) = args.get("bin").filter(|value| !value.is_null()) {
-        let bin = value.as_str().ok_or("xenia-install-bin-invalid")?;
-        let bin_path = Path::new(bin);
-        if !bin_path.is_absolute() || bin_path.parent() != Some(seat_path) {
-            return Err("xenia-install-bin-seat-mismatch".into());
-        }
-        let name = bin_path
-            .file_name()
-            .ok_or("xenia-install-bin-invalid")?
-            .to_os_string();
-        if name == OsStr::new(".") || name == OsStr::new("..") {
-            return Err("xenia-install-bin-invalid".into());
-        }
-        requested_files.push(("engine".into(), name));
+    if meta.uid() != uid || meta.gid() != gid {
+        return Err("xenia-guest-ownership-mismatch".into());
     }
-    requested_files.push(("listen".into(), OsString::from("listen")));
-
-    let (seat_directory, created) = match open_xenia_seat_directory(seat_path) {
-        Ok(directory) => (directory, false),
-        Err(reason) if reason == "seat-absent" && !apply => {
-            let mut planned_labels = BTreeMap::<String, Vec<String>>::new();
-            for (label, name) in &requested_files {
-                planned_labels
-                    .entry(name.to_string_lossy().into_owned())
-                    .or_default()
-                    .push(label.clone());
-            }
-            let planned_files = planned_labels
-                .into_iter()
-                .map(|(name, labels)| {
-                    (
-                        labels.join("+"),
-                        json!({"name":name,"owner_before":null,"owner_after":null}),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            let final_state = json!({
-                "disposition": "create-planned",
-                "present": false,
-                "owner_before": null,
-                "owner_after": null,
-                "mode_before": null,
-                "mode_after": null,
-                "desired_owner": xenia_owner_label(uid, gid),
-                "desired_mode": "0750",
-                "files": planned_files,
-            });
-            return Ok((
-                OperationOutcome {
-                    ok: true,
-                    changed: false,
-                    skipped: true,
-                    message: "xenia-seat-create-planned".into(),
-                    command: None,
-                },
-                BTreeMap::from([
-                    ("uid".into(), json!(u64::from(uid))),
-                    ("gid".into(), json!(u64::from(gid))),
-                    ("could_change".into(), json!(true)),
-                    (
-                        "could_change_detail".into(),
-                        json!({"seat":true,"engine":false,"listen":false,"any":true}),
-                    ),
-                    ("final_state".into(), final_state),
-                ]),
-            ));
-        }
-        Err(reason) if reason == "seat-absent" => (create_xenia_seat_directory(seat_path)?, true),
-        Err(reason) => return Err(reason),
-    };
-    let seat_before = seat_directory
-        .metadata()
-        .map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
-
-    let mut files = Vec::<XeniaSeatFile>::new();
-    for (label, name) in requested_files {
-        if let Some(existing) = files.iter_mut().find(|file| file.name == name) {
-            existing.labels.push(label);
-            continue;
-        }
-        let file = open_xenia_seat_file(&seat_directory, &name)?;
-        let before = file
-            .as_ref()
-            .map(File::metadata)
-            .transpose()
-            .map_err(|error| {
-                format!(
-                    "xenia-seat-entry-stat-failed {}: {error}",
-                    name.to_string_lossy()
-                )
-            })?;
-        files.push(XeniaSeatFile {
-            name,
-            labels: vec![label],
-            file,
-            before,
-        });
-    }
-
-    let owner_drift = seat_before.uid() != uid || seat_before.gid() != gid;
-    let mode_drift = seat_before.mode() & 0o7777 != 0o750;
-    let seat_drift = owner_drift || mode_drift;
-    let file_drift = |file: &XeniaSeatFile| {
-        file.before
-            .as_ref()
-            .is_some_and(|metadata| metadata.uid() != uid || metadata.gid() != gid)
-    };
-    let engine_drift = files
-        .iter()
-        .any(|file| file.labels.iter().any(|label| label == "engine") && file_drift(file));
-    let listen_drift = files
-        .iter()
-        .any(|file| file.labels.iter().any(|label| label == "listen") && file_drift(file));
-    let could_change_any = created || seat_drift || engine_drift || listen_drift;
-    let could_change_detail = json!({
-        "seat": created || seat_drift,
-        "engine": engine_drift,
-        "listen": listen_drift,
-        "any": could_change_any,
-    });
-
-    let mut repaired = created;
-    if apply {
-        let named_seat = open_xenia_seat_directory(seat_path)?;
-        let named_seat_metadata = named_seat
-            .metadata()
-            .map_err(|error| format!("xenia-seat-stat-failed: {error}"))?;
-        if !xenia_same_inode(&seat_before, &named_seat_metadata) {
-            return Err("xenia-seat-path-changed-before-repair".into());
-        }
-        for file in &files {
-            let named_file = open_xenia_seat_file(&named_seat, &file.name)?;
-            match (&file.before, named_file.as_ref()) {
-                (None, None) => {}
-                (Some(before), Some(named)) => {
-                    let metadata = named
-                        .metadata()
-                        .map_err(|error| format!("xenia-seat-entry-stat-failed: {error}"))?;
-                    if !xenia_same_inode(before, &metadata) {
-                        return Err("xenia-seat-entry-changed-before-repair".into());
-                    }
-                }
-                _ => return Err("xenia-seat-entry-changed-before-repair".into()),
-            }
-        }
-        for file in &files {
-            let Some(before) = file.before.as_ref() else {
-                continue;
-            };
-            if before.uid() == uid && before.gid() == gid {
-                continue;
-            }
-            let target = file.name.to_string_lossy();
-            let opened = file.file.as_ref().ok_or("xenia-seat-entry-open-failed")?;
-            xenia_fchown(opened, uid, gid, &target)?;
-            repaired = true;
-            let after_chown = opened
-                .metadata()
-                .map_err(|error| format!("xenia-seat-entry-stat-failed {target}: {error}"))?;
-            let original_mode = before.mode() & 0o7777;
-            if after_chown.mode() & 0o7777 != original_mode {
-                xenia_fchmod(opened, original_mode, &target)?;
-            }
-        }
-        if owner_drift {
-            xenia_fchown(&seat_directory, uid, gid, seat)?;
-            repaired = true;
-        }
-        if owner_drift || mode_drift {
-            xenia_fchmod(&seat_directory, 0o750, seat)?;
-            repaired = true;
-        }
-    }
-
-    let (seat_after, files_after) = if apply {
-        let named_seat = open_xenia_seat_directory(seat_path)?;
-        let seat_after = named_seat
-            .metadata()
-            .map_err(|error| format!("xenia-seat-final-stat-failed: {error}"))?;
-        if !xenia_same_inode(&seat_before, &seat_after) {
-            return Err("xenia-seat-path-changed-after-repair".into());
-        }
-        let mut files_after = Vec::with_capacity(files.len());
-        for file in &files {
-            let named_file = open_xenia_seat_file(&named_seat, &file.name)?;
-            match (&file.before, named_file.as_ref()) {
-                (None, None) => files_after.push(None),
-                (Some(before), Some(named)) => {
-                    let after = named
-                        .metadata()
-                        .map_err(|error| format!("xenia-seat-entry-final-stat-failed: {error}"))?;
-                    if !xenia_same_inode(before, &after)
-                        || after.uid() != uid
-                        || after.gid() != gid
-                        || after.mode() & 0o7777 != before.mode() & 0o7777
-                    {
-                        return Err("xenia-seat-entry-final-state-mismatch".into());
-                    }
-                    files_after.push(Some(after));
-                }
-                _ => return Err("xenia-seat-entry-changed-during-repair".into()),
-            }
-        }
-        if seat_after.uid() != uid || seat_after.gid() != gid || seat_after.mode() & 0o7777 != 0o750
-        {
-            return Err("xenia-seat-final-state-mismatch".into());
-        }
-        (seat_after, files_after)
-    } else {
-        (
-            seat_before.clone(),
-            files.iter().map(|file| file.before.clone()).collect(),
-        )
-    };
-
-    let disposition = if created {
-        "created"
-    } else if !apply {
-        "planned"
-    } else if repaired {
-        "corrected"
-    } else {
-        "converged-quiet"
-    };
-    let mut file_receipt = BTreeMap::new();
-    for (file, after) in files.iter().zip(files_after.iter()) {
-        let label = file.labels.join("+");
-        file_receipt.insert(
-            label,
-            json!({
-                "name": file.name.to_string_lossy(),
-                "owner_before": file.before.as_ref().map(|metadata| xenia_owner_label(metadata.uid(), metadata.gid())),
-                "owner_after": after.as_ref().map(|metadata| xenia_owner_label(metadata.uid(), metadata.gid())),
-            }),
-        );
-    }
-    let final_state = json!({
-        "disposition": disposition,
-        "owner_before": xenia_owner_label(seat_before.uid(), seat_before.gid()),
-        "owner_after": xenia_owner_label(seat_after.uid(), seat_after.gid()),
-        "mode_before": xenia_mode_label(seat_before.mode()),
-        "mode_after": xenia_mode_label(seat_after.mode()),
-        "files": file_receipt,
-    });
-    Ok((
-        OperationOutcome {
-            ok: true,
-            changed: apply && repaired,
-            skipped: !apply,
-            message: format!("xenia-seat-{disposition}"),
-            command: None,
-        },
-        BTreeMap::from([
-            ("uid".into(), json!(u64::from(uid))),
-            ("gid".into(), json!(u64::from(gid))),
-            ("could_change".into(), json!(could_change_any)),
-            ("could_change_detail".into(), could_change_detail),
-            ("final_state".into(), final_state),
-        ]),
-    ))
+    Ok((OperationOutcome {
+        ok: true, changed: false, skipped: false,
+        message: "xenia-guest-installed".into(), command: None,
+    }, BTreeMap::from([
+        ("uid".into(), json!(uid)), ("gid".into(), json!(gid)),
+        ("mode".into(), json!(meta.mode() & 0o7777)),
+    ])))
 }
 
 pub(crate) fn execute_routine_child(
@@ -1336,6 +674,13 @@ pub(crate) fn execute_routine_child(
     match permutation {
         "seat-present" => xenia_seat_present(args, apply),
         "observe-stamp" => {
+            if args.get("binary_changed").and_then(Value::as_bool) != Some(true)
+                && args.get("restart_changed").and_then(Value::as_bool) != Some(true) {
+                return Ok((OperationOutcome {
+                    ok: true, changed: false, skipped: true,
+                    message: "xenia-binary-current".into(), command: None,
+                }, BTreeMap::new()));
+            }
             if !apply {
                 return Ok((
                     OperationOutcome {
@@ -1487,10 +832,10 @@ pub(crate) fn execute_refusal(
         .ok_or("xenia-refusal-reason-missing")?;
     if !apply {
         return Ok(OperationOutcome {
-            ok: true,
+            ok: false,
             changed: false,
             skipped: true,
-            message: format!("xenia-refusal-planned id={id} reason={reason}"),
+            message: format!("xenia-entry-refused id={id} reason={reason}"),
             command: None,
         });
     }
@@ -1513,48 +858,43 @@ pub(crate) fn execute_refusal(
     })
 }
 
-pub(crate) fn execute_health_read(
-    args: &BTreeMap<String, Value>,
-) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
-    let endpoint = args.get("endpoint").and_then(Value::as_str);
-    let route = args
-        .get("health_route")
-        .and_then(Value::as_str)
-        .filter(|route| route.starts_with('/'))
-        .unwrap_or("/health");
-    let running_source_sha = endpoint.and_then(|endpoint| {
-        let url = health_url(endpoint, route);
-        http("GET", &url, None, Duration::from_secs(3))
-            .ok()
-            .and_then(|(status, value)| (status == 200).then_some(value))
-            .and_then(|value| {
-                value
-                    .get("running_source_sha")
-                    .or_else(|| value.get("source_sha"))
-                    .or_else(|| value.pointer("/runtime/running_source_sha"))
-                    .or_else(|| value.pointer("/runtime/source_sha"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-    });
-    Ok((
-        OperationOutcome {
-            ok: true,
-            changed: false,
-            skipped: false,
-            message: "xenia-health-read".into(),
-            command: None,
-        },
-        BTreeMap::from([("running_source_sha".into(), json!(running_source_sha))]),
-    ))
-}
-
 fn health_source_sha(value: &Value) -> Option<String> {
     value
-        .get("source_sha")
+        .get("running_source_sha")
+        .or_else(|| value.get("source_sha"))
+        .or_else(|| value.pointer("/runtime/running_source_sha"))
+        .or_else(|| value.pointer("/runtime/source_sha"))
         .and_then(Value::as_str)
         .filter(|sha| !sha.is_empty())
         .map(str::to_owned)
+}
+
+pub(crate) fn execute_health_read(
+    args: &BTreeMap<String, Value>,
+) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
+    let id = args.get("id").and_then(Value::as_str).ok_or("xenia-id-missing")?;
+    let endpoint = base_url(None).ok().and_then(|base| {
+        http("GET", &format!("{base}/api/v1/xenia/status/{id}"), None, Duration::from_secs(3))
+            .ok().filter(|(status, _)| *status == 200).and_then(|(_, value)| {
+                value.pointer("/runtime/listeners/0/endpoint").and_then(Value::as_str)
+                    .filter(|endpoint| !endpoint.trim().is_empty())
+                    .or_else(|| value.pointer("/entry/discovered/endpoint").and_then(Value::as_str)
+                        .filter(|endpoint| !endpoint.trim().is_empty()))
+                    .map(str::to_owned)
+            })
+    }).or_else(|| args.get("endpoint").and_then(Value::as_str)
+        .filter(|endpoint| !endpoint.trim().is_empty()).map(str::to_owned));
+    let route = args.get("health_route").and_then(Value::as_str)
+        .filter(|route| route.starts_with('/')).unwrap_or("/health");
+    let running_source_sha = endpoint.and_then(|endpoint| {
+        http("GET", &health_url(&endpoint, route), None, Duration::from_secs(3))
+            .ok().filter(|(status, _)| *status == 200)
+            .and_then(|(_, value)| health_source_sha(&value))
+    });
+    Ok((OperationOutcome {
+        ok: true, changed: false, skipped: false,
+        message: "xenia-health-read".into(), command: None,
+    }, BTreeMap::from([("running_source_sha".into(), json!(running_source_sha))])))
 }
 
 pub(crate) fn execute_status_door(
@@ -1663,534 +1003,5 @@ fn execute_status_door_at_base(
         Err("xenia-unit-not-active".into())
     } else {
         Err("xenia-unit-status-unreachable".into())
-    }
-}
-
-pub(crate) fn execute_retire(
-    args: &BTreeMap<String, Value>,
-    apply: bool,
-    receipt_dir: &Path,
-    invocation: Option<&crate::atoms::r#do::InvocationKey>,
-) -> Result<OperationOutcome, String> {
-    let register = args
-        .get("register")
-        .cloned()
-        .unwrap_or_else(|| json!({"xenoi":{}}));
-    let entries = register
-        .get("xenoi")
-        .and_then(Value::as_object);
-    let declared: std::collections::BTreeMap<String, bool> = entries
-        .into_iter()
-        .flat_map(|entries| entries.iter())
-        .map(|(id, entry)| {
-            (
-                id.clone(),
-                entry.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-            )
-        })
-        .collect();
-    let root = args
-        .get("unit_root")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or_else(unit_root);
-    let mut changed = false;
-    let mut first_failure = None;
-    let mut retirements = Vec::new();
-    let read = match fs::read_dir(&root) {
-        Ok(v) => v,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(OperationOutcome {
-                ok: true,
-                changed: false,
-                skipped: !apply,
-                message: "xenia-retire-empty".into(),
-                command: None,
-            })
-        }
-        Err(e) => return Err(format!("xenia-unit-root-read-failed: {e}")),
-    };
-    for item in read.flatten() {
-        let path = item.path();
-        if path.extension().and_then(|v| v.to_str()) != Some("service") {
-            continue;
-        }
-        let text = match fs::read_to_string(&path) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let Some(id) = text.lines().find_map(|l| l.strip_prefix("X-Xenia-Id=")) else {
-            continue;
-        };
-        let action = match declared.get(id) {
-            None => continue,
-            Some(false) => "disable-stop",
-            Some(true) => continue,
-        };
-        let service = format!("{id}.service");
-        if item.file_name() != OsStr::new(service.as_str()) {
-            continue;
-        }
-        let outcome = crate::tools::systemd::run_permutation_with_material_gate(
-            receipt_dir,
-            &format!("xenia-retire-{id}"),
-            action,
-            Some(&service),
-            &[],
-            None,
-            30,
-            apply,
-            false,
-            invocation,
-        );
-        match outcome {
-            Ok(outcome) => {
-                changed |= outcome.changed;
-                if !outcome.ok {
-                    first_failure.get_or_insert_with(|| format!("xenia-retire-{action}-failed"));
-                }
-                retirements.push((id.to_string(), action.to_string(), outcome.ok));
-            }
-            Err(error) => {
-                first_failure.get_or_insert_with(|| error.clone());
-                retirements.push((id.to_string(), action.to_string(), false));
-            }
-        }
-    }
-    if apply {
-        for (id, action, ok) in &retirements {
-            let outcome = if !ok { "failed" } else { "disabled" };
-            crate::hyalos::forward_receipt(
-                "xenia",
-                &format!("xenia retirement outcome={outcome} id={id} action={action}"),
-                Some(json!({"id":id,"action":action,"outcome":outcome})),
-                Some(*ok),
-                Some(id),
-            );
-        }
-    }
-    let ok = first_failure.is_none();
-    Ok(OperationOutcome {
-        ok,
-        changed,
-        skipped: !apply,
-        message: first_failure.unwrap_or_else(|| "xenia-retire-complete".into()),
-        command: None,
-    })
-}
-
-#[cfg(test)]
-mod clone_road_tests {
-    use super::{
-        declaration, execute_health_read, execute_status_door_at_base, reshape_routines,
-        set_debug_schema_base,
-    };
-    use crate::tools::ladder::LadderStep;
-    use crate::tools::routine::validate_args;
-    use serde_json::{json, Value};
-    use std::collections::BTreeMap;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-
-    fn lowered_routine(id: &str, entry: Value) -> LadderStep {
-        let _ = set_debug_schema_base("http://127.0.0.1:3013");
-        let step = declaration(id, &entry).unwrap();
-        let mut manifest: crate::tools::ladder::LadderManifest = serde_json::from_value(json!({
-            "schema": "harmonia.module.ladder.v1",
-            "id": "xenia",
-            "version": "1",
-            "isolation": "per-step",
-            "ladder": [step]
-        }))
-        .unwrap();
-        crate::bands::restart_services::lower_service_runtime_steps(&mut manifest);
-        reshape_routines(&mut manifest).unwrap();
-        assert_eq!(manifest.ladder.len(), 1);
-        manifest.ladder.remove(0)
-    }
-
-    fn clone_entry(discovered: Option<&str>) -> Value {
-        let mut entry = json!({
-            "id": "monad-overwatch",
-            "kind": "cartridge-process",
-            "enabled": true,
-            "priority": 20,
-            "source": {
-                "kind": "clone",
-                "repo": "HOMESERVERSLTD/monad-overwatch",
-                "ref": "main"
-            },
-            "install": {
-                "bin": "/var/lib/xenia/monad-overwatch/monad-overwatch",
-                "unit": null,
-                "owner": "owner"
-            },
-            "health": {"route": "/health"}
-        });
-        if let Some(endpoint) = discovered {
-            entry["discovered"] = json!({"endpoint": endpoint});
-        }
-        entry
-    }
-
-    fn release_entry(id: &str, repo: &str, binary: &str) -> Value {
-        json!({
-            "id": id,
-            "kind": "cartridge-process",
-            "enabled": true,
-            "priority": 100,
-            "source": {"release_repo": repo, "ref": "v1.0.0"},
-            "install": {
-                "bin": format!("/var/lib/xenia/{id}/{binary}"),
-                "unit": null,
-                "owner": "owner"
-            },
-            "health": {"route": "/health"}
-        })
-    }
-
-    fn validate_lowered_children(routine: &LadderStep) {
-        for child in &routine.steps {
-            let permutation_name = child.permutation.as_deref().unwrap();
-            let contract = crate::tools::get(&child.tool).unwrap();
-            let permutation = contract.permutation(permutation_name).unwrap();
-            validate_args(&routine.step_id, permutation, &child.args).unwrap();
-            for argument in permutation.args {
-                if let Some(value) = child.args.get(argument.name) {
-                    assert!(
-                        !value.is_null(),
-                        "declared argument {} on {} must not be null",
-                        argument.name,
-                        child.name
-                    );
-                }
-            }
-        }
-        crate::tools::routine::project_routine_children(routine, &BTreeMap::new()).unwrap();
-    }
-
-    fn assert_status_door_id_only(routine: &LadderStep, id: &str) {
-        let health = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "health-proof")
-            .unwrap();
-        assert_eq!(health.tool, "check-health");
-        assert_eq!(health.permutation.as_deref(), Some("status-door"));
-        let contract = crate::tools::get("check-health").unwrap();
-        let permutation = contract.permutation("status-door").unwrap();
-        let required = permutation
-            .args
-            .iter()
-            .filter(|argument| argument.required)
-            .map(|argument| argument.name)
-            .collect::<Vec<_>>();
-        assert_eq!(required, vec!["id"]);
-        assert_eq!(
-            health.args.get("id").and_then(Value::as_str),
-            Some(id)
-        );
-    }
-
-    #[test]
-    fn clone_face_binds_install_to_build_digest_and_names_clone_road() {
-        let routine = lowered_routine("monad-overwatch", clone_entry(None));
-        let build = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "build")
-            .unwrap();
-        assert!(!build.args.contains_key("expected_digest"));
-        assert_eq!(build.args.get("road"), Some(&json!("clone")));
-        let install = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "binary-install")
-            .unwrap();
-        assert_eq!(
-            install.args.get("expected_digest"),
-            Some(&json!({"from":"build.sha256"}))
-        );
-        assert_eq!(
-            install.args.get("digest_supplier"),
-            Some(&json!({"from":"build.digest_supplier"}))
-        );
-        assert_eq!(install.args.get("road"), Some(&json!("clone")));
-        assert!(!serde_json::to_string(&install.args)
-            .unwrap()
-            .contains("pull-repo.digest"));
-        validate_lowered_children(&routine);
-    }
-
-    #[test]
-    fn clone_first_convergence_without_discovered_endpoint_omits_health_read_and_restart_reference() {
-        let routine = lowered_routine("monad-overwatch", clone_entry(None));
-        assert!(routine.steps.iter().all(|child| child.name != "health-read"));
-        let restart = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "service-restart")
-            .unwrap();
-        assert!(!restart.args.contains_key("running_source_sha"));
-        assert_status_door_id_only(&routine, "monad-overwatch");
-        let health = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "health-proof")
-            .unwrap();
-        assert_eq!(health.args.get("endpoint"), Some(&Value::Null));
-        let observe = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "observe-stamp")
-            .unwrap();
-        assert_eq!(
-            observe.args.get("endpoint"),
-            Some(&json!({"from":"health-proof.endpoint"}))
-        );
-        assert!(!observe.args.contains_key("version"));
-        validate_lowered_children(&routine);
-    }
-
-    #[test]
-    fn clone_first_convergence_with_discovered_endpoint_keeps_health_read_and_restart_reference() {
-        let endpoint = "http://127.0.0.1:39001";
-        let routine = lowered_routine("monad-overwatch", clone_entry(Some(endpoint)));
-        let health_read = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "health-read")
-            .unwrap();
-        assert_eq!(health_read.tool, "check-health");
-        assert_eq!(health_read.permutation.as_deref(), Some("probe"));
-        assert_eq!(health_read.args.get("endpoint").and_then(Value::as_str), Some(endpoint));
-        assert!(health_read
-            .args
-            .get("url")
-            .and_then(Value::as_str)
-            .is_some_and(|url| url.ends_with("/health")));
-        let restart = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "service-restart")
-            .unwrap();
-        assert_eq!(
-            restart.args.get("running_source_sha"),
-            Some(&json!({"from":"health-read.running_source_sha"}))
-        );
-        let observe = routine
-            .steps
-            .iter()
-            .find(|child| child.name == "observe-stamp")
-            .unwrap();
-        assert_eq!(
-            observe.args.get("endpoint"),
-            Some(&json!({"from":"health-proof.endpoint"}))
-        );
-        assert!(!observe.args.contains_key("version"));
-        assert_status_door_id_only(&routine, "monad-overwatch");
-        validate_lowered_children(&routine);
-    }
-
-    #[test]
-    fn release_roads_hello_world_and_lan_overview_keep_status_door_id_only_shape() {
-        for (id, repo, binary) in [
-            ("hello-world", "HOMESERVERSLTD/hello-world", "hello-world"),
-            ("lan-overview", "HOMESERVERSLTD/lan-overview", "lan-overview"),
-        ] {
-            let routine = lowered_routine(id, release_entry(id, repo, binary));
-            assert!(routine.steps.iter().all(|child| child.name != "health-read"));
-            assert_status_door_id_only(&routine, id);
-            let health = routine
-                .steps
-                .iter()
-                .find(|child| child.name == "health-proof")
-                .unwrap();
-            assert!(health.args.keys().all(|key| {
-                matches!(
-                    key.as_str(),
-                    "id" | "resolved_commit" | "endpoint" | "health_route"
-                        | "hyalos_kind" | "hyalos_correlation_id"
-                )
-            }));
-            assert_eq!(
-                health.args.get("resolved_commit"),
-                Some(&json!({"from":"pull-repo.resolved_commit"}))
-            );
-            let observe = routine
-                .steps
-                .iter()
-                .find(|child| child.name == "observe-stamp")
-                .unwrap();
-            assert_eq!(
-                observe.args.get("version"),
-                Some(&json!({"from":"pull-repo.version"}))
-            );
-            assert!(routine.steps.iter().all(|child| {
-                !child.args.contains_key("source_kind")
-                    && !child.args.contains_key("release_ref")
-                    && !child.args.contains_key("running_source_sha")
-            }));
-            validate_lowered_children(&routine);
-        }
-    }
-
-    #[test]
-    fn clone_declaration_uses_install_basename_for_face_asset() {
-        let entry = json!({
-            "id":"guest",
-            "kind":"cartridge-process",
-            "source":{"kind":"clone","repo":"OWNER/repo","ref":"main"},
-            "install":{"bin":"/var/lib/xenia/guest/cartridge","unit":null,"owner":"owner"}
-        });
-        let step = declaration("guest", &entry).unwrap();
-        assert_eq!(step.args.get("source_policy").and_then(|v| v.as_str()), Some("source"));
-        assert_eq!(step.args.get("binary_name").and_then(|v| v.as_str()), Some("cartridge"));
-        assert_eq!(step.args.get("asset_name").and_then(|v| v.as_str()), Some("cartridge-x86_64"));
-        let mismatch = json!({
-            "id":"guest",
-            "kind":"cartridge-process",
-            "source":{"kind":"clone","repo":"OWNER/repo","ref":"main"},
-            "install":{"bin":"/var/lib/xenia/other/cartridge","unit":null,"owner":"owner"}
-        });
-        assert_eq!(declaration("guest", &mismatch).unwrap_err(), "xenia-install-bin-path-mismatch");
-    }
-
-    #[test]
-    fn release_and_clone_declarations_lower_side_by_side() {
-        let clone = json!({
-            "id":"clone-guest",
-            "kind":"cartridge-process",
-            "source":{"kind":"clone","repo":"OWNER/repo","ref":"main"},
-            "install":{"bin":"/var/lib/xenia/clone-guest/cartridge","unit":null,"owner":"owner"}
-        });
-        let release = json!({
-            "id":"release-guest",
-            "kind":"cartridge-process",
-            "source":{"release_repo":"OWNER/release","ref":"v1"},
-            "install":{"bin":"/var/lib/xenia/release-guest/cartridge","unit":null,"owner":"owner"}
-        });
-        let clone_step = declaration("clone-guest", &clone).unwrap();
-        let release_step = declaration("release-guest", &release).unwrap();
-        assert_eq!(clone_step.args["source_kind"], json!("clone"));
-        assert_eq!(clone_step.args["source_policy"], json!("source"));
-        assert_eq!(release_step.args["release_repo"], json!("OWNER/release"));
-        assert!(!release_step.args.contains_key("source_kind"));
-        assert!(!release_step.args.contains_key("release_ref"));
-    }
-
-    fn status_server(sha: &str, live_listener: bool) -> (String, String, thread::JoinHandle<()>) {
-        let status_listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let status_address = status_listener.local_addr().unwrap();
-        let health_listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let health_address = health_listener.local_addr().unwrap();
-        let endpoint = format!("http://{health_address}");
-        let body = if live_listener {
-            format!("{{\"runtime\":{{\"state\":\"active\",\"listeners\":[{{\"endpoint\":\"{endpoint}\"}}]}}}}")
-        } else {
-            "{\"runtime\":{\"state\":\"active\",\"listeners\":[]}}".into()
-        };
-        let health = format!("{{\"running_source_sha\":\"{sha}\"}}");
-        let status_attempts = if live_listener {
-            1
-        } else {
-            crate::atoms::health::DEFAULT_PROBE_RETRIES
-        };
-        let server = thread::spawn(move || {
-            for _ in 0..status_attempts {
-                let (mut stream, _) = status_listener.accept().unwrap();
-                let mut request = [0_u8; 4096];
-                let size = stream.read(&mut request).unwrap();
-                assert!(String::from_utf8_lossy(&request[..size])
-                    .starts_with("GET /api/v1/xenia/status/guest "));
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-                .unwrap();
-            }
-            let (mut stream, _) = health_listener.accept().unwrap();
-            let mut request = [0_u8; 4096];
-            let size = stream.read(&mut request).unwrap();
-            assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /health "));
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                health.len(),
-                health
-            )
-            .unwrap();
-        });
-        (
-            format!("http://{status_address}"),
-            endpoint,
-            server,
-        )
-    }
-
-    #[test]
-    fn status_door_prefers_live_listener_over_dead_recorded_endpoint() {
-        let (base, live_endpoint, server) = status_server("expected", true);
-        let args = BTreeMap::from([
-            ("id".into(), json!("guest")),
-            ("resolved_commit".into(), json!("expected")),
-            ("endpoint".into(), json!("http://127.0.0.1:1")),
-        ]);
-        let (_, output) = execute_status_door_at_base(&args, &base).unwrap();
-        server.join().unwrap();
-        assert_eq!(output["health"], "healthy");
-        assert_eq!(output["endpoint"], live_endpoint);
-        assert_eq!(output["running_source_sha"], "expected");
-    }
-
-    #[test]
-    fn status_door_falls_back_to_recorded_endpoint_without_live_listener() {
-        let (base, recorded_endpoint, server) = status_server("expected", false);
-        let args = BTreeMap::from([
-            ("id".into(), json!("guest")),
-            ("resolved_commit".into(), json!("expected")),
-            ("endpoint".into(), json!(recorded_endpoint.clone())),
-        ]);
-        let (_, output) = execute_status_door_at_base(&args, &base).unwrap();
-        server.join().unwrap();
-        assert_eq!(output["health"], "degraded");
-        assert_eq!(output["endpoint"], recorded_endpoint);
-        assert_eq!(output["running_source_sha"], "expected");
-    }
-
-    #[test]
-    fn status_door_refuses_sha_mismatch_after_http_200_health_probe() {
-        let (base, _, server) = status_server("wrong", true);
-        let args = BTreeMap::from([
-            ("id".into(), json!("guest")),
-            ("resolved_commit".into(), json!("expected")),
-        ]);
-        let error = execute_status_door_at_base(&args, &base).unwrap_err();
-        assert_eq!(error, "xenia-running-sha-mismatch");
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn health_read_uses_entry_route_without_endpoint_blocking() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 4096];
-            let size = stream.read(&mut request).unwrap();
-            assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /ready "));
-            let body = "{\"source_sha\":\"abc\"}";
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
-        });
-        let args = BTreeMap::from([
-            ("endpoint".into(), json!(format!("http://{address}"))),
-            ("health_route".into(), json!("/ready")),
-        ]);
-        let (_, output) = execute_health_read(&args).unwrap();
-        server.join().unwrap();
-        assert_eq!(output["running_source_sha"], "abc");
     }
 }

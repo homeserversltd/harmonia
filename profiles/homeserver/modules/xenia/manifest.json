@@ -5,7 +5,7 @@
   "summary": "Keeps the server's isolated systems aligned with the household's chosen list.",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "Converge and retire Xenia guests declared by the appliance guest register.",
+  "description": "Update installed Xenia guests declared by the appliance guest register.",
   "isolation": "per-step",
   "constants": {},
   "ladder": [
@@ -13,12 +13,6 @@
       "step_id": "xenia-converge",
       "tool": "xenia",
       "permutation": "converge",
-      "args": {}
-    },
-    {
-      "step_id": "xenia-retire",
-      "tool": "xenia",
-      "permutation": "retire",
       "args": {}
     }
   ]

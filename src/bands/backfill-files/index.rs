@@ -690,37 +690,14 @@ pub(crate) fn execute_routine_child(
             Ok((out, std::collections::BTreeMap::new()))
         }
         "place-file" => {
-            let unit_render = permutation.name == "unit-render";
-            let path_buf = crate::bands::xenia::unit_render_path(args).or_else(|| {
-                args.get("path")
-                    .and_then(Value::as_str)
-                    .map(PathBuf::from)
-            });
+            let path_buf = args.get("path").and_then(Value::as_str).map(PathBuf::from);
             let path = path_buf.as_deref().ok_or("place-file-path-missing")?;
-            let rendered_unit = unit_render
-                .then(|| {
-                    let environment: BTreeMap<String, String> = serde_json::from_value(
-                        args.get("environment")
-                            .cloned()
-                            .ok_or("xenia-unit-environment-missing")?,
-                    )
-                    .map_err(|_| "xenia-unit-environment-invalid")?;
-                    crate::bands::xenia::render_unit(
-                        args.get("unit").and_then(Value::as_str).ok_or("xenia-unit-name-missing")?,
-                        args.get("xenia_id").and_then(Value::as_str).ok_or("xenia-unit-id-missing")?,
-                        args.get("description").and_then(Value::as_str).ok_or("xenia-unit-description-missing")?,
-                        args.get("exec_start").and_then(Value::as_str).ok_or("xenia-unit-exec-start-missing")?,
-                        args.get("working_directory").and_then(Value::as_str).ok_or("xenia-unit-working-directory-missing")?,
-                        args.get("user").and_then(Value::as_str).ok_or("xenia-unit-user-missing")?,
-                        args.get("group").and_then(Value::as_str).ok_or("xenia-unit-group-missing")?,
-                        &environment,
-                    )
-                })
-                .transpose()?;
             let source = args.get("source_path").and_then(Value::as_str);
-            let declared = rendered_unit
-                .as_deref()
-                .or_else(|| args.get("declared_bytes").and_then(Value::as_str));
+            let _xenia_stage = if manifest.id == "xenia" && permutation.name == "binary-promotion" {
+                source.filter(|value| Path::new(value) != path)
+                    .and_then(|value| crate::tools::fetch_artifact::XeniaStage::from_artifact(Path::new(value)))
+            } else { None };
+            let declared = args.get("declared_bytes").and_then(Value::as_str);
             if source.is_some() == declared.is_some() {
                 return Err("place-file-requires-exactly-one-source".into());
             }
@@ -729,13 +706,11 @@ pub(crate) fn execute_routine_child(
             } else {
                 declared.unwrap().as_bytes().to_vec()
             };
-            let forbidden_directives = unit_render
-                .then(|| crate::bands::xenia::forbidden_directives(std::str::from_utf8(&bytes).unwrap_or_default()))
-                .unwrap_or_default();
-            if !forbidden_directives.is_empty() {
-                return Err(format!("xenia-unit-forbidden-directives {}", forbidden_directives.join(",")));
-            }
             let target_class = crate::atoms::files::classify_target(path);
+            if manifest.id == "xenia" && permutation.name == "binary-promotion"
+                && !std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
+                return Err("xenia-guest-not-installed".into());
+            }
             if permutation.name == "binary-promotion" {
                 if let Some(expected) = args.get("expected_digest").and_then(Value::as_str) {
                     if crate::atoms::file_sha256(&bytes) != expected {
@@ -877,18 +852,14 @@ pub(crate) fn execute_routine_child(
                 ));
             }
             let default_backup = receipt_dir.join("backups/prior-binary");
-            let desired_uid = if unit_render {
-                Some(0)
-            } else if let Some(owner) = args.get("owner") {
+            let desired_uid = if let Some(owner) = args.get("owner") {
                 Some(crate::atoms::files::resolve_uid(
                     owner.as_str().ok_or("place-file-owner-invalid")?,
                 )?)
             } else {
                 args.get("uid").and_then(Value::as_u64).map(|x| x as u32)
             };
-            let desired_gid = if unit_render {
-                Some(0)
-            } else if let Some(group) = args.get("group") {
+            let desired_gid = if let Some(group) = args.get("group") {
                 Some(crate::atoms::files::resolve_gid(
                     group.as_str().ok_or("place-file-group-invalid")?,
                 )?)
@@ -898,25 +869,23 @@ pub(crate) fn execute_routine_child(
             let request = crate::place_file::PlaceFileRequest {
                 path,
                 declared_bytes: &bytes,
-                mode: if unit_render { Some(0o644) } else { args.get("mode").and_then(Value::as_u64).map(|x| x as u32) },
+                mode: args.get("mode").and_then(Value::as_u64).map(|x| x as u32),
                 ownership: crate::place_file::DeclaredOwnership {
                     uid: desired_uid,
                     gid: desired_gid,
                 },
-                backup: args
+                backup: if manifest.id == "xenia" && permutation.name == "binary-promotion" {
+                    crate::place_file::BackupPolicy::None
+                } else { args
                     .get("backup_path")
                     .and_then(Value::as_str)
                     .map(Path::new)
                     .map(crate::place_file::BackupPolicy::To)
-                    .unwrap_or(crate::place_file::BackupPolicy::To(&default_backup)),
+                    .unwrap_or(crate::place_file::BackupPolicy::To(&default_backup)) },
                 invocation: invocation,
             };
-            let placed = if unit_render {
-                let xenia_id = args
-                    .get("xenia_id")
-                    .and_then(Value::as_str)
-                    .ok_or("xenia-unit-id-missing")?;
-                crate::place_file::execute_xenia_rendered_guest_unit(request, xenia_id)?
+            let placed = if manifest.id == "xenia" && permutation.name == "binary-promotion" {
+                crate::place_file::update_existing_xenia(request)?
             } else {
                 crate::place_file::execute(request)?
             };
@@ -926,10 +895,6 @@ pub(crate) fn execute_routine_child(
             let changed = apply && placed.movement.changed();
 
             let mut receipt = serde_json::json!({"schema":"harmonia.routine_tool.receipt.v1","ok":placed.receipt.ok,"changed":changed,"skipped":!apply,"effect":placed.receipt,"movement":{"bytes":placed.movement.bytes,"mode":placed.movement.mode,"owner":placed.movement.owner,"created":placed.movement.created,"backed_up":placed.movement.backed_up},"prior_installed_sha256":prior_installed_sha,"new_installed_sha256":crate::atoms::file_sha256(&bytes)});
-            if unit_render {
-                receipt["sha256"] = serde_json::json!(crate::atoms::file_sha256(&bytes));
-                receipt["forbidden_directives"] = serde_json::json!(forbidden_directives);
-            }
             crate::write_json(
                 &receipt_dir.join(format!("{name}.json")),
                 &receipt,

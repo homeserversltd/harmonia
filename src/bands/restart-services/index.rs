@@ -629,7 +629,20 @@ pub(crate) fn execute_manifest_band(
                 && !outcome.changed
                 && outcome.skipped
                 && outcome.message == "systemd-unit-condition-unmet";
-            let mut placement = serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RestartServices","status":if condition_skip {"skipped"} else if outcome.ok {"completed"} else {"failed"},"module":manifest.id});
+            let own_service_skip = manifest.id == "xenia" && step.tool == "xenia-runtime"
+                && step.permutation == "skip" && outcome.ok && outcome.skipped;
+            let mut placement = serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RestartServices","status":if condition_skip || own_service_skip {"skipped"} else if outcome.ok {"completed"} else {"failed"},"module":manifest.id});
+            if manifest.id == "xenia" && step.tool == "xenia-runtime" && step.permutation == "refusal" {
+                placement["ok"] = Value::Bool(false);
+                placement["changed"] = Value::Bool(false);
+                placement["reason"] = step.args.get("reason").cloned().unwrap_or(Value::Null);
+            }
+            if own_service_skip {
+                placement["ok"] = Value::Bool(true);
+                placement["changed"] = Value::Bool(false);
+                placement["skipped"] = Value::Bool(true);
+                placement["reason"] = serde_json::json!("own-service");
+            }
             if condition_skip {
                 placement["ok"] = Value::Bool(true);
                 placement["changed"] = Value::Bool(false);
@@ -836,7 +849,7 @@ pub(crate) fn execute_routine_child(
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let name = tool.to_string();
     match tool {
-        "check-health" if args.get("xenia_health_read").and_then(Value::as_bool) == Some(true) => {
+        "check-health" if manifest.id == "xenia" && args.get("xenia_health_read").and_then(Value::as_bool) == Some(true) => {
             crate::bands::xenia::execute_health_read(args)
         }
         "check-health" if permutation.name == "status-door" => {
@@ -907,6 +920,14 @@ pub(crate) fn execute_routine_child(
                 .get("binary_changed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let xenia_running_sha_changed = permutation.name == "restart"
+                && xenia_source_sha_changed(args);
+            if manifest.id == "xenia" && permutation.name == "restart" && !binary_changed && !xenia_running_sha_changed {
+                return Ok((OperationOutcome {
+                    ok: true, changed: false, skipped: true,
+                    message: "xenia-binary-current".into(), command: None,
+                }, BTreeMap::from([("changed".into(), Value::Bool(false))])));
+            }
             let managed_files_changed = args
                 .get("managed_files_changed")
                 .and_then(Value::as_bool)
@@ -916,8 +937,6 @@ pub(crate) fn execute_routine_child(
                 binary_changed,
                 managed_files_changed,
             );
-            let xenia_running_sha_changed = permutation.name == "restart"
-                && xenia_source_sha_changed(args);
             let material_changed = if permutation.name == "daemon-reload" {
                 reload_changed
             } else {
@@ -942,12 +961,16 @@ pub(crate) fn execute_routine_child(
                 invocation,
             )?;
 
-            Ok((
-                o,
-                [("service".into(), serde_json::json!(service.unwrap_or("")))]
-                    .into_iter()
-                    .collect(),
-            ))
+            if manifest.id == "xenia" && permutation.name == "restart" && apply
+                && (binary_changed || xenia_running_sha_changed) && (!o.ok || !o.changed) {
+                return Err("xenia-restart-not-performed".into());
+            }
+
+            let mut outputs = BTreeMap::from([("service".into(), serde_json::json!(service.unwrap_or("")))]);
+            if manifest.id == "xenia" && permutation.name == "restart" {
+                outputs.insert("changed".into(), Value::Bool(o.changed));
+            }
+            Ok((o, outputs))
         }
         _ => Err(format!("routine-tool-not-summonable-{tool}")),
     }

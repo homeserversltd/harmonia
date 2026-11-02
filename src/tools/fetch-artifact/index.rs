@@ -8,6 +8,38 @@ pub(crate) struct FetchArtifactExecution {
     pub artifact_path: std::path::PathBuf,
 }
 
+pub(crate) struct XeniaStage {
+    dir: std::path::PathBuf,
+    cleanup: bool,
+}
+
+impl XeniaStage {
+    fn create() -> Result<Self, String> {
+        let dir = std::env::temp_dir().join(format!("harmonia-xenia-stage-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos()));
+        std::fs::create_dir(&dir).map_err(|e| format!("xenia-stage-create-failed: {e}"))?;
+        Ok(Self { dir, cleanup: true })
+    }
+    pub(crate) fn from_artifact(path: &Path) -> Option<Self> {
+        let dir = path.parent()?;
+        if path.file_name()? != "artifact" || dir.parent()? != std::env::temp_dir()
+            || !dir.file_name()?.to_str()?.starts_with("harmonia-xenia-stage-") { return None; }
+        Some(Self { dir: dir.to_path_buf(), cleanup: true })
+    }
+    fn artifact(&self) -> std::path::PathBuf { self.dir.join("artifact") }
+    fn handoff(&mut self) { self.cleanup = false; }
+}
+
+impl Drop for XeniaStage {
+    fn drop(&mut self) {
+        if self.cleanup {
+            let _ = std::fs::remove_file(self.artifact());
+            let _ = std::fs::remove_dir(&self.dir);
+        }
+    }
+}
+
 fn valid_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -277,29 +309,17 @@ fn execute_with_module_provenance(
         {
             return Err("fetch-artifact-xenia-release-source-sha-mismatch".into());
         }
-        let release_tag = crate::atoms::ask::fetch_artifact::release_tag_for_source_sha(
-            &selected_source_sha,
-        )
-        .ok_or("fetch-artifact-xenia-release-source-sha-invalid")?;
-        let api_root = args
-            .get("api_root")
-            .and_then(Value::as_str)
+        let release_tag = args.get("release_tag").and_then(Value::as_str)
+            .ok_or("xenia-release-selection-missing")?;
+        let expected_digest = xenia_expected_digest.ok_or("xenia-release-digest-unproven")?;
+        let api_root = args.get("api_root").and_then(Value::as_str)
             .unwrap_or("https://git.home.arpa/api/v1");
-        credential_state =
-            crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
-        let mut download = crate::atoms::ask::fetch_artifact::download_release(
-            component,
-            artifact_name,
-            source_dir.unwrap_or(Path::new("")),
-            release_repo,
-            Some(&release_tag),
-            api_root,
-            release_asset_name.as_deref(),
-            release_sidecar_name.as_deref(),
-            identity,
-            &selected_source_sha,
-        )?
-        .ok_or("fetch-artifact-xenia-release-absent")?;
+        credential_state = crate::atoms::ask::fetch_artifact::credential_state_for_url(api_root)?;
+        let asset = release_asset_name.clone().unwrap_or_else(|| format!("{artifact_name}-x86_64"));
+        let mut download = crate::atoms::ask::fetch_artifact::download_xenia_release(
+            component, release_repo, release_tag, api_root, &asset, &selected_source_sha,
+            expected_digest, identity,
+        )?;
         if !crate::atoms::ask::fetch_artifact::validate_source_sha(&download.manifest.source_sha)
             || !same_source_sha(&download.manifest.source_sha, &selected_source_sha)
         {
@@ -796,6 +816,10 @@ fn execute_with_module_provenance(
         });
     }
     let invocation = invocation.ok_or("fetch-artifact-invocation-key-missing")?;
+    let mut xenia_stage = if xenia_artifact { Some(XeniaStage::create()?) } else { None };
+    let staged_artifact = xenia_stage.as_ref().map(XeniaStage::artifact);
+    let destination = staged_artifact.as_deref().unwrap_or(destination);
+    let release_staging = if xenia_artifact { None } else { release_staging };
     // Force Drift only for the pre-act observation; allow convergence afterward.
     let mut force_stage_pre_act = true;
     let result = crate::atoms::comparison::execute(
@@ -848,6 +872,7 @@ fn execute_with_module_provenance(
                 false,
                 &format!("state=Current; care=verified embedded source SHA; after=Current{profile_receipt_fields}"),
             )?;
+            if let Some(stage) = &mut xenia_stage { stage.handoff(); }
             Ok(FetchArtifactExecution {
                 outcome: crate::OperationOutcome {
                     ok: true,
@@ -880,6 +905,7 @@ fn execute_with_module_provenance(
                 true,
                 &detail,
             )?;
+            if let Some(stage) = &mut xenia_stage { stage.handoff(); }
             Ok(FetchArtifactExecution {
                 outcome: crate::OperationOutcome {
                     ok: true,

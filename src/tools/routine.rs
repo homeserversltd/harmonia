@@ -739,21 +739,20 @@ pub(crate) fn execute_validated_step_with_source(
                 | ("hermes-maintenance", "converge")
 
                 | ("xenia-runtime", "refusal")
-                | ("xenia-runtime", "retire")
         );
     match (step.tool.as_str(), step.permutation.as_str()) {
         ("routine", "execute") => Err("routine-dispatch-internal".into()),
+        ("xenia-runtime", "skip") => Ok(OperationOutcome {
+            ok: true,
+            changed: false,
+            skipped: true,
+            message: format!("xenia-own-service-skipped id={}", step.args.get("id").and_then(Value::as_str).unwrap_or("")),
+            command: None,
+        }),
         ("xenia-runtime", "refusal") => {
             crate::bands::xenia::execute_refusal(&step.args, software_apply)
         }
-        ("xenia-runtime", "retire") => {
-            crate::bands::xenia::execute_retire(
-                &step.args,
-                software_apply,
-                module_dir,
-                invocation,
-            )
-        }
+
         ("ask", "path-exists") => tools::ask::execute_validated_step(step, module_dir),
         ("command", "capture") | ("command", "act") | ("command", "propose") => {
             tools::command::execute_validated_step(
@@ -1198,8 +1197,7 @@ pub(crate) fn execute_routine(
             // Independently declared routine file children must cross the
             // canonical final-target membrane immediately before actuation.
             let target_gate = match child.tool.as_str() {
-                "place-file" | "backfill-file" => crate::bands::xenia::unit_render_path(&args)
-                    .or_else(|| args.get("path").and_then(Value::as_str).map(PathBuf::from))
+                "place-file" | "backfill-file" => args.get("path").and_then(Value::as_str).map(PathBuf::from)
                     .ok_or_else(|| format!("{}-path-missing", child.tool))
                     .and_then(|path| {
                         let path = path.as_path();
@@ -1209,10 +1207,7 @@ pub(crate) fn execute_routine(
                         match crate::tools::files::classify_target(path) {
                             crate::tools::files::TargetClass::Refused(reason) => Err(reason),
                             crate::tools::files::TargetClass::Config
-                                if managed_place_config
-                                    || (manifest.id == "xenia"
-                                        && child.name == "unit-render"
-                                        && child.permutation == "unit-render") =>
+                                if managed_place_config =>
                             {
                                 Ok(())
                             }

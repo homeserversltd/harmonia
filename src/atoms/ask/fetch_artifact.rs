@@ -1243,6 +1243,7 @@ pub(crate) struct ReleaseInspection {
     pub resolved_revision: String,
     pub digest: String,
     pub version: Option<Value>,
+    pub release_tag: String,
 }
 
 fn is_hex(value: &str, length: usize) -> bool {
@@ -1551,66 +1552,127 @@ fn release_flag_source_revision(
     ))
 }
 
-pub(crate) fn inspect_release(
-    component: &str,
-    release_repo: &str,
-    tag: &str,
-    api_root: &str,
-    asset: &str,
-    sidecar: &str,
-    release_schema_base: Option<&str>,
-) -> Result<Option<ReleaseInspection>, String> {
-    let (owner, repo) = release_repo
-        .split_once('/')
-        .ok_or_else(|| "fetch-artifact-release-repo-invalid".to_string())?;
-    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
-        return Err("fetch-artifact-release-repo-invalid".into());
+fn xenia_release_metadata(request: &ReleaseRequest, reference: &str) -> Result<Option<ReleaseMetadata>, String> {
+    if validate_source_sha(reference) {
+        let reference = reference.to_ascii_lowercase();
+        if let Some(metadata) = lookup_release_metadata_single(request, &reference, true)? {
+            return Ok(Some(metadata));
+        }
+        return lookup_release_metadata_single(request, &format!("sha-{reference}"), true);
     }
-    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
-    let credential_scope_found = credential.is_some();
-    let request = ReleaseRequest {
-        kind: "forgejo-release".into(),
-        base_url: api_root.into(),
-        owner: owner.into(),
-        repo: repo.into(),
-        credential,
-        credential_host: crate::atoms::forge_credential::url_host(api_root),
-        credential_scope_found,
-        cache_dir: std::env::temp_dir().join(format!("harmonia-release-{}", unique_temp_suffix())),
+    if reference.is_empty() || reference.starts_with('/') || reference.contains("..")
+        || !reference.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'/' | b'-')) {
+        return Err("xenia-release-ref-invalid".into());
+    }
+    let mut releases = lookup_published_releases(request)?;
+    releases.retain(|release| !release.draft && release.target_commitish.as_deref().is_some_and(validate_source_sha));
+    releases.sort_by(|a, b| b.created_at_order.cmp(&a.created_at_order).then_with(|| b.id.cmp(&a.id)));
+    let mut history = std::collections::HashSet::new();
+    let targets: std::collections::HashSet<_> = releases.iter().filter_map(|r| r.target_commitish.clone()).collect();
+    let encoded = reference.bytes().map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-') {
+        (b as char).to_string()
+    } else { format!("%{b:02X}") }).collect::<String>();
+    let mut complete = false;
+    for page in 1..=RELEASE_LIST_MAX_PAGES {
+        let url = format!("{}/repos/{}/{}/commits?sha={encoded}&limit={RELEASE_LIST_PAGE_SIZE}&page={page}",
+            release_api(request), request.owner, request.repo);
+        let bytes = download_release_asset(request, &url, "branch-history", true)?;
+        let commits: Vec<Value> = serde_json::from_slice(&bytes).map_err(|_| "xenia-release-branch-history-invalid")?;
+        if commits.len() > RELEASE_LIST_PAGE_SIZE { return Err("xenia-release-branch-history-invalid".into()); }
+        for commit in &commits {
+            let sha = commit.get("sha").and_then(Value::as_str).filter(|s| validate_source_sha(s))
+                .ok_or("xenia-release-branch-history-invalid")?;
+            history.insert(sha.to_owned());
+        }
+        // Once the newest listed release is in the branch, no older release
+        // can outrank it.  Otherwise keep scanning until every higher-ranked
+        // candidate is ruled in or the branch history is exhausted.
+        let newest_is_on_branch = releases.first().and_then(|release| release.target_commitish.as_ref())
+            .is_some_and(|sha| history.contains(sha));
+        if newest_is_on_branch || targets.is_subset(&history) || commits.len() < RELEASE_LIST_PAGE_SIZE {
+            complete = true;
+            break;
+        }
+    }
+    if !complete { return Err("xenia-release-branch-history-limit".into()); }
+    let Some(release) = releases.iter().find(|release| release.target_commitish.as_ref().is_some_and(|sha| history.contains(sha))) else {
+        return Ok(None);
     };
-    let result: Result<Option<ReleaseInspection>, String> = (|| {
-        let Some(release) = fetch_release_assets_for_inspection(&request, tag, asset, sidecar)?
-        else {
-            return Ok(None);
-        };
-        let digest = crate::atoms::file_sha256(&release.artifact);
-        // A release.flag is stamped with the repository's release component
-        // segment (workflow-coronatio-xenia-add-xenos-hodos), which is distinct
-        // from the xenos id `component` names; bind the flag to the repo segment.
-        let (resolved_revision, version) =
-            release_source_revision(&release, repo, release_schema_base)?;
-        let sidecar_text = String::from_utf8(release.sidecar)
-            .map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
-        if !is_hex(&digest, 64) || sidecar_text != format!("{digest}  {asset}\n") {
-            return Err("fetch-artifact-release-sidecar-mismatch".into());
-        }
-        if !validate_source_sha(&resolved_revision) {
-            return Err("fetch-artifact-release-revision-unavailable".into());
-        }
-        Ok(Some(ReleaseInspection {
-            resolved_revision,
-            digest,
-            version,
-        }))
-    })();
-    let _ = std::fs::remove_dir_all(&request.cache_dir);
-    match result {
-        Err(error) if !credential_scope_found => {
-            let metadata_url = release_metadata_url(api_root, release_repo, tag);
-            Err(normalize_auth_required_error(&error, &metadata_url).unwrap_or(error))
-        }
-        other => other,
+    lookup_release_metadata_single(request, &release.tag_name, true)
+}
+
+fn inspect_xenia_metadata(
+    request: &ReleaseRequest, metadata: &ReleaseMetadata, reference: &str,
+    asset: &str, schema_base: Option<&str>,
+) -> Result<ReleaseInspection, String> {
+    let tag = metadata.tag_name.as_deref().filter(|tag| safe_release_segment(tag))
+        .ok_or("xenia-release-tag-invalid")?;
+    if metadata.draft || optional_release_asset_url(metadata, asset).is_none() {
+        return Err("xenia-release-unavailable".into());
     }
+    let url = optional_release_asset_url(metadata, "release.flag").ok_or("xenia-release-unverified")?;
+    let flag_bytes = download_release_asset(request, &url, "release.flag", true)?;
+    let (resolved_revision, version) = release_flag_source_revision(&flag_bytes, &request.repo, schema_base)?;
+    if metadata.target_commitish != resolved_revision || (tag != resolved_revision && tag != format!("sha-{resolved_revision}")) {
+        return Err("xenia-release-source-mismatch".into());
+    }
+    if validate_source_sha(reference) && !resolved_revision.eq_ignore_ascii_case(reference) {
+        return Err("xenia-release-source-mismatch".into());
+    }
+    let flag: Value = serde_json::from_slice(&flag_bytes).map_err(|_| "xenia-release-flag-malformed")?;
+    let digest = flag.get("sha256").and_then(Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        .ok_or("xenia-release-digest-unproven")?.to_owned();
+    Ok(ReleaseInspection { resolved_revision, digest, version, release_tag: tag.to_owned() })
+}
+
+pub(crate) fn inspect_release(
+    _component: &str, release_repo: &str, reference: &str, api_root: &str,
+    asset: &str, _sidecar: &str, release_schema_base: Option<&str>,
+) -> Result<Option<ReleaseInspection>, String> {
+    let (owner, repo) = release_repo.split_once('/').ok_or("fetch-artifact-release-repo-invalid")?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') { return Err("fetch-artifact-release-repo-invalid".into()); }
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let request = ReleaseRequest { kind: "forgejo-release".into(), base_url: api_root.into(),
+        owner: owner.into(), repo: repo.into(), credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found: credential.is_some(), credential,
+        cache_dir: std::env::temp_dir().join(format!("harmonia-xenia-release-{}", unique_temp_suffix())) };
+    let result = (|| {
+        let Some(metadata) = xenia_release_metadata(&request, reference)? else { return Ok(None); };
+        inspect_xenia_metadata(&request, &metadata, reference, asset, release_schema_base).map(Some)
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result
+}
+
+pub(crate) fn download_xenia_release(
+    component: &str, release_repo: &str, tag: &str, api_root: &str, asset: &str,
+    expected_sha: &str, expected_digest: &str, identity: &str,
+) -> Result<Download, String> {
+    let (owner, repo) = release_repo.split_once('/').ok_or("fetch-artifact-release-repo-invalid")?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') { return Err("fetch-artifact-release-repo-invalid".into()); }
+    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
+    let request = ReleaseRequest { kind: "forgejo-release".into(), base_url: api_root.into(),
+        owner: owner.into(), repo: repo.into(), credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found: credential.is_some(), credential,
+        cache_dir: std::env::temp_dir().join(format!("harmonia-xenia-release-{}", unique_temp_suffix())) };
+    let result = (|| {
+        let metadata = lookup_release_metadata_single(&request, tag, true)?.ok_or("xenia-release-unavailable")?;
+        if metadata.tag_name.as_deref() != Some(tag) { return Err("xenia-release-tag-changed".into()); }
+        let inspected = inspect_xenia_metadata(&request, &metadata, tag, asset, None)?;
+        if inspected.resolved_revision != expected_sha || inspected.digest != expected_digest {
+            return Err("xenia-release-changed-during-update".into());
+        }
+        let url = release_asset_url(&metadata, tag, asset)?;
+        let bytes = download_release_asset(&request, &url, asset, true)?;
+        if crate::atoms::file_sha256(&bytes) != expected_digest { return Err("xenia-release-digest-mismatch".into()); }
+        Ok(Download { manifest: Manifest { schema: MANIFEST_SCHEMA.into(), component: component.into(),
+            source_sha: inspected.resolved_revision, target: std::env::consts::ARCH.into(),
+            sha256: inspected.digest, built_at: tag.into(), pipeline_url: metadata.url,
+            env_sha: None, rustc_version: None }, bytes, identity: identity.into() })
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result
 }
 
 /// Read the public engine release with the stricter contract used by the

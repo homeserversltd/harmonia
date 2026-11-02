@@ -390,73 +390,7 @@ fn xenia_command(args: &[String]) -> Result<(), String> {
             );
             Ok(())
         }
-        Some("render-unit") => {
-            let register_path = value_arg(args, "--register")
-                .ok_or("xenia render-unit requires --register <path>")?;
-            let id =
-                value_arg_string(args, "--id").ok_or("xenia render-unit requires --id <id>")?;
-            let schema_base = value_arg_string(args, "--schema-base");
-            let explicit_bind = value_arg_string(args, "--caduceus-bind");
-            let explicit_base = explicit_bind
-                .as_deref()
-                .map(crate::atoms::ask::caduceus_door::resolve_bind)
-                .transpose()
-                .map_err(str::to_owned)?;
-            let bind = match explicit_base.as_deref() {
-                Some(base) => base.to_owned(),
-                None => crate::atoms::ask::caduceus_door::base_url()
-                    .map(str::to_owned)
-                    .map_err(str::to_owned)?,
-            };
-            let register_schema_base = explicit_base.as_deref().or(schema_base.as_deref());
-            let register =
-                crate::bands::xenia::load_register(&register_path, register_schema_base)?;
-            if let Some(reason) = register.entry_refusals.get(&id) {
-                return Err(format!("xenia-entry-refused-{id}: {reason}"));
-            }
-            let entry = register
-                .xenoi
-                .get(&id)
-                .ok_or_else(|| format!("xenia-entry-absent-{id}"))?;
-            let owner = entry
-                .pointer("/install/owner")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("xenia-install-owner-missing")?;
-            let bin = entry
-                .pointer("/install/bin")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("xenia-install-bin-missing")?;
-            let seat = format!("/var/lib/xenia/{id}");
-            let environment = std::collections::BTreeMap::from([
-                ("XENIA_ID".to_string(), id.clone()),
-                ("XENIA_SEAT".to_string(), seat.clone()),
-                ("XENIA_SCHEMA_BASE".to_string(), bind),
-            ]);
-            let unit = crate::bands::xenia::render_unit(
-                &format!("{id}.service"),
-                &id,
-                &format!("Xenia guest {id}"),
-                bin,
-                &seat,
-                owner,
-                owner,
-                &environment,
-            )?;
-            print!("{unit}");
-            let forbidden_directives = crate::bands::xenia::forbidden_directives(&unit);
-            eprintln!(
-                "{}",
-                serde_json::to_string(&serde_json::json!({
-                    "schema":"harmonia.xenia.unit-render.v1",
-                    "ok":true,
-                    "sha256":crate::atoms::file_sha256(unit.as_bytes()),
-                    "forbidden_directives":forbidden_directives
-                }))
-                .map_err(|e| e.to_string())?
-            );
-            Ok(())
-        }
-        _ => Err("xenia requires plan or render-unit".into()),
+        _ => Err("xenia requires plan".into()),
     }
 }
 
@@ -1589,9 +1523,6 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia beam [--lock <path>] [--door-url <url>]");
     println!("  harmonia ruyi [show|announce]");
     println!("  harmonia xenia plan --register <path> [--schema-base <url>]");
-    println!(
-        "  harmonia xenia render-unit --register <path> --id <id> [--caduceus-bind <host:port>] [--schema-base <url>]"
-    );
     println!("  harmonia config-proposal list [--json]");
     println!("  harmonia config-proposal accept <id>");
     println!("  harmonia interactable inspect <id> [--json]");

@@ -3,6 +3,6 @@
   "name": "xenia",
   "state": "declaration-only",
   "live_permutations": [],
-  "permutations": ["converge", "retire"],
+  "permutations": ["converge"],
   "authority": "appliance.xenia.v1 guest register"
 }

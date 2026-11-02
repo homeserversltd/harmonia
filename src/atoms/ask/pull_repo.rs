@@ -278,16 +278,6 @@ pub(crate) fn source_head(path: &Path, bearer: &str) -> crate::atoms::git_artifa
     git_observe(&request, &["rev-parse", "HEAD"], path.to_str())
 }
 
-pub(crate) fn unsafe_clone_dirt(status_porcelain: &str) -> bool {
-    crate::atoms::r#do::pull_repo::unsafe_clone_dirt(status_porcelain)
-}
-
-pub(crate) fn clone_in_place(
-    request: &git_artifact::Request, reference: &str, owner: &str,
-) -> Result<(bool, String, String), String> {
-    crate::atoms::r#do::pull_repo::clone_in_place(request, reference, owner)
-}
-
 pub(crate) fn probe_declared_remote_head(plan: &SourcePlan) -> RemoteHeadProbe {
     if plan.candidates.is_empty() {
         return RemoteHeadProbe {
@@ -535,86 +525,4 @@ pub(crate) fn observe_source_current(plan: &SourcePlan) -> Option<SourceOutcome>
             promotion: "already-current; destination projects observed remote head; no clone, stage, or promotion".into(),
         },
     })
-}
-
-#[cfg(test)]
-mod xenia_clone_tests {
-    use super::clone_in_place;
-    use crate::atoms::git_artifact::Request;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
-    use std::process::Command;
-
-    fn git(cwd: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .env("GIT_AUTHOR_NAME", "xenia-test")
-            .env("GIT_AUTHOR_EMAIL", "xenia-test@example.invalid")
-            .env("GIT_COMMITTER_NAME", "xenia-test")
-            .env("GIT_COMMITTER_EMAIL", "xenia-test@example.invalid")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&output.stderr));
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    }
-
-    #[test]
-    fn local_git_clone_is_in_place_fast_forward_and_divergence_safe() {
-        let root = tempfile::tempdir().unwrap();
-        let remote = root.path().join("remote");
-        let seat = root.path().join("seat");
-        fs::create_dir(&remote).unwrap();
-        git(&remote, &["init", "-q", "-b", "main"]);
-        fs::write(remote.join("README"), "one\n").unwrap();
-        git(&remote, &["add", "README"]);
-        git(&remote, &["commit", "-q", "-m", "one"]);
-        let first = git(&remote, &["rev-parse", "HEAD"]);
-        let request = Request::new(Some(format!("file://{}", remote.display())), seat.clone(), "main".into(), "origin".into());
-        let (_, resolved, _) = clone_in_place(&request, "main", "xenia").unwrap();
-        assert_eq!(resolved, first);
-        assert!(seat.join(".git").exists());
-        assert_eq!(fs::metadata(&seat).unwrap().permissions().mode() & 0o777, 0o750);
-        fs::create_dir_all(seat.join("target")).unwrap();
-        fs::write(seat.join("target/cache"), "keep").unwrap();
-
-        fs::write(remote.join("README"), "two\n").unwrap();
-        git(&remote, &["add", "README"]);
-        git(&remote, &["commit", "-q", "-m", "two"]);
-        let second = git(&remote, &["rev-parse", "HEAD"]);
-        let (_, resolved, _) = clone_in_place(&request, "main", "xenia").unwrap();
-        assert_eq!(resolved, second);
-        assert!(seat.join("target/cache").exists());
-
-        git(&seat, &["checkout", "-q", "-b", "diverged"]);
-        fs::write(seat.join("README"), "local\n").unwrap();
-        git(&seat, &["add", "README"]);
-        git(&seat, &["commit", "-q", "-m", "diverged"]);
-        fs::write(remote.join("README"), "three\n").unwrap();
-        git(&remote, &["add", "README"]);
-        git(&remote, &["commit", "-q", "-m", "three"]);
-        let error = clone_in_place(&request, "main", "xenia").unwrap_err();
-        assert_eq!(error, "xenia-clone-diverged");
-    }
-}
-
-#[cfg(test)]
-mod clone_dirt_tests {
-    use super::unsafe_clone_dirt;
-
-    #[test]
-    fn untracked_seat_residue_is_never_unsafe_dirt() {
-        assert!(!unsafe_clone_dirt("?? cartridge-monad-overwatch\n?? listen\n?? target/\n"));
-        assert!(!unsafe_clone_dirt(""));
-        assert!(!unsafe_clone_dirt("!! target/release/\n"));
-    }
-
-    #[test]
-    fn tracked_modifications_deletions_and_conflicts_are_unsafe_dirt() {
-        assert!(unsafe_clone_dirt(" M src/main.rs\n"));
-        assert!(unsafe_clone_dirt("D  cartridge.json\n?? listen\n"));
-        assert!(unsafe_clone_dirt("UU src/fragment.rs\n"));
-        assert!(unsafe_clone_dirt("R  old.rs -> new.rs\n"));
-    }
 }

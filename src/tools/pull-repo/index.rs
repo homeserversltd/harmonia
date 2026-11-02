@@ -5,9 +5,6 @@ pub(crate) fn plan(request: &crate::atoms::git_artifact::Request) -> crate::atom
 pub(crate) fn apply(request: &crate::atoms::git_artifact::Request, invocation: &crate::atoms::r#do::InvocationKey) -> crate::atoms::git_artifact::Outcome {
     crate::atoms::r#do::pull_repo::source_orchestration::apply(request, invocation)
 }
-pub(crate) fn acquire_xenia_clone(entry: &serde_json::Value, destination: std::path::PathBuf, apply: bool) -> crate::atoms::git_artifact::SourceOutcome {
-    crate::atoms::r#do::pull_repo::source_orchestration::acquire_xenia_clone(entry, destination, apply)
-}
 pub(crate) fn acquire_source(plan: &crate::atoms::git_artifact::SourcePlan, invocation: Option<&crate::atoms::r#do::InvocationKey>) -> crate::atoms::git_artifact::SourceOutcome {
     crate::atoms::r#do::pull_repo::source_orchestration::acquire_source(plan, invocation)
 }

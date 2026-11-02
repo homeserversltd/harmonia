@@ -84,6 +84,10 @@ pub(crate) fn execute(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome,
     execute_with_authority(request, Authority::Machine)
 }
 
+pub(crate) fn update_existing_xenia(request: PlaceFileRequest<'_>) -> Result<PlaceFileOutcome, String> {
+    execute_with_authority(request, Authority::XeniaExisting)
+}
+
 pub(crate) fn execute_with_operator_hand(
     request: PlaceFileRequest<'_>,
     operator_hand: crate::interactables::OperatorHand,
@@ -112,47 +116,11 @@ fn execute_estate_owned_declared_sudoers_fragment_at(
     execute_with_authority(request, Authority::EstateOwnedDeclaredSudoers)
 }
 
-pub(crate) fn execute_xenia_rendered_guest_unit(
-    request: PlaceFileRequest<'_>,
-    xenia_id: &str,
-) -> Result<PlaceFileOutcome, String> {
-    let target_root = Path::new("/etc/systemd/system");
-    let unit_stem = PathBuf::from(xenia_id);
-    let expected_name = format!("{xenia_id}.service");
-    let expected_path = target_root.join(&expected_name);
-    if xenia_id.is_empty()
-        || xenia_id.contains('/')
-        || unit_stem.to_str() != Some(xenia_id)
-        || unit_stem.file_name().and_then(|name| name.to_str()) != Some(xenia_id)
-        || request.path.parent() != Some(target_root)
-        || request.path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str())
-        || request.path != expected_path.as_path()
-        || request.mode != Some(0o644)
-        || request.ownership.uid != Some(0)
-        || request.ownership.gid != Some(0)
-    {
-        return Err("xenia-rendered-guest-unit-contract-refused".into());
-    }
-    if let Ok(metadata) = fs::symlink_metadata(request.path) {
-        if metadata.file_type().is_file() {
-            let marker = format!("X-Xenia-Id={xenia_id}");
-            let bytes = fs::read(request.path)
-                .map_err(|_| "xenia-rendered-guest-unit-collision-refused".to_string())?;
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|_| "xenia-rendered-guest-unit-collision-refused".to_string())?;
-            if !text.lines().any(|line| line == marker) {
-                return Err("xenia-rendered-guest-unit-collision-refused".into());
-            }
-        }
-    }
-    execute_with_authority(request, Authority::XeniaRenderedGuestUnit)
-}
-
 enum Authority {
     Machine,
+    XeniaExisting,
     OperatorHand(crate::interactables::OperatorHand),
     EstateOwnedDeclaredSudoers,
-    XeniaRenderedGuestUnit,
 }
 
 fn execute_with_authority(
@@ -162,7 +130,7 @@ fn execute_with_authority(
     match crate::atoms::files::classify_target(request.path) {
         crate::atoms::files::TargetClass::Refused(reason) => return Err(reason),
         crate::atoms::files::TargetClass::Config
-            if request.invocation.is_some() && matches!(&authority, Authority::Machine) =>
+            if request.invocation.is_some() && matches!(&authority, Authority::Machine | Authority::XeniaExisting) =>
         {
             return Err("configuration-actuator-authority-refused".into())
         }
@@ -187,6 +155,9 @@ fn execute_with_authority(
                 request.mode,
                 request.ownership,
             )?;
+            if matches!(&authority, Authority::XeniaExisting) && !observation.regular {
+                return Err("xenia-guest-not-installed".into());
+            }
             if before_observation.is_none() {
                 before_observation = Some(observation.clone());
             }
@@ -204,6 +175,12 @@ fn execute_with_authority(
             let Some(invocation) = request.invocation else {
                 return Ok(PlaceFileMovement::default());
             };
+            if matches!(&authority, Authority::XeniaExisting) {
+                return mutation::update_existing_xenia(
+                    authorization, invocation, request.path, request.declared_bytes,
+                    request.mode, request.ownership, observation,
+                );
+            }
             mutation::place(
                 authorization,
                 invocation,
@@ -547,6 +524,66 @@ mod probe {
 mod mutation {
     use super::*;
     use crate::atoms::comparison::ActionAuthorization;
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn update_existing_xenia(
+        authorization: &ActionAuthorization,
+        invocation: &atoms::r#do::InvocationKey,
+        path: &Path,
+        bytes: &[u8],
+        mode: Option<u32>,
+        ownership: DeclaredOwnership,
+        observation: &PlaceFileObservation,
+    ) -> Result<PlaceFileMovement, String> {
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::io::AsRawFd;
+        let parent = path.parent().ok_or("xenia-guest-not-installed")?;
+        let name = path.file_name().ok_or("xenia-guest-not-installed")?.to_string_lossy();
+        let temp = parent.join(format!(".{name}.xenia-update-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos()));
+        let mut exchanged = false;
+        let result = (|| -> Result<(), String> {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)
+                .map_err(|e| format!("xenia-update-temp-create-failed: {e}"))?;
+            file.write_all(bytes).map_err(|e| format!("xenia-update-temp-write-failed: {e}"))?;
+            let uid = ownership.uid.ok_or("xenia-update-owner-missing")?;
+            let gid = ownership.gid.ok_or("xenia-update-group-missing")?;
+            if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+                return Err(format!("xenia-update-owner-failed: {}", std::io::Error::last_os_error()));
+            }
+            file.set_permissions(std::fs::Permissions::from_mode(mode.ok_or("xenia-update-mode-missing")?))
+                .map_err(|e| format!("xenia-update-mode-failed: {e}"))?;
+            file.sync_all().map_err(|e| format!("xenia-update-sync-failed: {e}"))?;
+            let old = std::ffi::CString::new(temp.as_os_str().as_bytes()).map_err(|_| "xenia-update-path-invalid")?;
+            let new = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| "xenia-update-path-invalid")?;
+            if unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_EXCHANGE) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::NotFound { return Err("xenia-guest-not-installed".into()); }
+                return Err(format!("xenia-update-exchange-failed: {error}"));
+            }
+            exchanged = true;
+            std::fs::remove_file(&temp).map_err(|e| format!("xenia-update-prior-remove-failed: {e}"))?;
+            std::fs::File::open(parent).and_then(|dir| dir.sync_all())
+                .map_err(|e| format!("xenia-update-parent-sync-failed: {e}"))?;
+            Ok(())
+        })();
+        if result.is_err() && !exchanged { let _ = std::fs::remove_file(&temp); }
+        result?;
+        let _ = (authorization, invocation);
+        Ok(PlaceFileMovement { bytes: !observation.bytes_equal, mode: !observation.mode_equal,
+            owner: !observation.owner_equal || !observation.group_equal, created: false, backed_up: None })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn update_existing_xenia(
+        _authorization: &ActionAuthorization, _invocation: &atoms::r#do::InvocationKey,
+        _path: &Path, _bytes: &[u8], _mode: Option<u32>, _ownership: DeclaredOwnership,
+        _observation: &PlaceFileObservation,
+    ) -> Result<PlaceFileMovement, String> {
+        Err("xenia-update-atomic-exchange-unavailable".into())
+    }
 
     pub(super) fn place(
         authorization: &ActionAuthorization,
