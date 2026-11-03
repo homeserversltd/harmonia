@@ -37,18 +37,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "woodpecker-config-private-metadata",
-      "tool": "files",
-      "permutation": "metadata",
-      "args": {
-        "files": [
-          {"path": "/etc/default/woodpecker-server", "owner": "root", "group": "root", "mode": 384},
-          {"path": "/etc/default/woodpecker-agent", "owner": "root", "group": "root", "mode": 384}
-        ]
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "woodpecker-product-config",
       "tool": "files",
       "permutation": "converge",
