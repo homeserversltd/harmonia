@@ -1266,6 +1266,16 @@ pub(crate) fn refresh_validated_symlink(
             return Ok(false);
         }
         let id = validated_symlink_proposal_id(&manifest.id, &binding, &observed)?;
+        let source_text = observed["source"].as_str()
+            .ok_or("validated-symlink-source-unresolved")?;
+        // Escape control characters and backslashes so even unusual valid
+        // link names remain unambiguous single-line diff text and headers.
+        let display_target = PathBuf::from(target.to_string_lossy().escape_debug().to_string());
+        let before = observed["link_target"].as_str()
+            .map(|current| format!("link → {}\n", current.escape_debug()))
+            .unwrap_or_default();
+        let after = format!("link → {}\n", source_text.escape_debug());
+        let diff = proposal_diff(&display_target, before.as_bytes(), after.as_bytes());
         // The final proposal prune retires row-backed offers not produced by
         // this successful module observation. Link offers participate in that
         // same per-run lifecycle; neither a new nor a quiet offer is stale.
@@ -1284,6 +1294,7 @@ pub(crate) fn refresh_validated_symlink(
         if prior.is_some_and(|item| {
             item.extra.get("validated_symlink") == Some(&observed)
                 && item.extra.get("config_act_binding") == Some(&binding)
+                && item.diff == diff
         }) && prior_state.as_ref().is_some_and(|state| {
             state.get("validated_symlink") == Some(&observed)
                 && state.get("config_act_binding") == Some(&binding)
@@ -1308,7 +1319,7 @@ pub(crate) fn refresh_validated_symlink(
             drift: DriftSummary { content: true, mode: false, ownership: false },
             created_at: prior.map(|item| item.created_at.clone()).unwrap_or_else(|| now.clone()),
             refreshed_at: now.clone(),
-            available_at: prior.and_then(|item| item.available_at.clone()).or_else(|| Some(now.clone())),
+            available_at: prior.map(|item| item.available_at.clone()).unwrap_or_else(|| Some(now.clone())),
             silenced: prior.is_some_and(|item| item.silenced),
             silenced_at: prior.and_then(|item| item.silenced_at.clone()),
             has_run: false, mode: None, owner: None, group: None,
@@ -1317,7 +1328,7 @@ pub(crate) fn refresh_validated_symlink(
                 .map(|value| format!("{:x}", Sha256::digest(value.as_bytes()))),
             reference_sha: observed["source_sha256"].as_str().map(str::to_owned),
             recognition_score: None,
-            diff: None,
+            diff,
             script: format!("harmonia interactable run {id}"),
             show_only_if: "link_state=drift".into(),
             completion_check: format!("symlink:{}", source.display()),
