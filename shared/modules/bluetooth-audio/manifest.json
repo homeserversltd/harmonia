@@ -4,7 +4,7 @@
   "title": "Wireless sound",
   "summary": "Lets the TV play audio through wireless speakers and headphones.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Converges the TV Bluetooth service to enabled and active state through the systemd kernel primitive.",
   "optional": false,
   "constants": {
@@ -15,6 +15,7 @@
     "receipt_schema": "harmonia.tv.bluetooth_audio.v1",
     "meaning": "TV Bluetooth audio service declaration"
   },
+  "files_root": "files_root",
   "ladder": [
     {
       "step_id": "bluetooth-service-enable-now",
@@ -24,6 +25,23 @@
         "service": "bluetooth.service",
         "timeout_secs": 30
       }
+    },
+    {
+      "step_id": "hdmi-first-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/wireplumber/wireplumber.conf.d/51-hdmi-first.conf"
+        ],
+        "mode": 420,
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root"
+      },
+      "on_failure": "stop"
     }
   ]
 }
