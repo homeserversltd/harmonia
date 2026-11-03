@@ -9,7 +9,7 @@ if command -v fastfetch >/dev/null 2>&1; then
 fi
 
 # Edit this .rc file
-alias editrc='edit ~/.zshrc'
+alias editrc='${EDITOR:-nano} ~/.zshrc'
 alias refresh='source ~/.zshrc'
 alias rr='refresh'
 
@@ -42,7 +42,7 @@ alias logs.usb='sudo journalctl -b | grep usb | $PAGER'
 alias logs.boot='sudo journalctl -b | $PAGER'
 
 if [[ -x "$(command -v bat)" ]]; then
-	alias bat='bat --paging=never --style=header,grid --theme=Visual Studio Dark+'
+	alias bat='bat --paging=never --style=header,grid --theme="Visual Studio Dark+"'
 	alias cat='bat'
 fi
 
@@ -127,3 +127,12 @@ alias service.restart='sudo systemctl restart' # Stop and start
 alias service.reload='sudo systemctl reload'   # Reload configuration
 alias service.enable='sudo systemctl enable'
 alias service.disable='sudo systemctl disable'
+
+#maintenance, through Caduceus
+alias update='caduceus update now'
+alias update-check='caduceus update status'
+alias update-status='caduceus receipts latest'
+alias receipts='caduceus receipts latest'
+alias health='caduceus health'
+alias poweroff='sudo systemctl poweroff'
+alias ip-now='ip -brief address'

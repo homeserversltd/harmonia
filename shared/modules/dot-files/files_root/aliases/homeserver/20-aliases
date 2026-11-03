@@ -30,7 +30,7 @@ alias moar="less -RN --mouse --wheel-lines=10"
 alias more='less'
 # Note: 'less' will use enhanced configuration from environment variables
 #update
-alias update='sudo /usr/local/lib/updates/updateManager.sh' 
+alias update='caduceus update now'
 
 #logs
 alias errors.boot='sudo journalctl -b -p err | $PAGER'
@@ -42,7 +42,7 @@ alias logs.usb='sudo journalctl -b | grep usb | $PAGER'
 alias logs.boot='sudo journalctl -b | $PAGER'
 
 if [[ -x "$(command -v bat)" ]]; then
-	alias bat='bat --paging=never --style=header,grid --theme=Visual Studio Dark+'
+	alias bat='bat --paging=never --style=header,grid --theme="Visual Studio Dark+"'
 	alias cat='bat'
 fi
 

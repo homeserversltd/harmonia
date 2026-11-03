@@ -10,13 +10,11 @@ Maintenance (Caduceus -> Harmonia):
   update-check    caduceus update status
   update-status   caduceus receipts latest
   health          caduceus health
-  timer           Show the birth-owned Harmonia systemd timer.
-  maintenance-log Show recent maintenance service logs.
-  reboot          Reboot through systemd.
-  poweroff        Power off through systemd.
+  reboot          Reboot.
+  poweroff        Power off.
 
 Receipts and inspection:
-  receipts        List latest maintenance receipts.
+  receipts        caduceus receipts latest
   ip-now          Show current local IP addresses.
 
 Chat: agora.home.arpa
