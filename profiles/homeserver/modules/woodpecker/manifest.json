@@ -4,7 +4,7 @@
   "title": "Household CI",
   "summary": "Keeps the household's build service configured.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Maintain the birth-provided Woodpecker service units; the instance's credentials and runtime data remain birth-owned.",
   "files_root": "files_root",
   "ladder": [
@@ -23,10 +23,29 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "woodpecker-instance-config-present",
+      "step_id": "woodpecker-server-config-present",
       "tool": "command",
       "permutation": "capture",
-      "args": {"program": "/usr/bin/test", "args": ["-s", "/etc/default/woodpecker"], "timeout_secs": 30},
+      "args": {"program": "/usr/bin/test", "args": ["-s", "/etc/default/woodpecker-server"], "timeout_secs": 30},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "woodpecker-agent-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {"program": "/usr/bin/test", "args": ["-s", "/etc/default/woodpecker-agent"], "timeout_secs": 30},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "woodpecker-config-private-metadata",
+      "tool": "files",
+      "permutation": "metadata",
+      "args": {
+        "files": [
+          {"path": "/etc/default/woodpecker-server", "owner": "root", "group": "root", "mode": 384},
+          {"path": "/etc/default/woodpecker-agent", "owner": "root", "group": "root", "mode": 384}
+        ]
+      },
       "on_failure": "stop"
     },
     {

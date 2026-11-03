@@ -4,10 +4,11 @@ After=network.target woodpecker-server.service
 
 [Service]
 Type=simple
-User=woodpecker
-Group=woodpecker
-WorkingDirectory=/var/lib/woodpecker
-EnvironmentFile=/etc/default/woodpecker
+User=woodpecker-agent
+Group=woodpecker-agent
+WorkingDirectory=/var/lib/woodpecker-agent
+Environment=HOME=/var/lib/woodpecker-agent
+EnvironmentFile=/etc/default/woodpecker-agent
 ExecStart=/opt/woodpecker/woodpecker-agent
 Restart=always
 
