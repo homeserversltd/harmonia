@@ -4,7 +4,7 @@
   "title": "Household CI",
   "summary": "Keeps the household's build service configured.",
   "category": "interactable",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Maintain the birth-provided Woodpecker service units; the instance's credentials and runtime data remain birth-owned.",
   "files_root": "files_root",
   "ladder": [
