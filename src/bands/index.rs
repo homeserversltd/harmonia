@@ -797,13 +797,35 @@ pub(crate) fn run_profile_engine_with_projection(
                 let observed_modules = state.module_states.iter()
                     .filter(|(id, result)| result.ok && !halted_modules.contains(*id))
                     .map(|(id, _)| id.clone()).collect();
+                let eligible_modules = state.module_states.iter()
+                    .filter(|(id, result)| propose_result.is_ok() && result.ok && result.operation_count > 0
+                        && !halted_modules.contains(*id)
+                        && !device_module_policy.disabled_modules.contains(*id)
+                        && !active_projection.authority_excluded.contains(*id)
+                        && active_projection.modules.contains_key(*id)
+                        && !halted_steps.keys().any(|(module, _)| module == *id))
+                    .map(|(id, _)| id.clone()).collect();
                 let prune_result = crate::bands::propose_edits::prune_stale_interactables(
                     &active_profile,
                     &observed_modules,
+                    &eligible_modules,
+                    &active_projection,
                     &mut events,
                 );
                 propose_result?;
-                prune_result?;
+                for (module, id) in prune_result? {
+                    if let Some(result) = state.module_states.get_mut(&module) {
+                        result.changed = true;
+                        result.operation_count += 1;
+                        state.changed = true;
+                        state.operation_count += 1;
+                        result.placements.push(serde_json::json!({
+                            "step_id":"prune-stale-interactables", "tool":"interactables",
+                            "band":"ProposeEdits", "module":module, "id":id,
+                            "status":"retired", "reason":"target-undeclared", "ok":true, "changed":true
+                        }));
+                    }
+                }
             }
             crate::bands::Band::ReportHome => {
                 let target_carrier = carrier.or_else(|| context.map(|value| &value.carrier));

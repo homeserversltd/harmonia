@@ -298,6 +298,15 @@ fn is_config_proposal_id(id: &str) -> bool {
         .is_some_and(|key| key.len() == 16 && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
 }
 
+// Validated-symlink proposals carry a full SHA-256 rather than the
+// shortened file-proposal digest. Do not change file-only call sites.
+fn is_prunable_config_proposal_id(id: &str) -> bool {
+    id.strip_prefix("config-proposal-").is_some_and(|key| {
+        matches!(key.len(), 16 | 64)
+            && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
 fn read_regular_file_no_follow(path: &Path, context: &str) -> Result<Vec<u8>, String> {
     let mut options = fs::OpenOptions::new();
     options
@@ -558,13 +567,131 @@ pub(crate) fn resolve_config_proposal_locked(
     Ok(true)
 }
 
+// A negative declaration judgment is safe only when every target-bearing
+// argument can be resolved from the projected declaration. Runtime `from`
+// values and unreadable file roots are unknown, never evidence of absence.
+fn has_runtime_reference(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.contains_key("from") || map.values().any(has_runtime_reference),
+        Value::Array(items) => items.iter().any(has_runtime_reference),
+        _ => false,
+    }
+}
+
+fn declaration_owns_target(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    target: &Path,
+) -> Option<bool> {
+    let keys: &[&str] = match (step.tool.as_str(), step.permutation.as_str()) {
+        ("place-file", "place") => &["path"],
+        ("files", "managed-files") => &[],
+        ("files", "compile-fragments") => &["target_path", "output_path"],
+        ("files", "json-key-proposal") => &["target"],
+        ("files", "validated-symlink" | "symlink-converge" | "validated-file-symlink") => &[],
+        ("files", "converge" | "directory-sync") => {
+            if step.args.contains_key("files") { &["target_root", "files"] }
+            else if step.permutation == "directory-sync" { &["target_root", "source_root"] }
+            else { &["target_root"] }
+        },
+        _ => return Some(false),
+    };
+    if keys.iter().filter_map(|key| step.args.get(*key)).any(has_runtime_reference) {
+        return None;
+    }
+    match (step.tool.as_str(), step.permutation.as_str()) {
+        ("place-file", "place") => Some(step.args.get("path")?.as_str().map(Path::new)? == target),
+        ("files", "managed-files") => {
+            if let Some(files) = step.args.get("files") {
+                let mut found = false;
+                for file in files.as_array()? {
+                    found |= Path::new(file.get("path")?.as_str()?) == target;
+                }
+                Some(found)
+            } else {
+                Some(crate::tools::files::materialize_managed_files(step, manifest)
+                    .ok()?.iter().any(|file| Path::new(&file.path) == target))
+            }
+        }
+        ("files", "compile-fragments") => Some(step.args.get("target_path")
+            .or_else(|| step.args.get("output_path"))?.as_str().map(Path::new)? == target),
+        ("files", "json-key-proposal") => Some(step.args.get("target")?.as_str().map(Path::new)? == target),
+        ("files", "validated-symlink" | "symlink-converge" | "validated-file-symlink") => {
+            let declared_form = step.args.contains_key("source") && step.args.contains_key("target");
+            let keys: &[&str] = if declared_form { &["target"] }
+                else { &["path", "link", "destination", "target_path"] };
+            if keys.iter().filter_map(|key| step.args.get(*key)).any(has_runtime_reference) {
+                return None;
+            }
+            Some(keys.iter().find_map(|key| step.args.get(*key).and_then(Value::as_str))
+                .map(Path::new)? == target)
+        }
+        ("files", "converge" | "directory-sync") => {
+            let root = Path::new(step.args.get("target_root")?.as_str()?);
+            if let Some(files) = step.args.get("files") {
+                let mut found = false;
+                for file in files.as_array()? {
+                    found |= root.join(file.as_str()?) == target;
+                }
+                return Some(found);
+            }
+            if step.permutation != "directory-sync" { return Some(false); }
+            let Ok(relative) = target.strip_prefix(root) else { return Some(false); };
+            crate::atoms::files::validate_relative_path(relative).ok()?;
+            let source = step.args.get("source_root")?.as_str()?;
+            let source_root = crate::tools::files::resolve_ladder_path(manifest, source);
+            if !fs::metadata(&source_root).ok()?.is_dir() { return None; }
+            match fs::symlink_metadata(source_root.join(relative)) {
+                Ok(metadata) => Some(!metadata.file_type().is_dir()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+                Err(_) => None,
+            }
+        }
+        _ => Some(false),
+    }
+}
+
+fn module_declares_target(
+    projection: &ProfileProjection,
+    module: &str,
+    target: &Path,
+) -> Option<bool> {
+    let projected = projection.modules.get(module)?;
+    let LoadedModule::Ladder(manifest) = &projected.loaded else { return None; };
+    let mut unknown = false;
+    for step in &projected.steps {
+        match declaration_owns_target(step, manifest, target) {
+            Some(true) => return Some(true),
+            None => unknown = true,
+            _ => {}
+        }
+        if let Some(children) = projected.routines.get(&step.step_id) {
+            for child in children {
+                let child = ValidatedStep {
+                    step_id: child.name.clone(), tool: child.tool.clone(),
+                    permutation: child.permutation.clone(), args: child.args.clone(),
+                    on_failure: child.on_failure,
+                };
+                match declaration_owns_target(&child, manifest, target) {
+                    Some(true) => return Some(true),
+                    None => unknown = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    if unknown { None } else { Some(false) }
+}
+
 pub(crate) fn prune_stale_interactables(
     profile: &Profile,
     observed_modules: &BTreeSet<String>,
+    eligible_modules: &BTreeSet<String>,
+    projection: &ProfileProjection,
     events: &mut crate::receipts::EventSink,
-) -> Result<(), String> {
+) -> Result<Vec<(String, String)>, String> {
     let path = crate::ledger::database_path();
-    prune_stale_interactables_with_observations(&path, profile, observed_modules, events)
+    prune_stale_interactables_with_observations(&path, profile, observed_modules, eligible_modules, Some(projection), events)
 }
 
 pub(crate) fn prune_stale_interactables_at_path(
@@ -572,15 +699,17 @@ pub(crate) fn prune_stale_interactables_at_path(
     profile: &Profile,
     events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
-    prune_stale_interactables_with_observations(path, profile, &BTreeSet::new(), events)
+    prune_stale_interactables_with_observations(path, profile, &BTreeSet::new(), &BTreeSet::new(), None, events).map(|_| ())
 }
 
 fn prune_stale_interactables_with_observations(
     path: &Path,
     profile: &Profile,
     observed_modules: &BTreeSet<String>,
+    eligible_modules: &BTreeSet<String>,
+    projection: Option<&ProfileProjection>,
     _events: &mut crate::receipts::EventSink,
-) -> Result<(), String> {
+) -> Result<Vec<(String, String)>, String> {
     let active = profile.modules.iter().cloned().collect::<BTreeSet<_>>();
     let recognized: BTreeSet<String> = CURRENT_CONFIG_RECOGNITIONS.with(|state| state.borrow().keys().cloned().collect());
     // Import before taking the preimage, not inside the later prune transaction.
@@ -589,19 +718,40 @@ fn prune_stale_interactables_with_observations(
         .map(|item| Ok((item.id.clone(), serde_json::to_value(item).map_err(|error| error.to_string())?)))
         .collect::<Result<std::collections::BTreeMap<_,_>,String>>()?;
     if observed_modules.is_empty() && snapshot.is_empty() && !crate::ledger::has_unmatched_proposals()? {
-        return Ok(());
+        return Ok(Vec::new());
     }
     // Classify against the same write-locked snapshot that is persisted: a
     // producer may have refreshed the row after an earlier observation.
-    crate::ledger::with_proposal_transaction(|connection| {
+    let retired = crate::ledger::with_proposal_transaction(|connection| {
         let mut feed = crate::ledger::load_proposals_on(connection)?;
         let mut retained = Vec::with_capacity(feed.interactables.len());
+        let mut undeclared = Vec::new();
         for entry in feed.interactables.drain(..) {
             let unchanged = snapshot.get(&entry.id).is_some_and(|prior| {
                 serde_json::to_value(&entry).is_ok_and(|current| current == *prior)
             });
             if !unchanged {
                 retained.push(entry);
+                continue;
+            }
+            let config_file_row = is_prunable_config_proposal_id(&entry.id) && entry.kind == "hard-stamp";
+            if config_file_row && !eligible_modules.contains(&entry.module_id) {
+                retained.push(entry);
+                continue;
+            }
+            let declaration = if config_file_row && active.contains(&entry.module_id) {
+                entry.target_path.as_deref().and_then(|target| {
+                    projection.and_then(|view| module_declares_target(view, &entry.module_id, target))
+                })
+            } else { None };
+            if config_file_row && active.contains(&entry.module_id) && declaration.is_none() {
+                retained.push(entry);
+                continue;
+            }
+            let target_undeclared = config_file_row && active.contains(&entry.module_id)
+                && declaration == Some(false);
+            if target_undeclared {
+                undeclared.push((entry.module_id.clone(), entry.id.clone()));
                 continue;
             }
             let row_backed = crate::ledger::has_proposal_source_on(connection, &entry.id)?;
@@ -621,8 +771,13 @@ fn prune_stale_interactables_with_observations(
         }
         feed.interactables = retained;
         crate::ledger::save_proposals_on(connection, &feed, &[])?;
-        crate::ledger::retire_unseen_documents_on(connection, &active, observed_modules, &recognized)
-    })
+        crate::ledger::retire_unseen_documents_on(connection, &active, observed_modules, &recognized)?;
+        Ok(undeclared)
+    })?;
+    for (module, id) in &retired {
+        eprintln!("harmonia verb=retire-config-proposal module={module} id={id} outcome=success reason=target-undeclared");
+    }
+    Ok(retired)
 }
 
 pub(crate) fn refresh_interactables_for_convergence(
