@@ -4,7 +4,7 @@
   "title": "Appliance controls",
   "summary": "Keeps appliance maintenance controls available and current.",
   "category": "known-good",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Synchronize the sbin repository, converge its whole owned recursive shelf, and refresh the staff venv only when dependency bytes change, and link /usr/local/bin/agathodaimon to /usr/local/sbin/agathodaimon/cli.py.",
   "optional": false,
   "constants": {},
@@ -62,6 +62,17 @@
         "group": "root"
       },
       "on_failure": "stop"
+    },
+    {
+      "step_id": "settings-window-relaunch",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": ["/usr/local/sbin/agathodaimon/cli.py", "face", "settings-relaunch"],
+        "observation": {"kind": "module_changed_before_step"},
+        "timeout_secs": 60
+      }
     }
   ]
 }
