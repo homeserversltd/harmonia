@@ -695,15 +695,18 @@ pub(crate) fn compile_fragments_step(
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .ok_or("compile-fragments-target-parent-missing")?;
-            let parent_metadata = fs::symlink_metadata(parent).map_err(|error| {
-                format!("compile-fragments-target-parent-observe-failed {}: {error}", parent.display())
-            })?;
-            if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
-                return Err(format!("compile-fragments-target-parent-not-directory {}", parent.display()));
+            match fs::symlink_metadata(parent) {
+                Ok(parent_metadata) => {
+                    if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+                        return Err(format!("compile-fragments-target-parent-not-directory {}", parent.display()));
+                    }
+                    let (owner, group) =
+                        compile_fragments_declared_owner_group(step, &target, &parent_metadata)?;
+                    (Some(owner), Some(group))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+                Err(error) => return Err(format!("compile-fragments-target-parent-observe-failed {}: {error}", parent.display())),
             }
-            let (owner, group) =
-                compile_fragments_declared_owner_group(step, &target, &parent_metadata)?;
-            (Some(owner), Some(group))
         };
         let artifact_root = module_dir.join("compiled-fragments");
         crate::atoms::attest::prepare_receipt_parent(&artifact_root)?;
