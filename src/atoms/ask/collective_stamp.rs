@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-const MEMBERS: [&str; 9] = [
+const MEMBERS: [&str; 8] = [
     "harmonia",
     "caduceus",
     "sbin",
@@ -17,7 +17,6 @@ const MEMBERS: [&str; 9] = [
     "documentation",
     "keyman",
     "noesis",
-    "hermes-agent",
 ];
 const MAX_HTTP_BODY: usize = 2 * 1024 * 1024;
 const MAX_STAMP_BYTES: usize = 16 * 1024;
@@ -1058,8 +1057,10 @@ fn observe_fire_seal(
             };
         }
     };
-    // Fire-seal grant semantics are outside the collective-stamp change.
-    if parsed.ordered_terms.len() != MEMBERS.len() {
+    // The historical nine-term fire seal remains readable without re-signing.
+    if parsed.ordered_terms.len() != MEMBERS.len()
+        && parsed.ordered_terms.len() != MEMBERS.len() + 1
+    {
         return FireSealObservation {
             profile: profile.to_owned(),
             status: "UNKNOWN".into(),
@@ -1068,7 +1069,10 @@ fn observe_fire_seal(
             ..FireSealObservation::default()
         };
     }
-    if parsed.ordered_terms.iter().zip(MEMBERS).any(|((name, _), member)| name != member) {
+    if parsed.ordered_terms.iter().zip(MEMBERS).any(|((name, _), member)| name != member)
+        || (parsed.ordered_terms.len() > MEMBERS.len()
+            && parsed.ordered_terms[MEMBERS.len()].0 != "hermes-agent")
+    {
         return FireSealObservation {
             profile: profile.to_owned(),
             status: "INVALID".into(),
