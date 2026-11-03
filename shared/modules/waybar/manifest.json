@@ -4,7 +4,7 @@
   "title": "Status bar",
   "summary": "Shows status and quick controls in the bar along the bottom of the screen.",
   "category": "interactable",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "One shared owner status-bar job; TV keeps its face controls and HomeSI selects native desktop controls through its profile pool.",
   "optional": false,
   "constants": {
@@ -12,12 +12,16 @@
     "target_user": "owner",
     "expected_files": [
       ".config/systemd/user/hs-waybar.service",
+      ".config/systemd/user/hs-nm-applet.service",
+      ".config/systemd/user/hs-blueman-applet.service",
       ".config/waybar/style.css",
       ".config/waybar/badge-state.css",
       ".config/waybar/waybar.conf"
     ],
     "user_services": [
-      "hs-waybar.service"
+      "hs-waybar.service",
+      "hs-nm-applet.service",
+      "hs-blueman-applet.service"
     ],
 
     "receipt_schema": "harmonia.tv.waybar.v1",
@@ -33,6 +37,8 @@
         "target_root": "$constants.target_dir",
         "files": [
           ".config/systemd/user/hs-waybar.service",
+          ".config/systemd/user/hs-nm-applet.service",
+          ".config/systemd/user/hs-blueman-applet.service",
           ".config/waybar/style.css",
           ".config/waybar/badge-state.css"
         ],
