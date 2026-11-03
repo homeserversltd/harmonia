@@ -217,6 +217,16 @@ fn resolve_config_ancestor(manifest: &LadderManifest, source: &Path, target: &Pa
     Ok(ConfigAncestor::Unnamed)
 }
 
+fn is_legacy_config(item: &Interactable) -> bool {
+    !item.extra.contains_key("ancestor_sha") && !item.extra.contains_key("generated_config")
+}
+
+fn keeps_existing_nonlegacy(item: &Interactable) -> bool {
+    !item.extra.contains_key("ancestor_sha")
+        && item.extra.contains_key("generated_config")
+        && item.extra.get("generated_config").and_then(Value::as_bool) != Some(true)
+}
+
 pub(crate) fn config_offer_eligible(manifest: &LadderManifest, source: &Path, target: &Path) -> Result<bool, String> {
     let reference = read_regular_file_no_follow(source, "config-check-source")?;
     config_offer_eligible_bytes(manifest, source, target, &reference)
@@ -226,12 +236,14 @@ pub(crate) fn config_offer_eligible_bytes(manifest: &LadderManifest, source: &Pa
     let live = read_regular_file_no_follow(target, "config-check-target")?;
     if live == reference || interactables::normalized_line_score(&String::from_utf8_lossy(&live), &String::from_utf8_lossy(reference)) < 0.33 { return Ok(false); }
     let feed = interactables::load_feed(&crate::ledger::database_path())?;
-    let prior = feed.interactables.iter().find(|item| item.target_path.as_deref() == Some(target));
+    let is_prior = |item: &&Interactable| is_config_proposal_id(&item.id) && item.kind == "hard-stamp" && item.module_id == manifest.id && item.target_path.as_deref() == Some(target);
+    let prior = feed.interactables.iter().filter(is_prior).find(|item| is_legacy_config(item))
+        .or_else(|| feed.interactables.iter().find(is_prior));
 
     let prior_head = crate::bands::renew_self::content_prior_head();
     match resolve_config_ancestor(manifest, source, target, &live, reference, prior, prior_head.as_deref())? {
-        ConfigAncestor::Generated => Ok(true),
-        ConfigAncestor::Unnamed => Ok(prior.is_some()),
+        ConfigAncestor::Generated => Ok(!prior.is_some_and(is_legacy_config)),
+        ConfigAncestor::Unnamed => Ok(false),
         ConfigAncestor::Named { bytes, .. } => {
             if bytes == reference { return Ok(false); }
             let (merged, _) = land_config_slice(&bytes, &live, reference)?;
@@ -716,13 +728,15 @@ fn refresh_interactables_at_path_with_policy_and_step(
                 && item.module_id == manifest.id
                 && item.target_path.as_deref() == Some(entry.target.as_path())
         };
+        // A foreign kind may not be interpreted or retired as this module's config.
+        if feed.interactables.iter().any(|item| is_own_config(item) && item.kind != "hard-stamp") {
+            continue;
+        }
         if target_absent {
-            // An absent target has no owner file to recognize or change. Keep
-            // legacy rows, but retire offers this lane can identify as its own.
+            // Retire legacy rows; retain the existing treatment of explicitly
+            // marked nonlegacy rows whose generated_config is not true.
             for prior in feed.interactables.iter().filter(|item| is_own_config(item)) {
-                if !prior.extra.contains_key("ancestor_sha")
-                    && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true)
-                {
+                if keeps_existing_nonlegacy(prior) {
                     remember_config_proposal(&prior.id);
                 } else {
                     remove_ids.insert(prior.id.clone());
@@ -799,18 +813,31 @@ fn refresh_interactables_at_path_with_policy_and_step(
         let target_proposal_count = feed
             .interactables
             .iter()
-            .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
+            .filter(|item| is_own_config(item))
             .count();
         let prior_for_target = feed
             .interactables
             .iter()
-            .find(|e| e.target_path.as_deref() == Some(entry.target.as_path()))
+            .find(|item| is_own_config(item) && is_legacy_config(item))
+            .or_else(|| feed.interactables.iter().find(|item| is_own_config(item)))
             .cloned();
+        let mixed = feed.interactables.iter().any(|item| is_own_config(item) && is_legacy_config(item))
+            && feed.interactables.iter().any(|item| is_own_config(item) && !is_legacy_config(item));
+        let removable = |item: &Interactable| is_own_config(item) && (!mixed || is_legacy_config(item));
+        if mixed {
+            for prior in feed.interactables.iter().filter(|item| is_own_config(item) && !is_legacy_config(item)) {
+                remember_config_proposal(&prior.id);
+            }
+        }
         let prior_silence = prior_for_target
             .as_ref()
             .map(|e| (e.silenced, e.silenced_at.clone()))
             .unwrap_or((false, None));
         let prior_same_id = feed.interactables.iter().find(|item| item.id == id).cloned();
+        if prior_same_id.as_ref().is_some_and(|item| !is_own_config(item) || item.kind != "hard-stamp" || (mixed && !is_legacy_config(item))) {
+            // A feed key cannot replace another owner's or preserved marked row.
+            continue;
+        }
         let created_at = prior_same_id
             .as_ref()
             .map(|item| item.created_at.clone())
@@ -845,7 +872,9 @@ fn refresh_interactables_at_path_with_policy_and_step(
                 "reference_id": reference_source.clone()
             });
         if score < threshold {
-            if let Some(prior) = prior_for_target.as_ref().filter(|prior| !prior.extra.contains_key("ancestor_sha") && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true)) {
+            if let Some(prior) = prior_for_target.as_ref().filter(|prior| keeps_existing_nonlegacy(prior)) {
+                remove_ids.extend(feed.interactables.iter().filter(|item| is_own_config(item) && is_legacy_config(item)).map(|item| item.id.clone()));
+                feed.interactables.retain(|item| !(is_own_config(item) && is_legacy_config(item)));
                 remember_config_proposal(&prior.id);
                 continue;
             }
@@ -854,11 +883,9 @@ fn refresh_interactables_at_path_with_policy_and_step(
                 state.borrow_mut().insert(id.clone(), config_state.clone());
             });
             remove_ids.extend(
-                feed.interactables.iter()
-                    .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
-                    .map(|item| item.id.clone()),
+                feed.interactables.iter().filter(|item| removable(item)).map(|item| item.id.clone()),
             );
-            feed.interactables.retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
+            feed.interactables.retain(|item| !removable(item));
             recognitions.push(ConfigRecognition {
                 config_state: state.to_string(), score,
                 reference_id: Some(recognized.reference_id.clone()),
@@ -868,12 +895,9 @@ fn refresh_interactables_at_path_with_policy_and_step(
             });
             continue;
         }
-        if prior_for_target.as_ref().is_some_and(|prior|
-            !prior.extra.contains_key("ancestor_sha")
-                && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true))
-        {
-            let prior = prior_for_target.as_ref().expect("legacy row checked above");
-            // Preserve the old row even if a historical ancestor is now discoverable.
+        if let Some(prior) = prior_for_target.as_ref().filter(|prior| keeps_existing_nonlegacy(prior)) {
+            remove_ids.extend(feed.interactables.iter().filter(|item| is_own_config(item) && is_legacy_config(item)).map(|item| item.id.clone()));
+            feed.interactables.retain(|item| !(is_own_config(item) && is_legacy_config(item)));
             remember_config_proposal(&prior.id);
             recognitions.push(ConfigRecognition {
                 config_state: "interactable".to_string(), score,
@@ -890,18 +914,27 @@ fn refresh_interactables_at_path_with_policy_and_step(
             resolve_config_ancestor(manifest, &entry.source, &entry.target, &live_bytes, &reference_bytes, prior_for_target.as_ref(), request.prior_head())?
         };
         if matches!(resolved, ConfigAncestor::Unnamed) {
+            if prior_for_target.as_ref().is_some_and(is_legacy_config) {
+                remove_ids.extend(feed.interactables.iter().filter(|item| is_own_config(item) && is_legacy_config(item)).map(|item| item.id.clone()));
+                feed.interactables.retain(|item| !(is_own_config(item) && is_legacy_config(item)));
+            }
+            continue;
+        }
+        if matches!(resolved, ConfigAncestor::Generated) && prior_for_target.as_ref().is_some_and(is_legacy_config) {
+            remove_ids.extend(feed.interactables.iter().filter(|item| is_own_config(item) && is_legacy_config(item)).map(|item| item.id.clone()));
+            feed.interactables.retain(|item| !(is_own_config(item) && is_legacy_config(item)));
             continue;
         }
         if let ConfigAncestor::Named { bytes, .. } = &resolved {
             if bytes == &reference_bytes {
-                if let Some(prior) = prior_for_target.as_ref().filter(|prior| !prior.extra.contains_key("ancestor_sha")) {
+                if let Some(prior) = prior_for_target.as_ref().filter(|prior|
+                    !prior.extra.contains_key("ancestor_sha") && prior.extra.contains_key("generated_config"))
+                {
                     remember_config_proposal(&prior.id);
                     continue;
                 }
-                remove_ids.extend(feed.interactables.iter()
-                    .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
-                    .map(|item| item.id.clone()));
-                feed.interactables.retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
+                remove_ids.extend(feed.interactables.iter().filter(|item| removable(item)).map(|item| item.id.clone()));
+                feed.interactables.retain(|item| !removable(item));
                 continue;
             }
         }
@@ -922,16 +955,8 @@ fn refresh_interactables_at_path_with_policy_and_step(
             _ => (reference_bytes.clone(), None),
         };
         if !target_absent && proposal_bytes == live_bytes {
-            if let Some(prior) = prior_for_target.as_ref() {
-                if !prior.extra.contains_key("ancestor_sha")
-                    && prior.extra.get("generated_config").and_then(Value::as_bool) != Some(true)
-                {
-                    remember_config_proposal(&prior.id);
-                } else {
-                    remove_ids.insert(prior.id.clone());
-                    feed.interactables.retain(|item| item.id != prior.id);
-                }
-            }
+            remove_ids.extend(feed.interactables.iter().filter(|item| removable(item)).map(|item| item.id.clone()));
+            feed.interactables.retain(|item| !removable(item));
             continue;
         }
         CURRENT_CONFIG_RECOGNITIONS.with(|state| {
@@ -1012,15 +1037,14 @@ fn refresh_interactables_at_path_with_policy_and_step(
                 && serde_json::to_value(prior).ok() == serde_json::to_value(&refreshed).ok()
         });
         if !unchanged {
-            // A changed offer supersedes the prior set for this surface.
+            // A changed offer supersedes the applicable prior rows for this surface.
             remove_ids.extend(
                 feed.interactables
                     .iter()
-                    .filter(|item| item.target_path.as_deref() == Some(entry.target.as_path()))
+                    .filter(|item| removable(item))
                     .map(|item| item.id.clone()),
             );
-            feed.interactables
-                .retain(|item| item.target_path.as_deref() != Some(entry.target.as_path()));
+            feed.interactables.retain(|item| !removable(item));
             if let Some(prior) = &prior_same_id {
                 refreshed.available_at = prior.available_at.clone();
             }
