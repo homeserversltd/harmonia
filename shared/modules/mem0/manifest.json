@@ -1,0 +1,29 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "mem0",
+  "title": "Mem0 configuration",
+  "summary": "Offers local memory configuration defaults.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Offer configuration for the Mem0 plugin placed at birth.",
+  "optional": false,
+  "config_deploy": "interactable",
+  "constants": {},
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "mem0-configuration",
+      "tool": "files",
+      "permutation": "compile-fragments",
+      "args": {
+        "source_root": "files_root/config",
+        "target_path": "/home/hermes/.hermes/mem0.json",
+        "owner": "hermes",
+        "group": "hermes",
+        "mode": 384,
+        "backup_existing": true
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

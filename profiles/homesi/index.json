@@ -49,6 +49,7 @@
     "hermes-gateway-service",
     "hermes-dashboard-service",
     "qdrant",
+    "mem0",
     "model-shelf",
     "model-slots",
     "sunshine-homesi"

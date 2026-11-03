@@ -1,0 +1,32 @@
+{
+  "mode": "oss",
+  "user_id": "owner",
+  "agent_id": "hermes",
+  "oss": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "brain",
+        "openai_base_url": "http://127.0.0.1:8100/v1",
+        "api_key": "local-no-auth",
+        "is_reasoning_model": false
+      }
+    },
+    "embedder": {
+      "provider": "openai",
+      "config": {
+        "model": "embed",
+        "openai_base_url": "http://127.0.0.1:8101/v1",
+        "api_key": "local-no-auth",
+        "embedding_dims": 768
+      }
+    },
+    "vector_store": {
+      "provider": "qdrant",
+      "config": {
+        "url": "http://127.0.0.1:6333",
+        "collection_name": "mem0"
+      }
+    }
+  }
+}
