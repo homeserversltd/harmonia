@@ -127,6 +127,15 @@
               "remoteURL": ""
             },
             {
+              "name": "Woodpecker",
+              "description": "Household CI",
+              "services": ["woodpecker-server", "woodpecker-agent"],
+              "type": "systemd",
+              "port": 8000,
+              "localURL": "https://ci.home.arpa",
+              "remoteURL": ""
+            },
+            {
               "name": "Navidrome",
               "description": "Music server",
               "services": ["navidrome"],

@@ -1,0 +1,15 @@
+[Unit]
+Description=Woodpecker CI Server
+After=network.target forgejo.service
+
+[Service]
+Type=simple
+User=woodpecker
+Group=woodpecker
+WorkingDirectory=/var/lib/woodpecker
+EnvironmentFile=/etc/default/woodpecker
+ExecStart=/opt/woodpecker/woodpecker-server
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

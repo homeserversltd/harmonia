@@ -1,0 +1,55 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "woodpecker",
+  "title": "Household CI",
+  "summary": "Keeps the household's build service configured.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Maintain the birth-provided Woodpecker service units; the instance's credentials and runtime data remain birth-owned.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "woodpecker-server-binary-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {"program": "/usr/bin/test", "args": ["-x", "/opt/woodpecker/woodpecker-server"], "timeout_secs": 30},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "woodpecker-agent-binary-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {"program": "/usr/bin/test", "args": ["-x", "/opt/woodpecker/woodpecker-agent"], "timeout_secs": 30},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "woodpecker-instance-config-present",
+      "tool": "command",
+      "permutation": "capture",
+      "args": {"program": "/usr/bin/test", "args": ["-s", "/etc/default/woodpecker"], "timeout_secs": 30},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "woodpecker-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": ["etc/systemd/system/woodpecker-server.service", "etc/systemd/system/woodpecker-agent.service"],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "woodpecker-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "woodpecker-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {"timeout_secs": 30},
+      "on_failure": "stop"
+    }
+  ]
+}

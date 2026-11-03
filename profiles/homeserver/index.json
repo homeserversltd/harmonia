@@ -62,6 +62,7 @@
     "sudoers",
     "nas-units",
     "forgejo",
+    "woodpecker",
     "calibreweb",
     "filebrowser",
     "jellyfin",
