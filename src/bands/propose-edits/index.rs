@@ -298,13 +298,14 @@ fn is_config_proposal_id(id: &str) -> bool {
         .is_some_and(|key| key.len() == 16 && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
 }
 
-// Validated-symlink proposals carry a full SHA-256 rather than the
-// shortened file-proposal digest. Do not change file-only call sites.
-fn is_prunable_config_proposal_id(id: &str) -> bool {
-    id.strip_prefix("config-proposal-").is_some_and(|key| {
-        matches!(key.len(), 16 | 64)
-            && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+// Validated-symlink proposals carry a full SHA-256, as do command
+// proposals. Only the symlink marker makes a full digest a file row.
+fn is_prunable_config_proposal_id(entry: &interactables::Interactable) -> bool {
+    if is_config_proposal_id(&entry.id) { return true; }
+    entry.extra.get("validated_symlink").is_some_and(|marker| !marker.is_null())
+        && entry.id.strip_prefix("config-proposal-")
+        .is_some_and(|key| key.len() == 64
+            && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
 }
 
 fn read_regular_file_no_follow(path: &Path, context: &str) -> Result<Vec<u8>, String> {
@@ -734,22 +735,15 @@ fn prune_stale_interactables_with_observations(
                 retained.push(entry);
                 continue;
             }
-            let config_file_row = is_prunable_config_proposal_id(&entry.id) && entry.kind == "hard-stamp";
-            if config_file_row && !eligible_modules.contains(&entry.module_id) {
-                retained.push(entry);
-                continue;
-            }
-            let declaration = if config_file_row && active.contains(&entry.module_id) {
-                entry.target_path.as_deref().and_then(|target| {
+            let target_undeclared = entry.kind == "hard-stamp"
+                && is_prunable_config_proposal_id(&entry)
+                && active.contains(&entry.module_id)
+                && eligible_modules.contains(&entry.module_id)
+                && !recognized.contains(&entry.id)
+                && entry.target_path.as_deref().is_some_and(|target| {
                     projection.and_then(|view| module_declares_target(view, &entry.module_id, target))
-                })
-            } else { None };
-            if config_file_row && active.contains(&entry.module_id) && declaration.is_none() {
-                retained.push(entry);
-                continue;
-            }
-            let target_undeclared = config_file_row && active.contains(&entry.module_id)
-                && declaration == Some(false);
+                        == Some(false)
+                });
             if target_undeclared {
                 undeclared.push((entry.module_id.clone(), entry.id.clone()));
                 continue;

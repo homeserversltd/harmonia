@@ -815,10 +815,6 @@ pub(crate) fn run_profile_engine_with_projection(
                 propose_result?;
                 for (module, id) in prune_result? {
                     if let Some(result) = state.module_states.get_mut(&module) {
-                        result.changed = true;
-                        result.operation_count += 1;
-                        state.changed = true;
-                        state.operation_count += 1;
                         result.placements.push(serde_json::json!({
                             "step_id":"prune-stale-interactables", "tool":"interactables",
                             "band":"ProposeEdits", "module":module, "id":id,
