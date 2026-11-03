@@ -3271,32 +3271,19 @@ fn prove_launch_isolated(launcher: &Path, source_root: &Path) -> Result<(), Stri
         )?;
     }
     let owner = current_owner_context()?;
-    let internal_launcher = source_root.join(".hermes/bin/hermes");
-    let external_native_binding = if launcher == owner.home.join(".local/bin/hermes") {
-        let launcher_text = read_owner_file(launcher, &owner, 1024 * 1024, "isolated-launcher")
-            .ok()
-            .flatten()
-            .and_then(|bytes| String::from_utf8(bytes).ok());
-        launcher_text
-            .as_deref()
-            .zip(internal_launcher.to_str())
-            .is_some_and(|(text, internal_path)| {
-                text.lines().any(|line| {
-                    let mut words = line.split_whitespace();
-                    words.next() == Some("exec") && words.next() == Some(internal_path)
-                })
-            })
-    } else {
-        false
-    };
-    if launcher == internal_launcher || external_native_binding {
-        stage_isolated_native_dependency_selection(source_root, &hermes_home, &owner)?;
-    }
+    // Both the native launcher and the born venv fallback can enter Hermes's
+    // dependency manager. Preserve its committed selection when one exists;
+    // a legacy installation with no selection still gets the isolated probe.
+    stage_isolated_native_dependency_selection(source_root, &hermes_home, &owner)?;
     let output = run_owner_command(
         &launcher.to_string_lossy(),
         &["--version"],
         Some(source_root),
         BTreeMap::from([
+            (
+                "HOME".into(),
+                hermes_home.to_string_lossy().into_owned(),
+            ),
             (
                 "HERMES_HOME".into(),
                 hermes_home.to_string_lossy().into_owned(),
@@ -3347,13 +3334,14 @@ fn stage_isolated_native_dependency_selection(
     reject_symlink_components(&source_install)
         .map_err(|_| "isolated-native-install-state-not-real")?;
     let source_facts = source_install.join("facts.json");
-    let facts = read_owner_file(
+    let Some(facts) = read_owner_file(
         &source_facts,
         owner,
         4 * 1024 * 1024,
         "isolated-native-runtime-facts",
-    )?
-    .ok_or("isolated-native-runtime-facts-missing")?;
+    )? else {
+        return Ok(());
+    };
     let parsed = serde_json::from_slice::<Value>(&facts)
         .map_err(|_| "isolated-native-runtime-facts-invalid")?;
     let environment = parsed
