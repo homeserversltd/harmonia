@@ -15,6 +15,7 @@ pub(crate) enum ConfigPlaneDisposition {
     Converged,
     InteractableOffered,
     InteractableConverged,
+    OwnerKept,
     RefusedUnrecognized,
     InteractableExempt,
 }

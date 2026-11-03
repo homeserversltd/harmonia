@@ -858,6 +858,13 @@ fn refresh_interactables_at_path_with_policy_and_step(
             });
             continue;
         }
+        let owner_kept = || ConfigRecognition {
+            config_state: "owner-kept".to_string(), score,
+            reference_id: Some(recognized.reference_id.clone()),
+            nearest_reference: Some(reference_source.clone()), target: entry.target.clone(),
+            live_sha: live_sha.clone(), target_absent, reference_sha: reference_sha.clone(),
+            interactable_id: None,
+        };
         let resolved = if target_absent || compiled_artifact_authoritative {
             ConfigAncestor::Generated
         } else {
@@ -868,12 +875,14 @@ fn refresh_interactables_at_path_with_policy_and_step(
                 remove_ids.extend(feed.interactables.iter().filter(|item| is_own_config(item)).map(|item| item.id.clone()));
                 feed.interactables.retain(|item| !is_own_config(item));
             }
+            recognitions.push(owner_kept());
             continue;
         }
         if let ConfigAncestor::Named { bytes, .. } = &resolved {
             if bytes == &reference_bytes {
                 remove_ids.extend(feed.interactables.iter().filter(|item| is_own_config(item)).map(|item| item.id.clone()));
                 feed.interactables.retain(|item| !is_own_config(item));
+                recognitions.push(owner_kept());
                 continue;
             }
         }
@@ -896,6 +905,7 @@ fn refresh_interactables_at_path_with_policy_and_step(
         if !target_absent && proposal_bytes == live_bytes {
             remove_ids.extend(feed.interactables.iter().filter(|item| is_own_config(item)).map(|item| item.id.clone()));
             feed.interactables.retain(|item| !is_own_config(item));
+            recognitions.push(owner_kept());
             continue;
         }
         CURRENT_CONFIG_RECOGNITIONS.with(|state| {

@@ -13,6 +13,8 @@ The closed disposition vocabulary is:
 - `interactable-offered`: drift was recognized and presented without writing
   the ConfigPlane target;
 - `interactable-converged`: an interactable declaration is already converged;
+- `owner-kept`: the target drifts, but the slice law offers no change, so the
+  owner's file remains untouched;
 - `refused-unrecognized`: an observed target's recognition score was below the
   interactable threshold;
 - `interactable-exempt`: the declared suppression policy exempted the surface.

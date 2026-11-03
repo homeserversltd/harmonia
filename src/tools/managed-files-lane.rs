@@ -777,6 +777,11 @@ pub(crate) fn compile_fragments_step(
             .any(|recognition| recognition.config_state == "interactable")
         {
             "interactable"
+        } else if recognitions
+            .iter()
+            .any(|recognition| recognition.config_state == "owner-kept")
+        {
+            "owner-kept"
         } else {
             "converged"
         };
@@ -979,6 +984,8 @@ fn config_plane_witness(
         crate::atoms::attest::ConfigPlaneDisposition::RefusedUnrecognized
     } else if recognition.is_some_and(|record| record.config_state == "interactable") {
         crate::atoms::attest::ConfigPlaneDisposition::InteractableOffered
+    } else if recognition.is_some_and(|record| record.config_state == "owner-kept") {
+        crate::atoms::attest::ConfigPlaneDisposition::OwnerKept
     } else {
         let converged = entry.source_exists
             && entry.content_equal_after
@@ -3138,8 +3145,10 @@ pub(crate) fn files_converge_step(
             .any(|r| r.config_state == "refused-unrecognized")
         {
             "refused-unrecognized"
-        } else if !config_recognitions.is_empty() {
+        } else if config_recognitions.iter().any(|r| r.config_state == "interactable") {
             "interactable"
+        } else if config_recognitions.iter().any(|r| r.config_state == "owner-kept") {
+            "owner-kept"
         } else {
             "converged"
         };
