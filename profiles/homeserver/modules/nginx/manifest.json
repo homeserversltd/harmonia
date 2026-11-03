@@ -253,7 +253,9 @@
         "target": "/etc/nginx/sites-enabled/homeserver-woodpecker",
         "validator_program": "/usr/sbin/nginx",
         "validator_args": ["-t"],
-        "timeout_secs": 30
+        "timeout_secs": 30,
+        "reload_program": "/usr/sbin/nginx",
+        "reload_args": ["-s", "reload"]
       },
       "on_failure": "stop"
     },
