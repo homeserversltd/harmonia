@@ -4,18 +4,14 @@
   "title": "Assistant settings",
   "summary": "Keeps the existing assistant launcher and tools available with automatic actions disabled.",
   "category": "known-good",
-  "version": "1.0.0",
-  "description": "Bounded existing-runtime upkeep only: require the born Hermes source and venv launcher to exist, converge declared dependencies, and maintain a platform-selected wrapper with yolo disabled.",
+  "version": "1.0.1",
+  "description": "Check the born Hermes source and venv launcher and maintain a platform-selected wrapper with yolo disabled; Hermes's own updater maintains its dependencies.",
   "optional": false,
   "constants": {
     "source_root": "/opt/hermes/hermes-agent",
     "hermes_home": "/home/owner/.hermes",
     "venv": "/opt/hermes/venv",
-    "launcher": "/opt/hermes/venv/bin/hermes",
-    "source_patterns": [
-      "requirements*.txt",
-      "pyproject.toml"
-    ]
+    "launcher": "/opt/hermes/venv/bin/hermes"
   },
   "files_root": "files_root",
   "ladder": [
@@ -35,18 +31,6 @@
       "args": {
         "executable": "$constants.launcher",
         "receipt_label": "hermes-venv-launcher"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "hermes-existing-venv-dependencies",
-      "tool": "venv",
-      "permutation": "converge",
-      "args": {
-        "venv": "$constants.venv",
-        "source_root": "$constants.source_root",
-        "source_patterns": "$constants.source_patterns",
-        "editable": true
       },
       "on_failure": "stop"
     },
