@@ -757,26 +757,60 @@ fn prepare_config_act_continuation(
         .iter()
         .position(|step| step.step_id == target_step_id)
         .ok_or("config-act-target-step-binding-stale")?;
-    let continuation_steps = steps
-        .into_iter()
-        .skip(target_index + 1)
-        .filter(|step| {
-            step.tool == "command"
-                && step.permutation == "act"
-                && step
-                    .args
-                    .get("observation")
-                    .and_then(Value::as_object)
-                    .and_then(|observation| observation.get("kind"))
-                    .and_then(Value::as_str)
-                    == Some("module_changed_before_step")
-        })
-        .collect();
+    let routines = crate::tools::routine::project_manifest_routines(&manifest, &steps)?;
+    let mut after_target = Vec::new();
+    for (index, step) in steps.into_iter().enumerate().skip(target_index) {
+        if let Some(children) = routines.get(&step.step_id) {
+            let children: Vec<_> = children.iter().map(|child| crate::tools::ladder::ValidatedStep {
+                step_id: child.name.clone(), tool: child.tool.clone(),
+                permutation: child.permutation.clone(), args: child.args.clone(),
+                on_failure: child.on_failure,
+            }).collect();
+            let start = if index == target_index {
+                let target = item.target_path.as_deref().ok_or("hard-stamp-target-missing")?;
+                let mut owners = Vec::new();
+                for (child_index, child) in children.iter().enumerate() {
+                    if config_step_owns_target(child, &manifest, target)? {
+                        owners.push(child_index);
+                    }
+                }
+                if owners.len() != 1 { return Err("config-act-target-owner-unresolved".into()); }
+                owners[0] + 1
+            } else { 0 };
+            after_target.extend(children.into_iter().skip(start));
+        } else if index > target_index {
+            after_target.push(step);
+        }
+    }
+    let continuation_steps: Vec<_> = after_target.into_iter().filter(|step| {
+        (step.tool == "systemd" && matches!(step.permutation.as_str(),
+            "daemon-reload" | "restart" | "user-daemon-reload" | "user-restart"))
+        || (step.tool == "command"
+            && step.permutation == "act"
+            && step.args.get("observation").and_then(Value::as_object)
+                .and_then(|observation| observation.get("kind"))
+                .and_then(Value::as_str) == Some("module_changed_before_step"))
+    }).collect();
+    if continuation_steps.iter().any(|step| step.args.values().any(config_act_has_routine_reference)) {
+        return Err("config-act-routine-context-unavailable".into());
+    }
     Ok(Some(ConfigActContinuation {
         manifest,
         steps: continuation_steps,
         active_lane: binding.get("active_lane").and_then(Value::as_str).map(str::to_owned),
     }))
+}
+
+fn config_act_has_routine_reference(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            (map.get("from").and_then(Value::as_str).is_some()
+                && map.keys().all(|key| key == "from" || key == "default"))
+                || map.values().any(config_act_has_routine_reference)
+        }
+        Value::Array(items) => items.iter().any(config_act_has_routine_reference),
+        _ => false,
+    }
 }
 
 /// Resolve old rows from current source rather than silently accepting an
@@ -892,7 +926,11 @@ fn run_config_act_continuation(
     let mut receipts = Vec::new();
     let mut failed_step = None;
     for step in &continuation.steps {
-        let precondition = match crate::tools::routine::command_precondition(&step.args) {
+        let precondition = match if step.tool == "command" {
+            crate::tools::routine::command_precondition(&step.args)
+        } else {
+            Ok(None)
+        } {
             Ok(precondition) => precondition,
             Err(error) => {
                 receipts.push(serde_json::json!({"step_id":step.step_id,"ok":false,"error":error}));
@@ -923,12 +961,32 @@ fn run_config_act_continuation(
                 break;
             }
         }
-        let result = crate::atoms::command::execute_validated_step_after_config_acceptance(
-            step,
-            &continuation.manifest.base_dir,
-            continuation.active_lane.as_deref(),
-            invocation,
-        );
+        let result = if step.tool == "systemd" {
+            crate::atoms::systemd::execute_after_config_acceptance(step, invocation)
+                .map(|outcome| {
+                    let mut receipt = serde_json::json!({
+                        "step_id": step.step_id, "tool": step.tool,
+                        "permutation": step.permutation, "ok": outcome.ok,
+                        "changed": outcome.changed, "skipped": outcome.skipped,
+                        "executed": !outcome.skipped && outcome.command.is_some(), "message": outcome.message,
+                    });
+                    if !outcome.ok {
+                        if let Some(command) = &outcome.command {
+                            receipt["exit_code"] = serde_json::json!(command.code);
+                            let signal: String = command.stderr.lines().next().unwrap_or("").chars().take(512).collect();
+                            receipt["first_missing_signal"] = serde_json::json!(
+                                if signal.is_empty() { "systemd-action-failed" } else { &signal }
+                            );
+                        }
+                    }
+                    (outcome, receipt)
+                })
+        } else {
+            crate::atoms::command::execute_validated_step_after_config_acceptance(
+                step, &continuation.manifest.base_dir,
+                continuation.active_lane.as_deref(), invocation,
+            )
+        };
         let (outcome, mut receipt) = match result {
             Ok(result) => result,
             Err(error) => {

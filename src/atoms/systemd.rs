@@ -646,6 +646,7 @@ fn run_restart(
         service_material_changed,
         invocation,
         false,
+        true,
     )
 }
 
@@ -674,6 +675,7 @@ pub(crate) fn run_action(
         service_material_changed,
         invocation,
         false,
+        true,
     )
 }
 
@@ -686,7 +688,7 @@ pub(crate) fn run_release_account_restart(
 ) -> Result<OperationOutcome, String> {
     run_action_with_material_gate(
         receipt_dir, name, "restart", Some(service), true, Some(target_user),
-        30, true, true, Some(invocation), true,
+        30, true, true, Some(invocation), true, true,
     )
 }
 
@@ -703,6 +705,7 @@ fn run_action_with_material_gate(
     service_material_changed: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     direct_account: bool,
+    persist_receipt: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     // Edge-trigger actions are consumed only within this comparison run.
@@ -847,6 +850,7 @@ fn run_action_with_material_gate(
     ) {
         Ok(run) => run,
         Err(error) => {
+            if !persist_receipt { return Err(error); }
             let command = CmdResult {
                 ok: false,
                 code: -1,
@@ -931,6 +935,7 @@ fn run_action_with_material_gate(
         stdout: outcome.message.clone(),
         stderr: String::new(),
     });
+    if !persist_receipt { return Ok(outcome); }
     attest_change_unit::write_systemd_receipt(
         receipt_dir,
         name,
@@ -989,6 +994,31 @@ fn run_action_with_material_gate(
         &command,
     )?;
     Ok(outcome)
+}
+
+pub(crate) fn execute_after_config_acceptance(
+    step: &crate::tools::ladder::ValidatedStep,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> Result<OperationOutcome, String> {
+    if step.tool != "systemd" || !matches!(step.permutation.as_str(),
+        "daemon-reload" | "restart" | "user-daemon-reload" | "user-restart")
+    {
+        return Err("config-acceptance-systemd-step-binding-invalid".into());
+    }
+    let user = step.permutation.starts_with("user-");
+    let action = step.permutation.strip_prefix("user-").unwrap_or(&step.permutation);
+    let service = step.args.get("service").and_then(serde_json::Value::as_str);
+    if let Some(unit) = service {
+        if !is_removable_unit_basename(unit) {
+            return Err(format!("systemd-unit-name-invalid-{unit}"));
+        }
+    }
+    run_action_with_material_gate(
+        Path::new("."), &step.step_id, action, service, user,
+        step.args.get("user").and_then(serde_json::Value::as_str),
+        step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(30),
+        true, true, invocation, false, false,
+    )
 }
 
 pub(crate) fn execute_validated_step(
