@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-const MEMBERS: [&str; 8] = [
+const MEMBERS: [&str; 9] = [
     "harmonia",
     "caduceus",
     "sbin",
@@ -17,6 +17,7 @@ const MEMBERS: [&str; 8] = [
     "documentation",
     "keyman",
     "noesis",
+    "hermes-agent",
 ];
 const MAX_HTTP_BODY: usize = 2 * 1024 * 1024;
 const MAX_STAMP_BYTES: usize = 16 * 1024;
@@ -80,7 +81,8 @@ pub(crate) struct StampObservation {
 
 impl StampObservation {
     pub(crate) fn stamp_target(&self, member: &str) -> Option<&str> {
-        if self.verdict.as_deref() != Some("VALID")
+        if member == MEMBERS[8]
+            || self.verdict.as_deref() != Some("VALID")
             || !self
                 .declared_members
                 .iter()
@@ -97,7 +99,8 @@ impl StampObservation {
 
     pub(crate) fn seal_target(&self, member: &str) -> Option<&str> {
         let seal = self.fire_seal.as_ref()?;
-        if seal.status != "VALID"
+        if member == MEMBERS[8]
+            || seal.status != "VALID"
             || !self
                 .declared_members
                 .iter()
@@ -1057,9 +1060,9 @@ fn observe_fire_seal(
             };
         }
     };
-    // The historical nine-term fire seal remains readable without re-signing.
-    if parsed.ordered_terms.len() != MEMBERS.len()
-        && parsed.ordered_terms.len() != MEMBERS.len() + 1
+    // Both eight-term and nine-term fire seals remain readable without re-signing.
+    if parsed.ordered_terms.len() != MEMBERS.len() - 1
+        && parsed.ordered_terms.len() != MEMBERS.len()
     {
         return FireSealObservation {
             profile: profile.to_owned(),
@@ -1069,10 +1072,7 @@ fn observe_fire_seal(
             ..FireSealObservation::default()
         };
     }
-    if parsed.ordered_terms.iter().zip(MEMBERS).any(|((name, _), member)| name != member)
-        || (parsed.ordered_terms.len() > MEMBERS.len()
-            && parsed.ordered_terms[MEMBERS.len()].0 != "hermes-agent")
-    {
+    if parsed.ordered_terms.iter().zip(MEMBERS).any(|((name, _), member)| name != member) {
         return FireSealObservation {
             profile: profile.to_owned(),
             status: "INVALID".into(),
@@ -1754,7 +1754,10 @@ fn parse_collective_stamp(bytes: &[u8]) -> Result<ParsedStamp, (String, String)>
     if parsed.stamp_sha != expected_band {
         return Err(("INVALID".into(), "wukong-staff-stamp-band-invalid".into()));
     }
-    if MEMBERS.iter().any(|member| !parsed.terms.contains_key(*member)) {
+    // Signed historical prefixes predate later members; future terms stay carried.
+    let historical_prefix = (5..=MEMBERS.len()).contains(&parsed.ordered_terms.len())
+        && parsed.ordered_terms.iter().zip(MEMBERS).all(|((name, _), member)| name == member);
+    if !historical_prefix && MEMBERS[..MEMBERS.len() - 1].iter().any(|member| !parsed.terms.contains_key(*member)) {
         return Err(("UNKNOWN".into(), "wukong-staff-stamp-member-missing".into()));
     }
     Ok(parsed)
