@@ -3,7 +3,7 @@ Description=Forgejo Git Server
 After=network.target postgresql.service
 
 [Service]
-Type=simple
+Type=notify
 User=git
 Group=git
 WorkingDirectory=/opt/forgejo
