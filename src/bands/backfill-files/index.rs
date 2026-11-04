@@ -87,8 +87,8 @@ pub(crate) fn execute_files(
             }
         }
         result.operation_count += 1;
-        let outcome = if step.tool == "routine" {
-            crate::tools::routine::execute_routine(
+        let execution = if step.tool == "routine" {
+            let outcome = crate::tools::routine::execute_routine(
                 &step,
                 manifest,
                 module_dir,
@@ -102,19 +102,29 @@ pub(crate) fn execute_files(
                     .get(&step.step_id)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
-            )?
+            )?;
+            crate::tools::after_write::run_on_outcome(
+                &step,
+                outcome,
+                mode_apply,
+                false,
+                invocation,
+            )
         } else {
-            crate::tools::routine::execute_validated_step(
+            crate::tools::routine::execute_validated_step_with_after_write(
                 &step,
                 manifest,
+                module_dir,
                 module_dir,
                 software_authorization,
                 package_authority,
                 module_changed_before_step || result.changed,
+                mode_apply,
                 invocation,
                 None,
             )?
         };
+        let outcome = execution.outcome;
         if step.tool == "routine" {
             let routine = routine_states
                 .get(step.step_id.as_str())
@@ -136,11 +146,19 @@ pub(crate) fn execute_files(
                         .get("state")
                         .and_then(Value::as_str)
                         .unwrap_or("failed");
-                    result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":format!("{:?}",band),"status":status,"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
+                    let mut placement = serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":format!("{:?}",band),"status":status,"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id});
+                    if let Some(entries) = receipt.get("after_write") {
+                        placement["after_write"] = entries.clone();
+                    }
+                    result.placements.push(placement);
                 }
             }
         } else {
-            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}", band),"status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id}));
+            let mut placement = serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":format!("{:?}", band),"status":if outcome.ok {"completed"} else {"failed"},"module":manifest.id});
+            if !execution.after_write.is_empty() {
+                placement["after_write"] = serde_json::json!(execution.after_write);
+            }
+            result.placements.push(placement);
         }
         result.changed |= outcome.changed;
         if !outcome.ok {
@@ -276,6 +294,11 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                         args.insert(key.into(), value.clone());
                     }
                 }
+                for field in ["after_write", "no_running_reader"] {
+                    if let Some(value) = original.args.get(field) {
+                        args.insert(field.into(), value.clone());
+                    }
+                }
                 replacement.push(RoutineStep {
                     name: format!("managed-place-{ordinal}"),
                     tool: "place-file".into(),
@@ -392,6 +415,11 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) -> Resu
                     }
                 }
                 _ => unreachable!(),
+            }
+            for field in ["after_write", "no_running_reader"] {
+                if let Some(value) = original.args.get(field) {
+                    args.insert(field.into(), value.clone());
+                }
             }
             replacement.push(RoutineStep {
                 name: format!("managed-{kind}-{ordinal}"),

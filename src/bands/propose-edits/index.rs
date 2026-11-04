@@ -1513,8 +1513,8 @@ pub(crate) fn execute_manifest_band(
             }
         }
         result.operation_count += 1;
-        let outcome = if step.tool == "routine" {
-            crate::tools::routine::execute_routine(
+        let execution = if step.tool == "routine" {
+            let outcome = crate::tools::routine::execute_routine(
                 step,
                 manifest,
                 module_dir,
@@ -1528,9 +1528,16 @@ pub(crate) fn execute_manifest_band(
                     .get(&step.step_id)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
-            )?
+            )?;
+            crate::tools::after_write::run_on_outcome(
+                step,
+                outcome,
+                mode_apply,
+                false,
+                key,
+            )
         } else {
-            crate::tools::routine::execute_validated_step_with_source(
+            crate::tools::routine::execute_validated_step_with_after_write(
                 step,
                 manifest,
                 module_dir,
@@ -1538,10 +1545,12 @@ pub(crate) fn execute_manifest_band(
                 auth,
                 pa,
                 module_changed_before_band || result.changed,
+                mode_apply,
                 key,
                 active_lane,
             )?
         };
+        let outcome = execution.outcome;
         if step.tool == "routine" {
             let routine = routine_states
                 .get(&step.step_id)
@@ -1559,10 +1568,18 @@ pub(crate) fn execute_manifest_band(
                     .iter()
                     .find(|r| r.get("name").and_then(Value::as_str) == Some(child.name.as_str()))
                     .ok_or_else(|| format!("routine-child-receipt-missing-{}", child.name))?;
-                result.placements.push(serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":"ProposeEdits","status":receipt.get("state").and_then(Value::as_str).unwrap_or("failed"),"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id}));
+                let mut placement = serde_json::json!({"step_id":child.name,"tool":child.tool,"permutation":child.permutation,"band":"ProposeEdits","status":receipt.get("state").and_then(Value::as_str).unwrap_or("failed"),"ok":receipt.get("ok").and_then(Value::as_bool).unwrap_or(false),"changed":receipt.get("changed").and_then(Value::as_bool).unwrap_or(false),"module":manifest.id,"routine":step.step_id});
+                if let Some(entries) = receipt.get("after_write") {
+                    placement["after_write"] = entries.clone();
+                }
+                result.placements.push(placement);
             }
         } else {
-            result.placements.push(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"ProposeEdits","status":if outcome.skipped {"skipped"} else if outcome.ok {"completed"} else {"failed"},"ok":outcome.ok,"changed":outcome.changed,"skipped":outcome.skipped,"message":outcome.message,"command":outcome.command,"module":manifest.id}));
+            let mut placement = serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"ProposeEdits","status":if outcome.skipped {"skipped"} else if outcome.ok {"completed"} else {"failed"},"ok":outcome.ok,"changed":outcome.changed,"skipped":outcome.skipped,"message":outcome.message,"command":outcome.command,"module":manifest.id});
+            if !execution.after_write.is_empty() {
+                placement["after_write"] = serde_json::json!(execution.after_write);
+            }
+            result.placements.push(placement);
         }
         result.changed |= outcome.changed;
         if !outcome.ok {

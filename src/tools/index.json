@@ -60,7 +60,9 @@
               "name": "bearer",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "PullSource"
         }
@@ -109,7 +111,9 @@
               "name": "bearer",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "RatchetBinaries"
         }
@@ -163,7 +167,9 @@
               "name": "group",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -195,7 +201,9 @@
               "name": "gid",
               "kind": "integer",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "RatchetBinaries"
         },
@@ -227,7 +235,9 @@
               "name": "gid",
               "kind": "integer",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "RestartServices"
         }
@@ -266,7 +276,9 @@
               "name": "gid",
               "kind": "integer",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         }
@@ -563,7 +575,9 @@
             {"name": "target", "kind": "string", "required": true},
             {"name": "key", "kind": "string", "required": true},
             {"name": "value", "kind": "json", "required": false},
-            {"name": "receipt_name", "kind": "string", "required": true}
+            {"name": "receipt_name", "kind": "string", "required": true},
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "ProposeEdits"
         },
@@ -591,7 +605,9 @@
               "name": "group",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -603,7 +619,9 @@
               "name": "files",
               "kind": "json",
               "required": true
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -655,7 +673,9 @@
               "name": "group",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -668,7 +688,9 @@
             {"name": "mode", "kind": "integer", "required": false},
             {"name": "uid", "kind": "integer", "required": false},
             {"name": "gid", "kind": "integer", "required": false},
-            {"name": "backup_existing", "kind": "bool", "required": true}
+            {"name": "backup_existing", "kind": "bool", "required": true},
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -695,7 +717,9 @@
               "name": "owner",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -712,7 +736,9 @@
               "name": "paths",
               "kind": "string_array",
               "required": true
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -764,7 +790,9 @@
               "name": "group",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -821,7 +849,9 @@
               "name": "receipt_name",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -903,7 +933,9 @@
               "name": "owned_recursive",
               "kind": "bool",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -962,7 +994,9 @@
               "name": "group",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -1004,7 +1038,9 @@
               "name": "timeout_secs",
               "kind": "integer",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         },
@@ -1051,7 +1087,9 @@
               "name": "timeout_secs",
               "kind": "integer",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "BackfillFiles"
         }
@@ -1080,7 +1118,9 @@
               "name": "bearer",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "PullSource"
         }
@@ -1097,7 +1137,9 @@
           "args": [
             {"name": "theme_source_dir", "kind": "string", "required": true},
             {"name": "theme_name", "kind": "string", "required": false},
-            {"name": "target_root", "kind": "string", "required": false}
+            {"name": "target_root", "kind": "string", "required": false},
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "ProposeEdits"
         }
@@ -1168,6 +1210,8 @@
           "name": "set-timezone",
           "description": "validate and apply one IANA timezone through the selected backend",
           "args": [
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false},
             {
               "name": "backend",
               "kind": "string",
@@ -1195,6 +1239,8 @@
           "name": "watch-and-set",
           "description": "read a fresh resolver fact and apply its validated timezone or preserve the local clock",
           "args": [
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false},
             {
               "name": "backend",
               "kind": "string",
@@ -1347,7 +1393,9 @@
               "name": "build_environment",
               "kind": "json",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": null
         }
@@ -1361,7 +1409,7 @@
         {
           "name": "model-slots",
           "description": "converge the one model-slot template and brain/embed/ear instances from the read-only local_ai declaration",
-          "args": [],
+          "args": [{"name": "after_write", "kind": "json", "required": false}, {"name": "no_running_reader", "kind": "string", "required": false}],
           "placement": "RestartServices"
         },
         {
@@ -1669,7 +1717,9 @@
               "name": "editable",
               "kind": "bool",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "InstallPackages"
         }
@@ -1718,7 +1768,9 @@
               "name": "pinned_release_sha",
               "kind": "string",
               "required": false
-            }
+            },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "RatchetBinaries"
         }
@@ -1742,7 +1794,9 @@
             {"name": "service_user", "kind": "string", "required": false},
             {"name": "release_tag", "kind": "string", "required": false},
             {"name": "archive_sha256", "kind": "string", "required": false},
-            {"name": "binary_sha256", "kind": "string", "required": false}
+            {"name": "binary_sha256", "kind": "string", "required": false},
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "RatchetBinaries"
         }
@@ -1880,7 +1934,9 @@
             { "name": "launcher", "kind": "string", "required": true },
             { "name": "upstream_url", "kind": "string", "required": false },
             { "name": "branch", "kind": "string", "required": false },
-            { "name": "daily_window", "kind": "string", "required": false }
+            { "name": "daily_window", "kind": "string", "required": false },
+            {"name": "after_write", "kind": "json", "required": false},
+            {"name": "no_running_reader", "kind": "string", "required": false}
           ],
           "placement": "PullSource"
         }

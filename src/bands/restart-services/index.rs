@@ -321,6 +321,11 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                                 .cloned()
                                 .unwrap_or_else(|| Value::Array(Vec::new())),
                         );
+                        for field in ["after_write", "no_running_reader"] {
+                            if let Some(value) = args.get(field) {
+                                c.insert(field.into(), value.clone());
+                            }
+                        }
 
                         c
                     }
@@ -422,6 +427,10 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                         c
                     }
                 };
+                if name != "managed-files" {
+                    child_args.remove("after_write");
+                    child_args.remove("no_running_reader");
+                }
                 if name == "build"
                     && tool == "fetch-artifact"
                     && args.contains_key("profile_axis")
@@ -550,8 +559,8 @@ pub(crate) fn execute_manifest_band(
             }
         }
         result.operation_count += 1;
-        let outcome = if step.tool == "routine" {
-            crate::tools::routine::execute_routine(
+        let execution = if step.tool == "routine" {
+            let outcome = crate::tools::routine::execute_routine(
                 step,
                 manifest,
                 module_dir,
@@ -565,9 +574,16 @@ pub(crate) fn execute_manifest_band(
                     .get(&step.step_id)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
-            )?
+            )?;
+            crate::tools::after_write::run_on_outcome(
+                step,
+                outcome,
+                mode_apply,
+                false,
+                key,
+            )
         } else {
-            crate::tools::routine::execute_validated_step_with_source(
+            crate::tools::routine::execute_validated_step_with_after_write(
                 step,
                 manifest,
                 module_dir,
@@ -575,10 +591,12 @@ pub(crate) fn execute_manifest_band(
                 auth,
                 pa,
                 module_changed_before_band,
+                mode_apply,
                 key,
                 None,
             )?
         };
+        let outcome = execution.outcome;
         if step.tool == "routine"
             && outcome.ok
             && projected_routines
@@ -622,6 +640,9 @@ pub(crate) fn execute_manifest_band(
                     placement["evidence"] = receipt["evidence"].clone();
                     placement["skipped"] = Value::Bool(true);
                 }
+                if let Some(entries) = receipt.get("after_write") {
+                    placement["after_write"] = entries.clone();
+                }
                 result.placements.push(placement);
             }
         } else {
@@ -650,6 +671,9 @@ pub(crate) fn execute_manifest_band(
                 placement["reason"] = serde_json::json!("systemd-unit-condition-unmet");
                 placement["evidence"] =
                     condition_skip_placement_evidence(module_dir, &step.step_id)?;
+            }
+            if !execution.after_write.is_empty() {
+                placement["after_write"] = serde_json::json!(execution.after_write);
             }
             result.placements.push(placement);
         }

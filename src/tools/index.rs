@@ -266,6 +266,7 @@ pub(crate) mod make_symlink;
 pub use crate::atoms::package;
 pub(crate) mod ladder;
 pub(crate) mod routine;
+pub(crate) mod after_write;
 #[path = "hermes-maintenance/index.rs"]
 pub(crate) mod hermes_maintenance;
 #[path = "hermes-appearance/index.rs"]

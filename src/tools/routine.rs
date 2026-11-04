@@ -309,6 +309,11 @@ pub(crate) fn validate_tool_semantics(
     permutation: &str,
     args: &BTreeMap<String, Value>,
 ) -> Result<(), LadderValidationError> {
+    crate::tools::after_write::validate_step_args(step_id, tool, permutation, args)
+        .map_err(|defect| LadderValidationError {
+            step_id: step_id.into(),
+            defect,
+        })?;
     match (tool, permutation) {
         ("systemd", "enable-first-present-now") => tools::systemd::validate_candidate_units(args)
             .map_err(|defect| LadderValidationError {
@@ -831,6 +836,38 @@ pub(crate) fn execute_validated_step_with_source(
         )),
     }
 }
+pub(crate) fn execute_validated_step_with_after_write(
+    step: &ValidatedStep,
+    manifest: &LadderManifest,
+    module_dir: &Path,
+    source_module_dir: &Path,
+    software_authorization: Option<&crate::SoftwareApplyAuthorization>,
+    package_authority: Option<&crate::PackageAuthority>,
+    module_changed_before_step: bool,
+    apply: bool,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    active_lane: Option<&str>,
+) -> Result<crate::tools::after_write::StepExecution, String> {
+    let outcome = execute_validated_step_with_source(
+        step,
+        manifest,
+        module_dir,
+        source_module_dir,
+        software_authorization,
+        package_authority,
+        module_changed_before_step,
+        invocation,
+        active_lane,
+    )?;
+    Ok(crate::tools::after_write::run_on_outcome(
+        step,
+        outcome,
+        apply,
+        false,
+        invocation,
+    ))
+}
+
 fn resolve_routine_value(
     value: &Value,
     context: &BTreeMap<String, Value>,
@@ -1167,6 +1204,7 @@ pub(crate) fn execute_routine(
         } else {
             blocked_hyalos_intent.clone()
         };
+        let mut after_write_entries = Vec::new();
         let (status, child_ok, child_changed, outputs, extra) = if let Some(reference) = missing {
             let signal = routine_failure_signal(
                 manifest,
@@ -1187,6 +1225,55 @@ pub(crate) fn execute_routine(
         } else {
             args.remove("hyalos_kind");
             args.remove("hyalos_correlation_id");
+            if child.tool == "systemd"
+                && matches!(
+                    child.permutation.as_str(),
+                    "daemon-reload" | "user-daemon-reload" | "restart" | "user-restart"
+                )
+            {
+                let managed_entries = state
+                    .children
+                    .iter()
+                    .filter(|receipt| {
+                        receipt
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(is_managed_child_name)
+                    })
+                    .filter_map(|receipt| receipt.get("after_write").and_then(Value::as_array))
+                    .flatten()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if crate::tools::after_write::receipt_covers_systemd_step(
+                    &managed_entries,
+                    &child.tool,
+                    &child.permutation,
+                    &args,
+                ) {
+                    args.insert("managed_files_changed".into(), Value::Bool(false));
+                }
+                if matches!(child.permutation.as_str(), "restart" | "user-restart") {
+                    let binary_entries = state
+                        .children
+                        .iter()
+                        .filter(|receipt| {
+                            receipt.get("name").and_then(Value::as_str)
+                                == Some("binary-install")
+                        })
+                        .filter_map(|receipt| receipt.get("after_write").and_then(Value::as_array))
+                        .flatten()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if crate::tools::after_write::receipt_covers_systemd_restart_step(
+                        &binary_entries,
+                        &child.tool,
+                        &child.permutation,
+                        &args,
+                    ) {
+                        args.insert("binary_changed".into(), Value::Bool(false));
+                    }
+                }
+            }
             let child_step = ValidatedStep {
                 step_id: child.name.clone(),
                 tool: child.tool.clone(),
@@ -1242,6 +1329,15 @@ pub(crate) fn execute_routine(
                 )
             }) {
                 Ok((outcome, outputs)) => {
+                    let execution = crate::tools::after_write::run_on_outcome(
+                        &child_step,
+                        outcome,
+                        apply,
+                        false,
+                        invocation,
+                    );
+                    after_write_entries = execution.after_write;
+                    let outcome = execution.outcome;
                     let advertised_exhaustion = matches!(child.tool.as_str(), "fetch-artifact" | "release-binary")
                         && outcome
                             .message
@@ -1431,6 +1527,9 @@ pub(crate) fn execute_routine(
         }
         let receipts = collect_routine_receipts(&child_dir)?;
         let mut receipt = json!({"schema":"harmonia.routine.child-receipt.v1","name":child.name,"tool":child.tool,"state":status,"ok":child_ok,"changed":child_changed,"outputs":outputs,"receipts":receipts});
+        if !after_write_entries.is_empty() {
+            receipt["after_write"] = Value::Array(after_write_entries.clone());
+        }
         if child.name == "managed-files" {
             receipt
                 .as_object_mut()

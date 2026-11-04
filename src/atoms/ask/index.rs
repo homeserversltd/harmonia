@@ -328,8 +328,15 @@ pub(crate) fn account_systemctl_args(user: &str, arguments: &[String]) -> Result
 pub(crate) fn account_systemd_state_query(kind: &str, unit: &str, user: &str, timeout_secs: u64) -> CommandObservation {
     let args = match kind {
         "is-enabled" | "is-active" => vec![kind.into(), unit.into()],
-        "load-state" | "unit-file-state" | "needs-reload" | "main-pid" => {
-            let property = match kind { "load-state" => "LoadState", "unit-file-state" => "UnitFileState", "main-pid" => "MainPID", _ => "NeedDaemonReload" };
+        "load-state" | "unit-file-state" | "needs-reload" | "main-pid" | "active-state" | "exec-main-start-timestamp" => {
+            let property = match kind {
+                "load-state" => "LoadState",
+                "unit-file-state" => "UnitFileState",
+                "main-pid" => "MainPID",
+                "active-state" => "ActiveState",
+                "exec-main-start-timestamp" => "ExecMainStartTimestamp",
+                _ => "NeedDaemonReload",
+            };
             vec!["show".into(), format!("--property={property}"), "--value".into(), unit.into()]
         }
         _ => return CommandObservation { program: "/usr/bin/setpriv".into(), args: vec![], ok: false, code: None, stdout: String::new(), stderr: format!("unsupported systemd state kind {kind}") },
@@ -356,11 +363,13 @@ pub(crate) fn systemd_state_query(
     }
     match kind {
         "is-enabled" | "is-active" => args.extend([kind.into(), unit.into()]),
-        "load-state" | "unit-file-state" | "needs-reload" | "main-pid" => {
+        "load-state" | "unit-file-state" | "needs-reload" | "main-pid" | "active-state" | "exec-main-start-timestamp" => {
             let property = match kind {
                 "load-state" => "LoadState",
                 "unit-file-state" => "UnitFileState",
                 "main-pid" => "MainPID",
+                "active-state" => "ActiveState",
+                "exec-main-start-timestamp" => "ExecMainStartTimestamp",
                 _ => "NeedDaemonReload",
             };
             args.extend([

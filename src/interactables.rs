@@ -558,6 +558,8 @@ fn run_validated_symlink_proposal(
     let key = invocation.and_then(crate::Invocation::key)
         .ok_or("validated-symlink-owner-invocation-absent")?;
     let mut receipt = None;
+    let mut target_writer = None;
+    let mut changed = false;
     let result = crate::ledger::with_proposal_transaction(|connection| {
         let mut item = crate::ledger::load_proposal_on(connection, proposal_id)?
             .ok_or_else(|| format!("interactable-unknown-id {proposal_id}"))?;
@@ -574,8 +576,9 @@ fn run_validated_symlink_proposal(
         {
             item.extra.insert("config_act_binding".into(), binding.clone());
         }
-        let bound = prepare_config_act_continuation(&item)?
-            .ok_or("validated-symlink-manifest-binding-stale")?;
+        let bound = prepare_config_act_continuation(&item)?;
+        require_config_acceptance_restart_declaration(&bound, false)?;
+        target_writer = Some(bound.target_writer.clone());
         let binding = item.extra.get("config_act_binding")
             .ok_or("validated-symlink-manifest-binding-stale")?;
         let target_step = binding.get("target_step_id").and_then(Value::as_str)
@@ -619,20 +622,129 @@ fn run_validated_symlink_proposal(
         if !outcome.ok {
             return Err(format!("validated-symlink-owner-act-failed {}", outcome.message));
         }
+        changed = outcome.changed;
         crate::bands::propose_edits::resolve_config_proposal_locked(connection, proposal_id, Vec::new())?;
         Ok(())
     });
+    let mut after_write_failure = None;
+    if result.is_ok() && changed {
+        let writer = target_writer.as_ref().ok_or("config-act-target-owner-unresolved")?;
+        let (acts, failure) = run_config_owner_after_write(writer, Some(key));
+        after_write_failure = failure.map(|signal| (writer.step_id.clone(), signal));
+        if let Some(native) = receipt.as_mut() {
+            if !acts.is_empty() {
+                native["module_acts"] = Value::Array(acts);
+            }
+            if after_write_failure.is_some() {
+                native["ok"] = Value::Bool(false);
+            }
+        }
+    }
     if let Some(mut native) = receipt {
         native["owner_proposal"]["resolved"] = Value::Bool(result.is_ok());
         println!("{}", serde_json::to_string_pretty(&native).map_err(|error| error.to_string())?);
+    }
+    if let Some((step_id, signal)) = after_write_failure {
+        return Err(format!(
+            "config-acceptance-after-write-failed step_id={step_id} signal={signal}"
+        ));
     }
     result
 }
 
 struct ConfigActContinuation {
     manifest: crate::tools::ladder::LadderManifest,
+    target_writer: crate::tools::ladder::ValidatedStep,
     steps: Vec<crate::tools::ladder::ValidatedStep>,
     active_lane: Option<String>,
+}
+
+fn after_write_entries(writer: &crate::tools::ladder::ValidatedStep) -> &[Value] {
+    writer
+        .args
+        .get("after_write")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn after_write_has_action(writer: &crate::tools::ladder::ValidatedStep) -> bool {
+    !after_write_entries(writer).is_empty()
+}
+
+fn after_write_restarts_reader(writer: &crate::tools::ladder::ValidatedStep) -> bool {
+    after_write_entries(writer).iter().any(|entry| {
+        entry.as_object().is_some_and(|object| {
+            object.contains_key("reload")
+                || object.contains_key("restart")
+                || object.contains_key("program")
+        })
+    })
+}
+
+fn no_running_reader_declared(writer: &crate::tools::ladder::ValidatedStep) -> bool {
+    writer
+        .args
+        .get("no_running_reader")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.trim().is_empty())
+}
+
+fn is_gated_module_command(step: &crate::tools::ladder::ValidatedStep) -> bool {
+    step.tool == "command"
+        && step.permutation == "act"
+        && step
+            .args
+            .get("observation")
+            .and_then(Value::as_object)
+            .and_then(|observation| observation.get("kind"))
+            .and_then(Value::as_str)
+            == Some("module_changed_before_step")
+}
+
+fn has_later_restart_or_gated_command(steps: &[crate::tools::ladder::ValidatedStep]) -> bool {
+    steps.iter().any(|step| {
+        (step.tool == "systemd" && matches!(step.permutation.as_str(), "restart" | "user-restart"))
+            || is_gated_module_command(step)
+    })
+}
+
+fn require_config_acceptance_restart_declaration(
+    continuation: &ConfigActContinuation,
+    allow_later_action: bool,
+) -> Result<(), String> {
+    let writer = &continuation.target_writer;
+    if after_write_restarts_reader(writer)
+        || no_running_reader_declared(writer)
+        || (allow_later_action && has_later_restart_or_gated_command(&continuation.steps))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "config-acceptance-restart-undeclared {}",
+            writer.step_id
+        ))
+    }
+}
+
+fn run_config_owner_after_write(
+    writer: &crate::tools::ladder::ValidatedStep,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+) -> (Vec<Value>, Option<String>) {
+    if !after_write_has_action(writer) && !no_running_reader_declared(writer) {
+        return (Vec::new(), None);
+    }
+    let run = crate::tools::after_write::run_for_write(
+        &writer.step_id,
+        &writer.tool,
+        &writer.permutation,
+        &writer.args,
+        true,
+        true,
+        true,
+        invocation,
+    );
+    (run.entries, run.failure)
 }
 
 fn run_file_config_proposal(
@@ -660,9 +772,8 @@ fn run_file_config_proposal(
             return Err("json-key-owner-acceptance-required".into());
         }
         let continuation = prepare_config_act_continuation(&item)?;
-        if continuation
-            .as_ref()
-            .is_some_and(|continuation| !continuation.steps.is_empty())
+        require_config_acceptance_restart_declaration(&continuation, true)?;
+        if (after_write_has_action(&continuation.target_writer) || !continuation.steps.is_empty())
             && invocation.and_then(crate::Invocation::key).is_none()
         {
             return Err("config-acceptance-owner-invocation-required".into());
@@ -673,28 +784,48 @@ fn run_file_config_proposal(
     let Some((mut receipt, continuation)) = accepted else {
         return Ok(());
     };
-    let mut failed_step = None;
-    if let Some(continuation) =
-        continuation.filter(|continuation| !continuation.steps.is_empty())
-    {
-        let (acts, failure) = run_config_act_continuation(
-            &continuation,
+    let mut module_acts = Vec::new();
+    let mut after_write_failure = None;
+    let mut continuation_failure = None;
+    if receipt.get("changed").and_then(Value::as_bool) == Some(true) {
+        let (acts, failure) = run_config_owner_after_write(
+            &continuation.target_writer,
             invocation.and_then(crate::Invocation::key),
         );
-        receipt["module_acts"] = Value::Array(acts);
-        failed_step = failure;
-        if failed_step.is_some() { receipt["ok"] = Value::Bool(false); }
+        module_acts.extend(acts);
+        after_write_failure =
+            failure.map(|signal| (continuation.target_writer.step_id.clone(), signal));
     }
-    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
-    if let Some(step_id) = failed_step {
-        return Err(format!("config-acceptance-module-act-failed step_id={step_id}"));
+    if after_write_failure.is_none() && !continuation.steps.is_empty() {
+        let (acts, failure) =
+            run_config_act_continuation(&continuation, invocation.and_then(crate::Invocation::key));
+        module_acts.extend(acts);
+        continuation_failure = failure;
+    }
+    if !module_acts.is_empty() {
+        receipt["module_acts"] = Value::Array(module_acts);
+    }
+    if after_write_failure.is_some() || continuation_failure.is_some() {
+        receipt["ok"] = Value::Bool(false);
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+    );
+    if let Some((step_id, signal)) = after_write_failure {
+        return Err(format!(
+            "config-acceptance-after-write-failed step_id={step_id} signal={signal}"
+        ));
+    }
+    if let Some(step_id) = continuation_failure {
+        return Err(format!(
+            "config-acceptance-module-act-failed step_id={step_id}"
+        ));
     }
     Ok(())
 }
 
-fn prepare_config_act_continuation(
-    item: &Interactable,
-) -> Result<Option<ConfigActContinuation>, String> {
+fn prepare_config_act_continuation(item: &Interactable) -> Result<ConfigActContinuation, String> {
     let binding = item
         .extra
         .get("config_act_binding")
@@ -759,6 +890,7 @@ fn prepare_config_act_continuation(
         .ok_or("config-act-target-step-binding-stale")?;
     let routines = crate::tools::routine::project_manifest_routines(&manifest, &steps)?;
     let mut after_target = Vec::new();
+    let mut target_writer = None;
     for (index, step) in steps.into_iter().enumerate().skip(target_index) {
         if let Some(children) = routines.get(&step.step_id) {
             let children: Vec<_> = children.iter().map(|child| crate::tools::ladder::ValidatedStep {
@@ -766,7 +898,7 @@ fn prepare_config_act_continuation(
                 permutation: child.permutation.clone(), args: child.args.clone(),
                 on_failure: child.on_failure,
             }).collect();
-            let start = if index == target_index {
+            if index == target_index {
                 let target = item.target_path.as_deref().ok_or("hard-stamp-target-missing")?;
                 let mut owners = Vec::new();
                 for (child_index, child) in children.iter().enumerate() {
@@ -775,13 +907,29 @@ fn prepare_config_act_continuation(
                     }
                 }
                 if owners.len() != 1 { return Err("config-act-target-owner-unresolved".into()); }
-                owners[0] + 1
-            } else { 0 };
-            after_target.extend(children.into_iter().skip(start));
-        } else if index > target_index {
+                let owner_index = owners[0];
+                target_writer = Some(children[owner_index].clone());
+                after_target.extend(children.into_iter().skip(owner_index + 1));
+            } else {
+                after_target.extend(children);
+            }
+        } else if index == target_index {
+            let target = item.target_path.as_deref().ok_or("hard-stamp-target-missing")?;
+            if !config_step_owns_target(&step, &manifest, target)? {
+                return Err("config-act-target-owner-unresolved".into());
+            }
+            target_writer = Some(step);
+        } else {
             after_target.push(step);
         }
     }
+    let target_writer = target_writer.ok_or("config-act-target-owner-unresolved")?;
+    let after_write_entries = target_writer
+        .args
+        .get("after_write")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let continuation_steps: Vec<_> = after_target.into_iter().filter(|step| {
         (step.tool == "systemd" && matches!(step.permutation.as_str(),
             "daemon-reload" | "restart" | "user-daemon-reload" | "user-restart"))
@@ -790,15 +938,18 @@ fn prepare_config_act_continuation(
             && step.args.get("observation").and_then(Value::as_object)
                 .and_then(|observation| observation.get("kind"))
                 .and_then(Value::as_str) == Some("module_changed_before_step"))
+    }).filter(|step| {
+        !crate::tools::after_write::covers_systemd_step(after_write_entries, step)
     }).collect();
     if continuation_steps.iter().any(|step| step.args.values().any(config_act_has_routine_reference)) {
         return Err("config-act-routine-context-unavailable".into());
     }
-    Ok(Some(ConfigActContinuation {
+    Ok(ConfigActContinuation {
         manifest,
+        target_writer,
         steps: continuation_steps,
         active_lane: binding.get("active_lane").and_then(Value::as_str).map(str::to_owned),
-    }))
+    })
 }
 
 fn config_act_has_routine_reference(value: &Value) -> bool {
@@ -876,6 +1027,8 @@ fn config_step_owns_target(
     }
     if step.tool != "files" { return Ok(false); }
     match step.permutation.as_str() {
+        "validated-symlink" | "validated-file-symlink" => Ok(step.args.get("target")
+            .and_then(Value::as_str).map(Path::new) == Some(target)),
         "json-key-proposal" => Ok(step.args.get("target").and_then(Value::as_str)
             .map(Path::new) == Some(target)),
         "managed-files" => Ok(crate::tools::files::materialize_managed_files(step, manifest)?

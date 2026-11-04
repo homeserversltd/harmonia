@@ -1749,6 +1749,7 @@ fn update_module_command(
             "ok": execution.ok,
             "changed": execution.changed,
             "operation_count": execution.operation_count,
+            "placements": execution.placements,
             "first_missing_signal": first_missing_signal,
         }),
     )?;
