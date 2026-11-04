@@ -25,22 +25,38 @@
     },
     {
       "step_id": "hermes-sway-user-daemon-reload",
-      "tool": "systemd",
-      "permutation": "user-daemon-reload",
+      "tool": "command",
+      "permutation": "act",
       "args": {
-        "user": "hermes",
-        "timeout_secs": 30
+        "program": "/usr/bin/systemctl",
+        "args": [
+          "--user",
+          "--machine=hermes@.host",
+          "daemon-reload"
+        ],
+        "timeout_secs": 60,
+        "observation": {
+          "kind": "module_changed_before_step"
+        }
       },
       "on_failure": "stop"
     },
     {
       "step_id": "hermes-sway-user-restart",
-      "tool": "systemd",
-      "permutation": "user-restart",
+      "tool": "command",
+      "permutation": "act",
       "args": {
-        "service": "sway-seat.service",
-        "user": "hermes",
-        "timeout_secs": 300
+        "program": "/usr/bin/systemctl",
+        "args": [
+          "--user",
+          "--machine=hermes@.host",
+          "try-restart",
+          "sway-seat.service"
+        ],
+        "timeout_secs": 60,
+        "observation": {
+          "kind": "module_changed_before_step"
+        }
       },
       "on_failure": "stop"
     },
@@ -58,22 +74,38 @@
     },
     {
       "step_id": "hermes-wayvnc-user-daemon-reload",
-      "tool": "systemd",
-      "permutation": "user-daemon-reload",
+      "tool": "command",
+      "permutation": "act",
       "args": {
-        "user": "hermes",
-        "timeout_secs": 30
+        "program": "/usr/bin/systemctl",
+        "args": [
+          "--user",
+          "--machine=hermes@.host",
+          "daemon-reload"
+        ],
+        "timeout_secs": 60,
+        "observation": {
+          "kind": "module_changed_before_step"
+        }
       },
       "on_failure": "stop"
     },
     {
       "step_id": "hermes-wayvnc-user-restart",
-      "tool": "systemd",
-      "permutation": "user-restart",
+      "tool": "command",
+      "permutation": "act",
       "args": {
-        "service": "wayvnc-seat.service",
-        "user": "hermes",
-        "timeout_secs": 300
+        "program": "/usr/bin/systemctl",
+        "args": [
+          "--user",
+          "--machine=hermes@.host",
+          "try-restart",
+          "wayvnc-seat.service"
+        ],
+        "timeout_secs": 60,
+        "observation": {
+          "kind": "module_changed_before_step"
+        }
       },
       "on_failure": "stop"
     }
