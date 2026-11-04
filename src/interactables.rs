@@ -952,8 +952,10 @@ fn run_config_act_continuation(
                     ),
             );
             if !probe.ok {
+                let signal: String = probe.stderr.lines().next().unwrap_or("").chars().take(512).collect();
                 receipts.push(serde_json::json!({"step_id":step.step_id,"ok":false,
-                    "executed":false,"precondition_exit_code":probe.code}));
+                    "executed":false,"precondition_exit_code":probe.code,
+                    "first_missing_signal": if signal.is_empty() { "command-precondition-failed" } else { &signal }}));
                 failed_step.get_or_insert_with(|| step.step_id.clone());
                 if continuation.manifest.isolation.as_deref() == Some("per-step") {
                     continue;
@@ -995,6 +997,14 @@ fn run_config_act_continuation(
                 break;
             }
         };
+        if !outcome.ok && receipt.get("first_missing_signal").is_none() {
+            let signal: String = outcome.command.as_ref()
+                .and_then(|command| command.stderr.lines().next())
+                .unwrap_or("").chars().take(512).collect();
+            receipt["first_missing_signal"] = serde_json::json!(
+                if signal.is_empty() { "command-act-failed" } else { &signal }
+            );
+        }
         receipt["module_id"] = serde_json::json!(continuation.manifest.id);
         receipts.push(receipt);
         if !outcome.ok {
