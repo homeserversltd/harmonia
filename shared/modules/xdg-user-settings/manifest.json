@@ -2,10 +2,10 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "xdg-user-settings",
   "title": "App defaults",
-  "summary": "Chooses default apps for files and helps apps open links and dialogs.",
+  "summary": "Chooses default apps for files and helps KDE programs see installed apps, open links, and show dialogs.",
   "category": "interactable",
-  "version": "1.1.0",
-  "description": "TV KDE/application associations and portal configuration are converged from this module into the owner home.",
+  "version": "1.2.0",
+  "description": "TV KDE/application associations and portal configuration are maintained in the owner home, and a root menu lets KDE programs see installed apps.",
   "optional": false,
   "constants": {
     "target_dir": "/home/owner",
@@ -55,6 +55,22 @@
         "owner": "owner",
         "group": "owner",
         "receipt_name": "tv-xdg-user-settings-portal"
+      }
+    },
+    {
+      "step_id": "kde-root-menu",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root/menus",
+        "target_root": "/",
+        "files": [
+          "etc/xdg/menus/applications.menu"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "tv-xdg-user-settings-kde-root-menu"
       }
     }
   ]

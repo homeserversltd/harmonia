@@ -1,0 +1,13 @@
+<!DOCTYPE Menu PUBLIC "-//freedesktop//DTD Menu 1.0//EN"
+ "http://www.freedesktop.org/standards/menu-spec/1.0/menu.dtd">
+<!-- The root application menu KDE's service cache reads under a Sway face.
+     Without it kbuildsycoca6 finds no applications and every file opens the "Open With" chooser. -->
+<Menu>
+  <Name>Applications</Name>
+  <DefaultAppDirs/>
+  <DefaultDirectoryDirs/>
+  <DefaultMergeDirs/>
+  <Include>
+    <All/>
+  </Include>
+</Menu>
