@@ -220,8 +220,17 @@ fn lookup_release_metadata_single(
     tag: &str,
     inspection_bounds: bool,
 ) -> Result<Option<ReleaseMetadata>, String> {
+    lookup_release_metadata_with_tag_mode(r, tag, inspection_bounds, false)
+}
+
+fn lookup_release_metadata_with_tag_mode(
+    r: &ReleaseRequest,
+    tag: &str,
+    inspection_bounds: bool,
+    exact_tag: bool,
+) -> Result<Option<ReleaseMetadata>, String> {
     let api = release_api(r);
-    let url = if r.kind == "github-release" && tag == "latest" {
+    let url = if r.kind == "github-release" && tag == "latest" && !exact_tag {
         format!("{api}/repos/{}/{}/releases/latest", r.owner, r.repo)
     } else {
         release_metadata_url_for_request(&api, &r.owner, &r.repo, tag)
@@ -1244,6 +1253,7 @@ pub(crate) struct ReleaseInspection {
     pub digest: String,
     pub version: Option<Value>,
     pub release_tag: String,
+    pub candidate_url: Option<String>,
 }
 
 fn is_hex(value: &str, length: usize) -> bool {
@@ -1603,7 +1613,7 @@ fn xenia_release_metadata(request: &ReleaseRequest, reference: &str) -> Result<O
 
 fn inspect_xenia_metadata(
     request: &ReleaseRequest, metadata: &ReleaseMetadata, reference: &str,
-    asset: &str, schema_base: Option<&str>,
+    asset: &str, schema_base: Option<&str>, flag_component: &str, candidate_url: Option<&str>,
 ) -> Result<ReleaseInspection, String> {
     let tag = metadata.tag_name.as_deref().filter(|tag| safe_release_segment(tag))
         .ok_or("xenia-release-tag-invalid")?;
@@ -1612,8 +1622,9 @@ fn inspect_xenia_metadata(
     }
     let url = optional_release_asset_url(metadata, "release.flag").ok_or("xenia-release-unverified")?;
     let flag_bytes = download_release_asset(request, &url, "release.flag", true)?;
-    let (resolved_revision, version) = release_flag_source_revision(&flag_bytes, &request.repo, schema_base)?;
-    if metadata.target_commitish != resolved_revision || (tag != resolved_revision && tag != format!("sha-{resolved_revision}")) {
+    let (resolved_revision, version) = release_flag_source_revision(&flag_bytes, flag_component, schema_base)?;
+    let valid_tag = if candidate_url.is_some() { tag == "latest" } else { tag == resolved_revision || tag == format!("sha-{resolved_revision}") };
+    if metadata.target_commitish != resolved_revision || !valid_tag {
         return Err("xenia-release-source-mismatch".into());
     }
     if validate_source_sha(reference) && !resolved_revision.eq_ignore_ascii_case(reference) {
@@ -1623,12 +1634,12 @@ fn inspect_xenia_metadata(
     let digest = flag.get("sha256").and_then(Value::as_str)
         .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
         .ok_or("xenia-release-digest-unproven")?.to_owned();
-    Ok(ReleaseInspection { resolved_revision, digest, version, release_tag: tag.to_owned() })
+    Ok(ReleaseInspection { resolved_revision, digest, version, release_tag: tag.to_owned(), candidate_url: candidate_url.map(str::to_owned) })
 }
 
 pub(crate) fn inspect_release(
     _component: &str, release_repo: &str, reference: &str, api_root: &str,
-    asset: &str, _sidecar: &str, release_schema_base: Option<&str>,
+    asset: &str, _sidecar: &str, release_schema_base: Option<&str>, candidates: &[String],
 ) -> Result<Option<ReleaseInspection>, String> {
     let (owner, repo) = release_repo.split_once('/').ok_or("fetch-artifact-release-repo-invalid")?;
     if owner.is_empty() || repo.is_empty() || repo.contains('/') { return Err("fetch-artifact-release-repo-invalid".into()); }
@@ -1638,8 +1649,60 @@ pub(crate) fn inspect_release(
         credential_scope_found: credential.is_some(), credential,
         cache_dir: std::env::temp_dir().join(format!("harmonia-xenia-release-{}", unique_temp_suffix())) };
     let result = (|| {
-        let Some(metadata) = xenia_release_metadata(&request, reference)? else { return Ok(None); };
-        inspect_xenia_metadata(&request, &metadata, reference, asset, release_schema_base).map(Some)
+        if candidates.is_empty() {
+            let Some(metadata) = xenia_release_metadata(&request, reference)? else { return Ok(None); };
+            return inspect_xenia_metadata(&request, &metadata, reference, asset, release_schema_base, repo, None).map(Some);
+        }
+        if !validate_source_sha(reference) && (reference.is_empty() || reference.starts_with('/') || reference.contains("..")
+            || !reference.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'/' | b'-'))) {
+            return Err("xenia-release-ref-invalid".into());
+        }
+        fs::create_dir_all(&request.cache_dir).map_err(|error| format!("release-cache-create-failed: {error}"))?;
+        let mut candidate_requests = Vec::new();
+        for url in candidates {
+            let (_, candidate_owner, candidate_repo) = external_release_candidate_shape("github-release", url, asset)?;
+            candidate_requests.push((url, ReleaseRequest {
+                kind: "github-release".into(), base_url: "https://api.github.com".into(),
+                owner: candidate_owner.into(), repo: candidate_repo.into(), credential: None,
+                credential_host: None, credential_scope_found: false,
+                cache_dir: request.cache_dir.join(format!("candidate-{}", unique_temp_suffix())),
+            }, None::<Option<ReleaseMetadata>>));
+        }
+        let mut page = 1;
+        loop {
+            let commits = if validate_source_sha(reference) {
+                vec![reference.to_ascii_lowercase()]
+            } else {
+                let encoded = reference.bytes().map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-') {
+                    (b as char).to_string()
+                } else { format!("%{b:02X}") }).collect::<String>();
+                let url = format!("{}/repos/{}/{}/commits?sha={encoded}&limit={RELEASE_LIST_PAGE_SIZE}&page={page}", release_api(&request), owner, repo);
+                let bytes = download_release_asset(&request, &url, "branch-history", true)?;
+                let values: Vec<Value> = serde_json::from_slice(&bytes).map_err(|_| "xenia-release-branch-history-invalid")?;
+                if values.len() > RELEASE_LIST_PAGE_SIZE { return Err("xenia-release-branch-history-invalid".into()); }
+                values.iter().map(|value| value.get("sha").and_then(Value::as_str)
+                    .filter(|sha| validate_source_sha(sha)).map(|sha| sha.to_ascii_lowercase())
+                    .ok_or_else(|| "xenia-release-branch-history-invalid".to_string())).collect::<Result<Vec<_>, _>>()?
+            };
+            for sha in &commits {
+                if let Some(metadata) = xenia_release_metadata(&request, sha)? {
+                    return inspect_xenia_metadata(&request, &metadata, sha, asset, release_schema_base, repo, None).map(Some);
+                }
+                for (url, candidate, cached) in &mut candidate_requests {
+                    if cached.is_none() {
+                        *cached = Some(lookup_release_metadata_with_tag_mode(candidate, "latest", true, true)?);
+                    }
+                    if let Some(metadata) = cached.as_ref().and_then(Option::as_ref) {
+                        if metadata.target_commitish.eq_ignore_ascii_case(sha) {
+                            return inspect_xenia_metadata(candidate, metadata, sha, asset, release_schema_base, repo, Some(url)).map(Some);
+                        }
+                    }
+                }
+            }
+            if validate_source_sha(reference) || commits.len() < RELEASE_LIST_PAGE_SIZE { return Ok(None); }
+            if page == RELEASE_LIST_MAX_PAGES { return Err("xenia-release-branch-history-limit".into()); }
+            page += 1;
+        }
     })();
     let _ = fs::remove_dir_all(&request.cache_dir);
     result
@@ -1647,21 +1710,35 @@ pub(crate) fn inspect_release(
 
 pub(crate) fn download_xenia_release(
     component: &str, release_repo: &str, tag: &str, api_root: &str, asset: &str,
-    expected_sha: &str, expected_digest: &str, identity: &str,
+    expected_sha: &str, expected_digest: &str, identity: &str, candidate_url: Option<&str>,
 ) -> Result<Download, String> {
     let (owner, repo) = release_repo.split_once('/').ok_or("fetch-artifact-release-repo-invalid")?;
     if owner.is_empty() || repo.is_empty() || repo.contains('/') { return Err("fetch-artifact-release-repo-invalid".into()); }
-    let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
-    let request = ReleaseRequest { kind: "forgejo-release".into(), base_url: api_root.into(),
-        owner: owner.into(), repo: repo.into(), credential_host: crate::atoms::forge_credential::url_host(api_root),
+    let (kind, base, selected_owner, selected_repo, credential) = if let Some(url) = candidate_url {
+        let (_, owner, repo) = external_release_candidate_shape("github-release", url, asset)?;
+        ("github-release", "https://api.github.com", owner, repo, None)
+    } else {
+        ("forgejo-release", api_root, owner, repo, crate::atoms::forge_credential::credential_for_url(api_root)?)
+    };
+    let request = ReleaseRequest { kind: kind.into(), base_url: base.into(),
+        owner: selected_owner.into(), repo: selected_repo.into(), credential_host: crate::atoms::forge_credential::url_host(base),
         credential_scope_found: credential.is_some(), credential,
         cache_dir: std::env::temp_dir().join(format!("harmonia-xenia-release-{}", unique_temp_suffix())) };
     let result = (|| {
-        let metadata = lookup_release_metadata_single(&request, tag, true)?.ok_or("xenia-release-unavailable")?;
+        let metadata = lookup_release_metadata_with_tag_mode(&request, tag, true, candidate_url.is_some())?.ok_or("xenia-release-unavailable")?;
         if metadata.tag_name.as_deref() != Some(tag) { return Err("xenia-release-tag-changed".into()); }
-        let inspected = inspect_xenia_metadata(&request, &metadata, tag, asset, None)?;
+        let inspected = inspect_xenia_metadata(&request, &metadata, expected_sha, asset, None, repo, candidate_url)?;
         if inspected.resolved_revision != expected_sha || inspected.digest != expected_digest {
             return Err("xenia-release-changed-during-update".into());
+        }
+        if candidate_url.is_some() {
+            let sidecar_name = format!("{asset}.sha256");
+            let sidecar_url = release_asset_url(&metadata, tag, &sidecar_name)?;
+            let sidecar = download_release_asset(&request, &sidecar_url, &sidecar_name, true)?;
+            let expected = format!("{expected_digest}  {asset}");
+            if std::str::from_utf8(&sidecar).map_err(|_| "xenia-release-sidecar-invalid")?.trim_end_matches(['\r', '\n']) != expected {
+                return Err("xenia-release-sidecar-mismatch".into());
+            }
         }
         let url = release_asset_url(&metadata, tag, asset)?;
         let bytes = download_release_asset(&request, &url, asset, true)?;

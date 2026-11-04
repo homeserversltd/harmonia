@@ -318,7 +318,7 @@ fn execute_with_module_provenance(
         let asset = release_asset_name.clone().unwrap_or_else(|| format!("{artifact_name}-x86_64"));
         let mut download = crate::atoms::ask::fetch_artifact::download_xenia_release(
             component, release_repo, release_tag, api_root, &asset, &selected_source_sha,
-            expected_digest, identity,
+            expected_digest, identity, args.get("candidate_url").and_then(Value::as_str),
         )?;
         if !crate::atoms::ask::fetch_artifact::validate_source_sha(&download.manifest.source_sha)
             || !same_source_sha(&download.manifest.source_sha, &selected_source_sha)

@@ -364,6 +364,8 @@ pub(crate) struct SourceResolutionReceipt {
     pub digest: Option<String>,
     #[serde(skip)]
     pub selected_release_tag: Option<String>,
+    #[serde(skip)]
+    pub selected_candidate_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -680,6 +682,7 @@ fn receipt(
         resolved_revision: None,
         digest: None,
         selected_release_tag: None,
+        selected_candidate_url: None,
         version: None,
         source_resolution_seat_observation: None,
         validation_seat: None,
@@ -1218,21 +1221,23 @@ fn resolve_xenia_source(
             "schema-frozen-kernel-missing appliance.xenia.v1.source".into(),
         );
     };
-    if source
-        .get("candidates")
-        .filter(|value| !value.is_null())
-        .is_some()
-    {
-        return blocker_receipt(
-            authority,
-            Some(XENIA_SCHEMA.into()),
-            default_source_policy(),
-            component,
-            owning_module,
-            step_id,
-            "source-road-deferred".into(),
-        );
-    }
+    let candidates = match source.get("candidates") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) if !items.is_empty() => {
+            let mut urls = Vec::new();
+            for item in items {
+                let url = item.get("url").and_then(Value::as_str);
+                if item.get("kind").and_then(Value::as_str) != Some("release")
+                    || !item.get("credential_selector").is_none_or(Value::is_null)
+                    || !url.is_some_and(|url| crate::atoms::ask::fetch_artifact::external_release_candidate_shape("github-release", url, "artifact").is_ok()) {
+                    return blocker_receipt(authority, Some(XENIA_SCHEMA.into()), default_source_policy(), component, owning_module, step_id, "source-road-deferred".into());
+                }
+                urls.push(url.unwrap().to_owned());
+            }
+            urls
+        }
+        Some(_) => return blocker_receipt(authority, Some(XENIA_SCHEMA.into()), default_source_policy(), component, owning_module, step_id, "source-road-deferred".into()),
+    };
     if source.get("kind").and_then(Value::as_str) == Some("clone") {
         return blocker_receipt(authority, Some(XENIA_SCHEMA.into()), default_source_policy(), component, owning_module, step_id, "clone-road-retired".into());
     }
@@ -1318,8 +1323,10 @@ fn resolve_xenia_source(
         &asset,
         &sidecar,
         schema_base,
+        &candidates,
     ) {
         Ok(Some(evidence)) => {
+            result.selected_candidate_url = evidence.candidate_url;
             result.resolved_revision = Some(evidence.resolved_revision);
             result.digest = Some(evidence.digest);
             result.version = evidence.version;
@@ -2173,7 +2180,7 @@ pub(crate) fn execute_routine_child(
                     .clone()
                     .ok_or("xenia-resolved-revision-missing")?;
                 let digest = resolution.digest.clone().ok_or("xenia-digest-missing")?;
-                let outputs = BTreeMap::from([
+                let mut outputs = BTreeMap::from([
                     (
                         "path".into(),
                         json!(args.get("path").and_then(Value::as_str)),
@@ -2207,6 +2214,8 @@ pub(crate) fn execute_routine_child(
                     ("source_policy".into(), json!("artifact")),
                     ("changed".into(), json!(false)),
                 ]);
+                outputs.insert("source".into(), json!(if resolution.selected_candidate_url.is_some() { "candidate" } else { "forge" }));
+                outputs.insert("candidate_url".into(), json!(resolution.selected_candidate_url));
                 return Ok((
                     OperationOutcome {
                         ok: true,

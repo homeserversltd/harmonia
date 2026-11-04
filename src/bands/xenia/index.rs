@@ -360,6 +360,9 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
             if child.name == "build" {
                 child.args.insert("expected_digest".into(), json!({"from":"pull-repo.digest"}));
                 child.args.insert("release_tag".into(), json!({"from":"pull-repo.release_tag"}));
+                if entry.pointer("/source/candidates").and_then(Value::as_array).is_some_and(|items| !items.is_empty()) {
+                    child.args.insert("candidate_url".into(), json!({"from":"pull-repo.candidate_url"}));
+                }
                 child.args.insert("road".into(), json!("artifact"));
             }
             if child.name == "binary-install" {
