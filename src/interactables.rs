@@ -577,7 +577,7 @@ fn run_validated_symlink_proposal(
             item.extra.insert("config_act_binding".into(), binding.clone());
         }
         let bound = prepare_config_act_continuation(&item)?;
-        require_config_acceptance_restart_declaration(&bound, false)?;
+        require_config_acceptance_restart_declaration(&bound)?;
         target_writer = Some(bound.target_writer.clone());
         let binding = item.extra.get("config_act_binding")
             .ok_or("validated-symlink-manifest-binding-stale")?;
@@ -690,33 +690,12 @@ fn no_running_reader_declared(writer: &crate::tools::ladder::ValidatedStep) -> b
         .is_some_and(|reason| !reason.trim().is_empty())
 }
 
-fn is_gated_module_command(step: &crate::tools::ladder::ValidatedStep) -> bool {
-    step.tool == "command"
-        && step.permutation == "act"
-        && step
-            .args
-            .get("observation")
-            .and_then(Value::as_object)
-            .and_then(|observation| observation.get("kind"))
-            .and_then(Value::as_str)
-            == Some("module_changed_before_step")
-}
-
-fn has_later_restart_or_gated_command(steps: &[crate::tools::ladder::ValidatedStep]) -> bool {
-    steps.iter().any(|step| {
-        (step.tool == "systemd" && matches!(step.permutation.as_str(), "restart" | "user-restart"))
-            || is_gated_module_command(step)
-    })
-}
-
 fn require_config_acceptance_restart_declaration(
     continuation: &ConfigActContinuation,
-    allow_later_action: bool,
 ) -> Result<(), String> {
     let writer = &continuation.target_writer;
     if after_write_restarts_reader(writer)
         || no_running_reader_declared(writer)
-        || (allow_later_action && has_later_restart_or_gated_command(&continuation.steps))
     {
         Ok(())
     } else {
@@ -772,7 +751,7 @@ fn run_file_config_proposal(
             return Err("json-key-owner-acceptance-required".into());
         }
         let continuation = prepare_config_act_continuation(&item)?;
-        require_config_acceptance_restart_declaration(&continuation, true)?;
+        require_config_acceptance_restart_declaration(&continuation)?;
         if (after_write_has_action(&continuation.target_writer) || !continuation.steps.is_empty())
             && invocation.and_then(crate::Invocation::key).is_none()
         {

@@ -475,7 +475,7 @@ fn run_unit_action(
             readback,
         );
     }
-    if !restart && after_active != "active" {
+    if !restart && before_active == "active" && after_active != "active" {
         return ActionResult::failed(
             format!("after-write-reload-not-observed unit={unit}"),
             exit_code,
