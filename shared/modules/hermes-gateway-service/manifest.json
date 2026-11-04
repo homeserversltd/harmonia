@@ -4,7 +4,7 @@
   "title": "Hermes messaging gateway service",
   "summary": "Offers Hermes gateway as a foreground user service.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Compile the Ubuntu-only foreground Hermes gateway unit with the Hermes home and private Wayland runtime; birth owns linger activation and credentials.",
   "optional": false,
   "config_deploy": "interactable",
@@ -20,6 +20,27 @@
         "target_path": "/home/hermes/.config/systemd/user/hermes-gateway.service",
         "mode": 420,
         "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-gateway-user-daemon-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "user": "hermes",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-gateway-user-restart",
+      "tool": "systemd",
+      "permutation": "user-restart",
+      "args": {
+        "service": "hermes-gateway.service",
+        "user": "hermes",
+        "timeout_secs": 300
       },
       "on_failure": "stop"
     }

@@ -4,7 +4,7 @@
   "title": "Hermes headless desktop services",
   "summary": "Offers private Hermes user services for Sway and loopback WayVNC.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Compile Ubuntu-only Hermes user units; birth owns the user manager, linger, runtime, unit links, and activation.",
   "optional": false,
   "config_deploy": "interactable",
@@ -24,6 +24,27 @@
       "on_failure": "stop"
     },
     {
+      "step_id": "hermes-sway-user-daemon-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "user": "hermes",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-sway-user-restart",
+      "tool": "systemd",
+      "permutation": "user-restart",
+      "args": {
+        "service": "sway-seat.service",
+        "user": "hermes",
+        "timeout_secs": 300
+      },
+      "on_failure": "stop"
+    },
+    {
       "step_id": "hermes-wayvnc-user-unit",
       "tool": "files",
       "permutation": "compile-fragments",
@@ -32,6 +53,27 @@
         "target_path": "/home/hermes/.config/systemd/user/wayvnc-seat.service",
         "mode": 420,
         "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-wayvnc-user-daemon-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "user": "hermes",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-wayvnc-user-restart",
+      "tool": "systemd",
+      "permutation": "user-restart",
+      "args": {
+        "service": "wayvnc-seat.service",
+        "user": "hermes",
+        "timeout_secs": 300
       },
       "on_failure": "stop"
     }

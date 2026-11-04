@@ -4,7 +4,7 @@
   "title": "Hermes CUA service",
   "summary": "Offers the CUA Driver user service on the Hermes private desktop runtime.",
   "category": "interactable",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Compile the Ubuntu-only CUA Driver user unit; birth owns its linger activation and private runtime directories.",
   "optional": false,
   "config_deploy": "interactable",
@@ -20,6 +20,27 @@
         "target_path": "/home/hermes/.config/systemd/user/cua-driver.service",
         "mode": 420,
         "backup_existing": true
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-cua-driver-user-daemon-reload",
+      "tool": "systemd",
+      "permutation": "user-daemon-reload",
+      "args": {
+        "user": "hermes",
+        "timeout_secs": 30
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "hermes-cua-driver-user-restart",
+      "tool": "systemd",
+      "permutation": "user-restart",
+      "args": {
+        "service": "cua-driver.service",
+        "user": "hermes",
+        "timeout_secs": 300
       },
       "on_failure": "stop"
     }
