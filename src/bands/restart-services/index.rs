@@ -232,7 +232,7 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
                                 args.get("identity").cloned().unwrap_or_else(|| {
                                     Value::String(
                                         if native_release {
-                                            "embedded-sha"
+                                            "native-release-auto"
                                         } else {
                                             "liveness-marker"
                                         }

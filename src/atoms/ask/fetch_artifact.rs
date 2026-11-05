@@ -1188,6 +1188,17 @@ pub(crate) fn identity_matches_bytes(
     identity: &str,
     component: &str,
 ) -> bool {
+    // Only an undeclared native Release chooses its identity from the bytes.
+    let identity = if identity == "native-release-auto" {
+        let marker = format!("{component}.liveness.v1");
+        if bytes.windows(marker.len()).any(|window| window == marker.as_bytes()) {
+            "liveness-marker"
+        } else {
+            "embedded-sha"
+        }
+    } else {
+        identity
+    };
     let marker = if identity == "embedded-sha" {
         None
     } else {

@@ -119,7 +119,7 @@ fn execute_with_module_provenance(
             if release_repo.trim().is_empty() {
                 "liveness-marker"
             } else {
-                "embedded-sha"
+                "native-release-auto"
             }
         });
     let source_policy = args
