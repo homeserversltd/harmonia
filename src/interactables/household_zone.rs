@@ -162,20 +162,20 @@ pub(crate) fn run(_path: &Path, item: &Interactable, invocation: Option<&crate::
         "household-zone-resolve", || Ok::<_, String>(before.clone()),
         |fact| if matches!(fact, Fact::Fresh) { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
         |authorization, _| crate::atoms::r#do::set_clock::command(&authorization, key, &request, "resolve", None),
-    )?;
-    let result = match comparison {
-        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement,
-        crate::atoms::comparison::ComparisonRun::Current { .. } => return Err("household-zone-observation-changed".into()),
-    };
-    let resolve_receipt = serde_json::from_str::<Value>(&result.stdout).ok();
-    let resolve_ok = result.ok && result.code == 0
-        && resolve_receipt.as_ref().and_then(|value| value.get("ok")).and_then(Value::as_bool) == Some(true);
-    let changed = resolve_receipt.as_ref().and_then(|value| value.get("changed")).and_then(Value::as_bool).unwrap_or(false);
+    );
     let after = match observe() {
         Ok(fact) => fact,
         Err(reason) => { reconcile(None)?; return Err(reason); }
     };
     reconcile(Some(&after))?;
+    let result = match comparison? {
+        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement,
+        crate::atoms::comparison::ComparisonRun::Current { .. } => return Err("household-zone-observation-changed".into()),
+    };
+    let resolve_receipt = serde_json::from_str::<Value>(&result.stdout).ok();
+    let changed = resolve_receipt.as_ref().and_then(|value| value.get("changed")).and_then(Value::as_bool);
+    let resolve_ok = result.ok && result.code == 0 && changed.is_some()
+        && resolve_receipt.as_ref().and_then(|value| value.get("ok")).and_then(Value::as_bool) == Some(true);
     let fresh = matches!(after, Fact::Fresh);
     println!("{}", json!({"id":INTERACTABLE_ID,"ok":resolve_ok && fresh,"changed":changed,"converged":fresh,"proposal_removed":fresh,"first_missing_signal":if !resolve_ok {"household-zone-resolve-failed"} else if !fresh {"household-zone-readback-stale"} else {"none"}}));
     if !resolve_ok { return Err("household-zone-resolve-failed".into()); }
