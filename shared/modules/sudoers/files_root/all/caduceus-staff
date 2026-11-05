@@ -15,3 +15,8 @@ caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^interactable run [A-Za-z0
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^interactable silence [A-Za-z0-9._-]+$
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^interactable unsilence [A-Za-z0-9._-]+$
 caduceus ALL=(root) NOPASSWD: /usr/local/bin/harmonia ^update-module /etc/harmonia/profiles/[a-z0-9-]+/index\.json --module [A-Za-z0-9._-]+( --apply)?$
+# keyman doors: Caduceus execs the keyman binary for its four door verbs; secrets ride stdin, never argv
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^key-status$
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^admin-password$
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^create-key --target (vault|external|both) --strategy (safe_rotation|replace_primary|flexible_addition)$
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^update-key --device /dev(/[A-Za-z0-9][A-Za-z0-9_.:@+-]*)+ --strategy (safe_rotation|replace_primary|flexible_addition)$
