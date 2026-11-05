@@ -17,8 +17,7 @@ enum Fact {
 }
 
 fn authority(profile: &Profile) -> Result<(), String> {
-    if crate::device_profile::certificate_profile()? != "homeserver"
-        || profile.id != "homeserver" || profile.identity != "homeserver"
+    if crate::device_profile::certificate_product()? != "homeserver"
         || !profile.modules.iter().any(|module| module == MODULE_ID)
     {
         return Err("household-zone-homeserver-authority-required".into());
@@ -152,9 +151,7 @@ pub(crate) fn reconcile_for_update(profile: &Profile) {
 }
 
 fn face_authority(profile: &Profile) -> Result<(), String> {
-    if !matches!(profile.id.as_str(), "tv" | "homesi" | "homeconsole")
-        || profile.identity != profile.id
-        || crate::device_profile::certificate_profile()? != profile.id
+    if !matches!(crate::device_profile::certificate_product()?.as_str(), "tv" | "homesi" | "homeconsole")
         || !profile.modules.iter().any(|module| module == MODULE_ID)
     {
         return Err("household-zone-face-authority-required".into());

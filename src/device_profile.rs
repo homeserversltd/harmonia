@@ -229,6 +229,24 @@ pub(crate) fn certificate_profile() -> Result<String, String> {
     Ok(profile.to_string())
 }
 
+/// Read the product independently from the kernel's active profile selector.
+pub(crate) fn certificate_product() -> Result<String, String> {
+    let path = device_profile_certificate_path();
+    let text = fs::read_to_string(&path)
+        .map_err(|err| format!("device-profile-certificate-product-read-failed: {err}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|err| format!("device-profile-certificate-product-parse-failed: {err}"))?;
+    let certificate: DeviceProfileCertificate = serde_json::from_value(value.clone())
+        .map_err(|err| format!("device-profile-certificate-product-invalid: {err}"))?;
+    if certificate.schema != DEVICE_PROFILE_SCHEMA {
+        return Err("device-profile-certificate-product-schema-foreign".to_string());
+    }
+    let product = value.get("profile").and_then(serde_json::Value::as_str)
+        .map(str::trim).filter(|product| !product.is_empty())
+        .ok_or("device-profile-certificate-product-missing")?;
+    Ok(product.to_string())
+}
+
 /// Resolve the sold profile whose seal this process wears. This is optional
 /// evidence: a certificate/profile read failure never gates an update press.
 pub(crate) fn own_sold_profile() -> Option<String> {
