@@ -17,7 +17,12 @@ pub(crate) fn clock(request: &crate::set_clock::Request<'_>) -> ClockObservation
             .unwrap_or_else(|_| "/usr/bin/timedatectl".into()),
         &[
             "show".into(),
-            "--property=NTPSynchronized,NTP,Timezone".into(),
+            "-p".into(),
+            "NTPSynchronized".into(),
+            "-p".into(),
+            "NTP".into(),
+            "-p".into(),
+            "Timezone".into(),
         ],
         Duration::from_secs(request.timeout_secs),
     );
