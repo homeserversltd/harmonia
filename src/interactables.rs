@@ -380,7 +380,15 @@ pub(crate) fn interactable_command(
     match args.first().map(String::as_str) {
         Some("list") => interactable_list(&args[1..]),
         Some("inspect") => interactable_inspect(&args[1..]),
-        Some("reconcile") => homeserver_clock_utc::reconcile_from_certificate(&args[1..]),
+        Some("reconcile") => {
+            let result = homeserver_clock_utc::reconcile_from_certificate(&args[1..]);
+            if args.len() == 1 {
+                if let Ok((profile, _)) = crate::device_profile::resolve_certificate_profile() {
+                    household_zone::reconcile_for_update(&profile);
+                }
+            }
+            result
+        }
         Some("silence") => interactable_set_silenced(&args[1..], true),
         Some("unsilence") => interactable_set_silenced(&args[1..], false),
         Some("run") | Some("accept") | Some("swap") => interactable_run(&args[1..], invocation),

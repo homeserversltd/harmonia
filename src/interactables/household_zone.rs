@@ -25,6 +25,26 @@ fn authority(profile: &Profile) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_utc(value: &str) -> Option<i64> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T'
+        || bytes[13] != b':' || bytes[16] != b':' || bytes[19] != b'Z'
+        || bytes.iter().enumerate().any(|(i, b)| ![4, 7, 10, 13, 16, 19].contains(&i) && !b.is_ascii_digit())
+    {
+        return None;
+    }
+    let year: u32 = value[0..4].parse().ok()?;
+    let month: u32 = value[5..7].parse().ok()?;
+    let day: u32 = value[8..10].parse().ok()?;
+    let hour: u32 = value[11..13].parse().ok()?;
+    let minute: u32 = value[14..16].parse().ok()?;
+    let second: u32 = value[17..19].parse().ok()?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month { 1 | 3 | 5 | 7 | 8 | 10 | 12 => 31, 4 | 6 | 9 | 11 => 30, 2 if leap => 29, 2 => 28, _ => return None };
+    if year == 0 || day == 0 || day > days || hour > 23 || minute > 59 || second > 59 { return None; }
+    crate::tools::household_time::parse_utc(value)
+}
+
 fn observe() -> Result<Fact, String> {
     let program = std::env::var("HARMONIA_CLOCK_CADUCEUS")
         .unwrap_or_else(|_| "/usr/local/bin/caduceus".into());
@@ -52,7 +72,7 @@ fn observe() -> Result<Fact, String> {
     let zone = zone.and_then(Value::as_str).ok_or("household-zone-timezone-invalid")?;
     crate::tools::household_time::validate_timezone(zone)?;
     let valid = valid.and_then(Value::as_str).ok_or("household-zone-valid-until-invalid")?;
-    let until = crate::tools::household_time::parse_utc(valid).ok_or("household-zone-valid-until-invalid")?;
+    let until = valid_utc(valid).ok_or("household-zone-valid-until-invalid")?;
     if until > crate::tools::household_time::unix_now() {
         return Ok(Fact::Fresh);
     }
