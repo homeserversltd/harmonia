@@ -134,6 +134,10 @@ fn reconcile(fact: Option<&Fact>) -> Result<(), String> {
 pub(crate) fn reconcile_for_update(profile: &Profile) {
     if face_authority(profile).is_ok() {
         let observed = observe_face();
+        if let Err(reason) = &observed {
+            let signal: String = reason.chars().flat_map(char::escape_default).take(700).collect();
+            eprintln!("actor=harmonia verb=observe target={SET_INTERACTABLE_ID} outcome=refused signal={signal}");
+        }
         if let Err(reason) = reconcile_set(observed.as_ref().ok()) {
             eprintln!("actor=harmonia verb=reconcile target={SET_INTERACTABLE_ID} outcome=failed signal={reason}");
         }
