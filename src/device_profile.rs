@@ -560,6 +560,7 @@ pub(crate) fn update_from_certificate(
     let (profile, profile_path) = match resolve_certificate_profile() {
         Ok(resolved) => resolved,
         Err(reason) => {
+            crate::interactables::household_zone::reconcile_unavailable_profile();
             write_early_refusal(
                 json!({
                     "schema": "harmonia.run_profile.v1",

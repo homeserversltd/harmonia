@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 pub(crate) const INTERACTABLE_ID: &str = "household-zone-resolve";
+pub(crate) const SET_INTERACTABLE_ID: &str = "household-zone-set";
 const MODULE_ID: &str = "household-time";
 const MARKER: &str = "household_zone_role";
 
@@ -132,12 +133,219 @@ fn reconcile(fact: Option<&Fact>) -> Result<(), String> {
 }
 
 pub(crate) fn reconcile_for_update(profile: &Profile) {
+    if face_authority(profile).is_ok() {
+        let observed = observe_face();
+        if let Err(reason) = reconcile_set(observed.as_ref().ok()) {
+            eprintln!("actor=harmonia verb=reconcile target={SET_INTERACTABLE_ID} outcome=failed signal={reason}");
+        }
+        return;
+    }
+    if let Err(reason) = reconcile_set(None) {
+        eprintln!("actor=harmonia verb=reconcile target={SET_INTERACTABLE_ID} outcome=failed signal={reason}");
+    }
     if authority(profile).is_err() { return; }
     let fact = observe();
     let result = reconcile(fact.as_ref().ok());
     if let Err(reason) = fact.map(|_| ()).and(result) {
         eprintln!("actor=harmonia verb=reconcile target={INTERACTABLE_ID} outcome=failed signal={reason}");
     }
+}
+
+fn face_authority(profile: &Profile) -> Result<(), String> {
+    if !matches!(profile.id.as_str(), "tv" | "homesi" | "homeconsole")
+        || profile.identity != profile.id
+        || crate::device_profile::certificate_profile()? != profile.id
+        || !profile.modules.iter().any(|module| module == MODULE_ID)
+    {
+        return Err("household-zone-face-authority-required".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct FaceFact {
+    zone: String,
+    observed_at: Value,
+    valid_until: String,
+    face_zone: String,
+}
+
+fn require_follow_mode() -> Result<(), String> {
+    let config: Value = serde_json::from_slice(&std::fs::read("/etc/appliance/config.json")
+        .map_err(|_| "household-zone-mode-unreadable")?)
+        .map_err(|_| "household-zone-mode-invalid")?;
+    let root = config.as_object().ok_or("household-zone-mode-invalid")?;
+    let mode = match root.get("time") {
+        None => "follow",
+        Some(value) => match value.as_object().ok_or("household-zone-mode-invalid")?.get("zone_mode") {
+            None => "follow",
+            Some(value) => value.as_str().ok_or("household-zone-mode-invalid")?,
+        },
+    };
+    if mode != "follow" { return Err("household-zone-not-following".into()); }
+    Ok(())
+}
+
+// Profile resolution also parses config; retire our own row even when that
+// earlier parse fails, without interpreting the failure as authority to act.
+pub(crate) fn reconcile_unavailable_profile() {
+    if require_follow_mode().is_err() {
+        if let Err(reason) = reconcile_set(None) {
+            eprintln!("actor=harmonia verb=reconcile target={SET_INTERACTABLE_ID} outcome=failed signal={reason}");
+        }
+    }
+}
+
+fn observe_face() -> Result<FaceFact, String> {
+    require_follow_mode()?;
+    let (profile, profile_path) = crate::device_profile::resolve_certificate_profile()?;
+    face_authority(&profile)?;
+    let path = crate::default_module_root(&profile_path).join(MODULE_ID).join("manifest.json");
+    let manifest: Value = serde_json::from_slice(&std::fs::read(path)
+        .map_err(|_| "household-zone-manifest-unreadable")?)
+        .map_err(|_| "household-zone-manifest-invalid")?;
+    let step = manifest.get("ladder").and_then(Value::as_array)
+        .and_then(|steps| steps.iter().find(|step| step.get("tool").and_then(Value::as_str) == Some("household-time")
+            && step.get("permutation").and_then(Value::as_str) == Some("watch-and-set")))
+        .ok_or("household-zone-manifest-step-absent")?;
+    let raw_url = step.pointer("/args/state_url").and_then(Value::as_str).ok_or("household-zone-url-absent")?;
+    let url = if let Some(name) = raw_url.strip_prefix("$constants.") {
+        manifest.get("constants").and_then(|value| value.get(name)).and_then(Value::as_str)
+            .ok_or("household-zone-url-absent")?
+    } else { raw_url };
+    if !(url.starts_with("http://") || url.starts_with("https://")) || url.contains(char::is_whitespace)
+        || url.contains('?') || url.contains('#') {
+        return Err("household-zone-url-invalid".into());
+    }
+    let timeout = step.pointer("/args/timeout_secs").and_then(Value::as_u64).unwrap_or(10);
+    if timeout == 0 || timeout > 60 { return Err("household-zone-timeout-invalid".into()); }
+    let request = crate::atoms::r#do::set_clock::Request {
+        backend: "caduceus", operation: "watch-and-set", timezone: None,
+        state_url: Some(url), state_path: None, timeout_secs: timeout,
+    };
+    let observation = crate::atoms::ask::set_clock::clock(&request);
+    let remote = observation.remote_state.ok_or("household-zone-peer-unreadable")?;
+    if !remote.ok || remote.code != 0 { return Err("household-zone-peer-unreadable".into()); }
+    let zone = crate::tools::household_time::fresh_timezone(&remote.stdout).ok_or("household-zone-peer-stale")?;
+    if zone.split('/').any(|part| part == "." || part == "..") {
+        return Err("household-zone-peer-invalid".into());
+    }
+    let value: Value = serde_json::from_str(&remote.stdout).map_err(|_| "household-zone-peer-invalid")?;
+    let state = value.get("state").unwrap_or(&value);
+    let until = state.get("valid_until").and_then(Value::as_str).ok_or("household-zone-peer-invalid")?;
+    if valid_utc(until).filter(|until| *until > crate::tools::household_time::unix_now()).is_none() {
+        return Err("household-zone-peer-stale".into());
+    }
+    if !observation.local_state.ok || observation.local_state.code != Some(0) {
+        return Err("household-zone-face-clock-unreadable".into());
+    }
+    let face_zone = observation.timezone.filter(|zone| !zone.is_empty() && zone.split('/').all(|part|
+        !part.is_empty() && part != "." && part != ".." && part.chars().all(|c|
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))))
+        .ok_or("household-zone-face-clock-invalid")?;
+    Ok(FaceFact { zone, observed_at: state.get("observed_at").cloned().unwrap_or(Value::Null),
+        valid_until: until.into(), face_zone })
+}
+
+pub(crate) fn is_generated_set_proposal(item: &Interactable) -> bool {
+    item.id == SET_INTERACTABLE_ID && item.module_id == MODULE_ID && item.kind == "household-zone"
+        && item.target_path.as_deref() == Some(Path::new("/etc/localtime"))
+        && item.extra.get(MARKER).and_then(Value::as_str) == Some("set")
+}
+
+fn reconcile_set(fact: Option<&FaceFact>) -> Result<(), String> {
+    let path = crate::ledger::database_path();
+    let feed = super::load_feed_raw(&path)?;
+    let matching: Vec<_> = feed.interactables.iter().filter(|item| item.id == SET_INTERACTABLE_ID).collect();
+    if matching.iter().any(|item| !is_generated_set_proposal(item)) {
+        return Err("household-zone-set-proposal-id-collision".into());
+    }
+    let ids = matching.iter().map(|item| item.id.clone()).collect::<BTreeSet<_>>();
+    let Some(fact) = fact.filter(|fact| fact.zone != fact.face_zone) else {
+        if !ids.is_empty() {
+            crate::bands::propose_edits::persist_feed_with_intent(&path,
+                crate::bands::propose_edits::FeedPersistenceIntent::Remove { ids, receipts: Vec::new() })?;
+        }
+        return Ok(());
+    };
+    let now = crate::bands::propose_edits::iso8601_now();
+    let mut item = matching.first().map(|item| (*item).clone()).unwrap_or_else(|| Interactable {
+        id: SET_INTERACTABLE_ID.into(), module_id: MODULE_ID.into(), name: "Use the household timezone".into(),
+        description: "Set this device's timezone from the HomeServer.".into(), kind: "household-zone".into(),
+        target_path: Some("/etc/localtime".into()), reference_source_path: None,
+        drift: DriftSummary { content: true, mode: false, ownership: false },
+        created_at: now.clone(), refreshed_at: now.clone(), available_at: Some(now.clone()),
+        silenced: false, silenced_at: None, has_run: false, mode: None, owner: None, group: None,
+        source_sha: None, target_sha: None, commits_behind: None, live_sha: None, reference_sha: None,
+        recognition_score: None, diff: None, script: format!("harmonia interactable run {SET_INTERACTABLE_ID}"),
+        show_only_if: "household-zone=follow-and-different".into(), completion_check: "household-zone=equal".into(),
+        evidence: Value::Null, extra: serde_json::Map::new(),
+    });
+    let staged_at = item.evidence.get("staged_at").cloned().unwrap_or_else(|| json!(now));
+    item.evidence = json!({"household_zone":fact.zone,"fact_observed_at":fact.observed_at,
+        "fact_valid_until":fact.valid_until,"face_zone":fact.face_zone,"face_mode":"follow","staged_at":staged_at});
+    item.diff = Some(format!("/etc/localtime -> /usr/share/zoneinfo/{}  =>  /usr/share/zoneinfo/{}", fact.face_zone, fact.zone));
+    item.extra.insert(MARKER.into(), json!("set"));
+    if matching.len() == 1 && serde_json::to_value(matching[0]).ok() == serde_json::to_value(&item).ok() { return Ok(()); }
+    if !matching.is_empty() { item.refreshed_at = now; }
+    crate::bands::propose_edits::persist_feed_with_intent(&path,
+        crate::bands::propose_edits::FeedPersistenceIntent::Upsert { entries: vec![item], remove_ids: ids, sort_by_id: true })?;
+    Ok(())
+}
+
+pub(crate) fn run_set(_path: &Path, item: &Interactable, invocation: Option<&crate::Invocation>) -> Result<(), String> {
+    if !is_generated_set_proposal(item) { return Err("household-zone-set-binding-invalid".into()); }
+    let key = invocation.and_then(crate::Invocation::key).ok_or("household-zone-owner-invocation-required")?;
+    let (profile, _) = match crate::device_profile::resolve_certificate_profile() {
+        Ok(profile) => profile,
+        Err(reason) => { reconcile_unavailable_profile(); return Err(reason); }
+    };
+    face_authority(&profile)?;
+    let before = match observe_face() { Ok(fact) => fact, Err(reason) => { reconcile_set(None)?; return Err(reason); } };
+    if before.zone == before.face_zone {
+        reconcile_set(Some(&before))?;
+        println!("{}", json!({"id":SET_INTERACTABLE_ID,"ok":true,"changed":false,"converged":true}));
+        return Ok(());
+    }
+    if let Err(reason) = require_follow_mode() {
+        reconcile_set(None)?;
+        return Err(reason);
+    }
+    if valid_utc(&before.valid_until).filter(|until| *until > crate::tools::household_time::unix_now()).is_none() {
+        reconcile_set(None)?;
+        return Err("household-zone-peer-stale".into());
+    }
+    let request = crate::atoms::r#do::set_clock::Request {
+        backend: "caduceus", operation: "set-timezone", timezone: Some(&before.zone), state_url: None,
+        state_path: None, timeout_secs: 15,
+    };
+    let comparison = crate::atoms::comparison::execute_once(
+        "household-zone-set", || Ok::<_, String>(before.clone()),
+        |fact| if fact.zone == fact.face_zone { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
+        |authorization, fact| crate::atoms::r#do::set_clock::command(&authorization, key, &request, "set-timezone", Some(&fact.zone)),
+    )?;
+    let result = match comparison {
+        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => movement,
+        crate::atoms::comparison::ComparisonRun::Current { .. } => return Err("household-zone-observation-changed".into()),
+    };
+    let receipt = serde_json::from_str::<Value>(&result.stdout).ok();
+    let changed = receipt.as_ref().and_then(|v| v.get("changed")).and_then(Value::as_bool);
+    let success = result.ok && result.code == 0 && receipt.as_ref().and_then(|v| v.get("ok")).and_then(Value::as_bool) == Some(true) && changed.is_some();
+    let after = match observe_face() {
+        Ok(fact) => fact,
+        Err(reason) => {
+            reconcile_set(None)?;
+            println!("{}", json!({"id":SET_INTERACTABLE_ID,"ok":false,"changed":changed,
+                "converged":false,"first_missing_signal":reason}));
+            return Err(reason);
+        }
+    };
+    reconcile_set(Some(&after))?;
+    let converged = after.face_zone == after.zone && after.zone == before.zone;
+    println!("{}", json!({"id":SET_INTERACTABLE_ID,"ok":success && converged,"changed":changed,"converged":converged,"proposal_removed":after.face_zone == after.zone}));
+    if !success { return Err("household-zone-set-failed".into()); }
+    if !converged { return Err("household-zone-set-readback-mismatch".into()); }
+    Ok(())
 }
 
 pub(crate) fn run(_path: &Path, item: &Interactable, invocation: Option<&crate::Invocation>) -> Result<(), String> {

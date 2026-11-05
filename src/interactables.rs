@@ -383,8 +383,9 @@ pub(crate) fn interactable_command(
         Some("reconcile") => {
             let result = homeserver_clock_utc::reconcile_from_certificate(&args[1..]);
             if args.len() == 1 {
-                if let Ok((profile, _)) = crate::device_profile::resolve_certificate_profile() {
-                    household_zone::reconcile_for_update(&profile);
+                match crate::device_profile::resolve_certificate_profile() {
+                    Ok((profile, _)) => household_zone::reconcile_for_update(&profile),
+                    Err(_) => household_zone::reconcile_unavailable_profile(),
                 }
             }
             result
@@ -527,6 +528,9 @@ fn interactable_run(
     }
     if item.id == household_zone::INTERACTABLE_ID {
         return household_zone::run(&path, &item, invocation);
+    }
+    if item.id == household_zone::SET_INTERACTABLE_ID {
+        return household_zone::run_set(&path, &item, invocation);
     }
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),

@@ -1083,6 +1083,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("homeconsole")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
+            crate::interactables::household_zone::reconcile_for_update(&profile);
             homeconsole_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("tv-update") => {
@@ -1097,6 +1098,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             verify_asserted_profile("tv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
+            crate::interactables::household_zone::reconcile_for_update(&profile);
             tv_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("update-module") => update_module_command(&args, invocation.key()),

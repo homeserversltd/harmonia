@@ -757,6 +757,9 @@ fn prune_stale_interactables_with_observations(
                 || interactables::household_zone::is_generated_proposal(&entry)
             {
                 profile.id != "homeserver" || profile.identity != "homeserver"
+            } else if interactables::household_zone::is_generated_set_proposal(&entry) {
+                !matches!(profile.id.as_str(), "tv" | "homesi" | "homeconsole")
+                    || profile.identity != profile.id
             } else if row_backed && observed_modules.contains(&entry.module_id) && !recognized.contains(&entry.id) {
                 true
             } else {
