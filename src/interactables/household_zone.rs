@@ -186,13 +186,10 @@ fn require_follow_mode() -> Result<(), String> {
     Ok(())
 }
 
-// Profile resolution also parses config; retire our own row even when that
-// earlier parse fails, without interpreting the failure as authority to act.
+// Unresolved authority never permits a retained face proposal or an action.
 pub(crate) fn reconcile_unavailable_profile() {
-    if require_follow_mode().is_err() {
-        if let Err(reason) = reconcile_set(None) {
-            eprintln!("actor=harmonia verb=reconcile target={SET_INTERACTABLE_ID} outcome=failed signal={reason}");
-        }
+    if let Err(reason) = reconcile_set(None) {
+        eprintln!("actor=harmonia verb=reconcile target={SET_INTERACTABLE_ID} outcome=failed signal={reason}");
     }
 }
 
