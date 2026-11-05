@@ -579,6 +579,7 @@ pub(crate) fn update_from_certificate(
         }
     };
     crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
+    crate::interactables::household_zone::reconcile_for_update(&profile);
     if let Err(reason) = crate::bands::pull_source::validate_declared_sources(&certificate_path) {
         write_early_refusal(
             json!({

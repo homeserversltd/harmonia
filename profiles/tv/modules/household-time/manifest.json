@@ -11,7 +11,7 @@
     "time set-timezone"
   ],
   "constants": {
-    "resolver_time_state_url": "http://home.arpa:3014/time/state"
+    "resolver_time_state_url": "http://home.arpa:3014/api/v1/time/state"
   },
   "ladder": [
     {

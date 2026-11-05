@@ -973,6 +973,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             }
             let _proposal_observation = crate::receipts::ProposalObservationGuard::enter();
             crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
+            crate::interactables::household_zone::reconcile_for_update(&profile);
             if profile.id == "homeserver" && profile.identity == "homeserver" {
                 homeserver_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
@@ -1066,6 +1067,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
             crate::interactables::homeserver_clock_utc::reconcile_for_update(&profile);
+            crate::interactables::household_zone::reconcile_for_update(&profile);
             homeserver_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("homeconsole-update") => {

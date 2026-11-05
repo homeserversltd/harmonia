@@ -216,7 +216,7 @@ pub(crate) fn apply(
     }
 }
 
-fn command(
+pub(crate) fn command(
     authorization: &ActionAuthorization,
     invocation: &atoms::r#do::InvocationKey,
     request: &Request<'_>,

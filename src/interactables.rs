@@ -15,6 +15,7 @@ const HOUSEHOLD_TRUST_RENEW_RECEIPT: &str =
     "harmonia.interactables.household_trust_renew.receipt.v1";
 
 pub(crate) mod homeserver_clock_utc;
+pub(crate) mod household_zone;
 pub(crate) mod json_key;
 
 pub(crate) fn is_ruyi_born_kind(kind: &str) -> bool {
@@ -515,6 +516,9 @@ fn interactable_run(
     let position = 0;
     if item.id == homeserver_clock_utc::INTERACTABLE_ID {
         return homeserver_clock_utc::run(&path, &item, invocation);
+    }
+    if item.id == household_zone::INTERACTABLE_ID {
+        return household_zone::run(&path, &item, invocation);
     }
     match item.kind.as_str() {
         "ruyi-bump" => return run_ruyi_bump(&path, &mut feed, position, &item),

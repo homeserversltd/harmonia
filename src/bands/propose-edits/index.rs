@@ -753,7 +753,9 @@ fn prune_stale_interactables_with_observations(
                 true
             } else if !active.contains(&entry.module_id) {
                 true
-            } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry) {
+            } else if interactables::homeserver_clock_utc::is_generated_proposal(&entry)
+                || interactables::household_zone::is_generated_proposal(&entry)
+            {
                 profile.id != "homeserver" || profile.identity != "homeserver"
             } else if row_backed && observed_modules.contains(&entry.module_id) && !recognized.contains(&entry.id) {
                 true

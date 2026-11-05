@@ -85,7 +85,7 @@ fn validate_state_url(url: &str) -> Result<(), String> {
         Err("household-time-state-url-invalid".into())
     }
 }
-fn validate_timezone(zone: &str) -> Result<(), String> {
+pub(crate) fn validate_timezone(zone: &str) -> Result<(), String> {
     let parts: Vec<_> = zone.split('/').collect();
     if parts.len() >= 2
         && parts.iter().all(|part| {
@@ -100,13 +100,13 @@ fn validate_timezone(zone: &str) -> Result<(), String> {
         Err("household-time-timezone-invalid".into())
     }
 }
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-fn parse_utc(value: &str) -> Option<i64> {
+pub(crate) fn parse_utc(value: &str) -> Option<i64> {
     let v = value.strip_suffix('Z')?;
     let (date, time) = v.split_once('T')?;
     let mut d = date.split('-').map(str::parse::<i64>);

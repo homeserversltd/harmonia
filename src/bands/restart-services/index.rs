@@ -631,7 +631,12 @@ pub(crate) fn execute_manifest_band(
                 && outcome.message == "systemd-unit-condition-unmet";
             let own_service_skip = manifest.id == "xenia" && step.tool == "xenia-runtime"
                 && step.permutation == "skip" && outcome.ok && outcome.skipped;
-            let mut placement = serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RestartServices","status":if condition_skip || own_service_skip {"skipped"} else if outcome.ok {"completed"} else {"failed"},"module":manifest.id});
+            let household_plan = step.tool == "household-time" && outcome.ok && outcome.skipped;
+            let mut placement = serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"RestartServices","status":if household_plan {"planned"} else if condition_skip || own_service_skip {"skipped"} else if outcome.ok {"completed"} else {"failed"},"module":manifest.id});
+            if household_plan {
+                placement["skipped"] = Value::Bool(true);
+                placement["message"] = serde_json::json!(outcome.command.as_ref().map(|command| command.stdout.as_str()).unwrap_or(&outcome.message));
+            }
             if manifest.id == "xenia" && step.tool == "xenia-runtime" && step.permutation == "refusal" {
                 placement["ok"] = Value::Bool(false);
                 placement["changed"] = Value::Bool(false);
