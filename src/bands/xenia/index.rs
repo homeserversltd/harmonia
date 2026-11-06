@@ -406,13 +406,14 @@ pub(crate) fn reshape_routines(manifest: &mut LadderManifest) -> Result<(), Stri
             ("id".into(), json!(id)), ("resolved_commit".into(), json!({"from":"build.source_build_sha"})),
             ("endpoint".into(), discovered_endpoint(&entry).map(Value::from).unwrap_or(Value::Null)),
             ("health_route".into(), json!(health_route(&entry))),
+            ("restart_changed".into(), json!({"from":"service-restart.changed"})),
         ]);
         let health_pos = step.steps.iter().position(|c| c.name == "health-proof").ok_or("xenia-health-missing")?;
         step.steps.insert(health_pos + 1, RoutineStep {
             name: "observe-stamp".into(), tool: "xenia-runtime".into(), permutation: Some("observe-stamp".into()),
             args: BTreeMap::from([
-                ("id".into(), json!(id)), ("source_sha".into(), json!({"from":"health-proof.running_source_sha"})),
-                ("health".into(), json!({"from":"health-proof.health"})), ("endpoint".into(), json!({"from":"health-proof.endpoint"})),
+                ("id".into(), json!(id)), ("source_sha".into(), json!({"from":"health-proof.running_source_sha", "default":null})),
+                ("health".into(), json!({"from":"health-proof.health", "default":null})), ("endpoint".into(), json!({"from":"health-proof.endpoint", "default":null})),
                 ("version".into(), json!({"from":"pull-repo.version"})),
                 ("binary_changed".into(), json!({"from":"binary-install.changed"})),
                 ("restart_changed".into(), json!({"from":"service-restart.changed"})),
@@ -677,11 +678,10 @@ pub(crate) fn execute_routine_child(
     match permutation {
         "seat-present" => xenia_seat_present(args, apply),
         "observe-stamp" => {
-            if args.get("binary_changed").and_then(Value::as_bool) != Some(true)
-                && args.get("restart_changed").and_then(Value::as_bool) != Some(true) {
+            if args.get("restart_changed").and_then(Value::as_bool) != Some(true) {
                 return Ok((OperationOutcome {
                     ok: true, changed: false, skipped: true,
-                    message: "xenia-binary-current".into(), command: None,
+                    message: "xenia-restart-not-performed".into(), command: None,
                 }, BTreeMap::new()));
             }
             if !apply {
@@ -903,6 +903,12 @@ pub(crate) fn execute_health_read(
 pub(crate) fn execute_status_door(
     args: &BTreeMap<String, Value>,
 ) -> Result<(OperationOutcome, BTreeMap<String, Value>), String> {
+    if args.get("restart_changed").and_then(Value::as_bool) != Some(true) {
+        return Ok((OperationOutcome {
+            ok: true, changed: false, skipped: true,
+            message: "xenia-restart-not-performed".into(), command: None,
+        }, BTreeMap::new()));
+    }
     let base = base_url(None)?;
     execute_status_door_at_base(args, &base)
 }
