@@ -2304,7 +2304,9 @@ pub(crate) fn observe_module_release_identity(
         }
         let flag_value: Value = serde_json::from_slice(&flag).map_err(|_| "release-flag-malformed")?;
         if !flag_value.get("pipeline_url").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
-            || flag_value.get("env_sha").is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| is_hex(s, 64))) {
+            || flag_value.get("env_sha").is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| is_hex(s, 64)))
+            || (matches!(component, "harmonia" | "harmonia-monad")
+                && !flag_value.get("env_sha").and_then(Value::as_str).is_some_and(|s| is_hex(s, 64))) {
             return Err("release-flag-invalid".into());
         }
         let url = release_asset_url(&metadata, tag, sidecar_name)?;

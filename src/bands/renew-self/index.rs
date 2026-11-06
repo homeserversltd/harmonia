@@ -363,7 +363,7 @@ pub(crate) fn install_bin_fingerprint(path: &Path) -> Option<String> {
 }
 
 fn running_binary_fingerprint() -> Option<String> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-facade"))]
     if let Ok(fingerprint) = env::var("HARMONIA_TEST_ENGINE_RUNNING_SHA") {
         return Some(fingerprint);
     }
@@ -1524,6 +1524,7 @@ struct ContentSeatObservation {
     observed_head: Option<String>,
     matches: bool,
     move_ok: bool,
+    changed: bool,
 }
 
 thread_local! {
@@ -1633,6 +1634,7 @@ fn write_content_seat_observation(
         observed_head,
         matches,
         move_ok: outcome.ok,
+        changed: apply && outcome.changed,
     })
 }
 
@@ -2819,6 +2821,76 @@ pub(crate) fn run_engine_preflight(
                 engine_source_root(),
                 None,
             );
+            // Only a complete first-candidate identity and matching running process
+            // may close Current; every inconclusive witness retains today's Act path.
+            if !self_update_reexec_guard_active() {
+                if let (Some(installed), Some(candidate)) =
+                    (install_before.as_deref(), source_plan.candidates.first())
+                {
+                    let running = running_binary_fingerprint();
+                    if running.as_deref() == Some(installed) {
+                        if let Ok(source) = engine_release_source_for_candidate(candidate) {
+                            let stamp = crate::atoms::ask::collective_stamp::current();
+                            if let Ok(Some((observed_head, desired))) =
+                                crate::atoms::ask::fetch_artifact::observe_module_release_identity(
+                                    source.provider.name(), &component, &source.repository,
+                                    &source.api_root, "harmonia-x86_64", "harmonia-x86_64.sha256",
+                                    None, stamp.target(&component), None,
+                                )
+                            {
+                                if desired == installed {
+                                    let seat = observe_or_acquire_content_seat(
+                                        &resolution, &observed_head, apply, invocation, &preflight_dir,
+                                    )?;
+                                    operation_count += 1;
+                                    let signal = if !seat.move_ok {
+                                        "engine-content-seat-move-failed"
+                                    } else if !seat.matches {
+                                        "engine-content-seat-head-mismatch"
+                                    } else {
+                                        "none"
+                                    };
+                                    let ok = signal == "none";
+                                    emit_preflight_receipt(
+                                        module_root, &preflight_dir, &component,
+                                        engine_component_ignored.as_deref(), Some(&observed_head),
+                                        None, Some(installed), ok, apply, seat.changed, signal,
+                                        operation_count, None, false, None,
+                                    )?;
+                                    update_engine_preflight_contract(
+                                        &preflight_dir, Some("artifact"), Some(&observed_head), None,
+                                    )?;
+                                    let path = preflight_dir.join("run.json");
+                                    let mut receipt: Value = serde_json::from_str(
+                                        &fs::read_to_string(&path)
+                                            .map_err(|e| format!("engine-preflight-receipt-read-failed: {e}"))?,
+                                    ).map_err(|e| format!("engine-preflight-receipt-parse-failed: {e}"))?;
+                                    receipt["observed_sha256"] = json!(installed);
+                                    receipt["desired_sha256"] = json!(desired);
+                                    receipt["running_sha256"] = json!(running);
+                                    receipt["diff"] = json!("empty");
+                                    receipt["engine_movement"] = json!("none");
+                                    receipt["movement"] = json!(if seat.changed { "content-seat" } else { "none" });
+                                    if ok {
+                                        receipt["successor_promoted_only_after"] = json!("no-engine-change");
+                                        receipt["presses_per_engine_change"] = json!(0);
+                                    }
+                                    write_json(&path, &receipt)?;
+                                    forward_preflight_receipt(
+                                        ok, apply, seat.changed, signal, &component,
+                                        engine_component_ignored.as_deref(),
+                                    );
+                                    return Ok(ModuleExecution {
+                                        ok, changed: seat.changed, operation_count,
+                                        first_missing_signal: (!ok).then(|| signal.to_string()),
+                                        placements: Vec::new(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let probe = probe_engine_release_candidates(
                 &component,
                 &source_plan.candidates,
