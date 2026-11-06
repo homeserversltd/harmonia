@@ -169,6 +169,7 @@ pub(crate) fn unique_temp_suffix() -> String {
     )
 }
 
+#[derive(Clone)]
 struct ReleaseMetadata {
     url: String,
     tag_name: Option<String>,
@@ -176,6 +177,17 @@ struct ReleaseMetadata {
     created_at: Option<String>,
     draft: bool,
     assets: serde_json::Value,
+}
+
+pub(crate) struct ReleaseObservation {
+    pub source_sha: String,
+    pub digest: String,
+    tag: String,
+    metadata: ReleaseMetadata,
+    flag: Vec<u8>,
+    sidecar_name: String,
+    sidecar: Vec<u8>,
+    releases: Option<Vec<PublishedRelease>>,
 }
 
 #[derive(Debug, Clone)]
@@ -666,7 +678,9 @@ pub(crate) fn fetch_release_assets_for_inspection(
 pub(crate) fn fetch_release_asset_set_for_inspection(
     request: &ReleaseRequest,
     tag: &str,
+    selected_tag: &str,
     asset_names: &[(&str, &str)],
+    observation: Option<&ReleaseObservation>,
 ) -> Result<Option<(Vec<ReleaseAssets>, Option<String>)>, String> {
     if asset_names.is_empty()
         || !matches!(request.kind.as_str(), "forgejo-release" | "github-release")
@@ -679,10 +693,16 @@ pub(crate) fn fetch_release_asset_set_for_inspection(
     {
         return Err("release-declaration-incomplete".into());
     }
-    let Some(metadata) = lookup_release_metadata_inner(request, tag, true)? else {
-        return Ok(None);
+    let observation = observation.filter(|seen| selected_tag == seen.tag);
+    if observation.is_some() {
+        fs::create_dir_all(&request.cache_dir)
+            .map_err(|error| format!("release-cache-create-failed: {error}"))?;
+    }
+    let metadata = if let Some(seen) = observation { seen.metadata.clone() } else {
+        let Some(metadata) = lookup_release_metadata_inner(request, tag, true)? else { return Ok(None); };
+        metadata
     };
-    fetch_release_asset_set_from_metadata(request, tag, &metadata, asset_names).map(Some)
+    fetch_release_asset_set_from_metadata(request, tag, &metadata, asset_names, observation).map(Some)
 }
 
 fn fetch_release_asset_set_from_metadata(
@@ -690,6 +710,7 @@ fn fetch_release_asset_set_from_metadata(
     tag: &str,
     metadata: &ReleaseMetadata,
     asset_names: &[(&str, &str)],
+    observation: Option<&ReleaseObservation>,
 ) -> Result<(Vec<ReleaseAssets>, Option<String>), String> {
     if source_sha_from_release_tag(tag)
         .is_some_and(|source_sha| metadata.target_commitish != source_sha)
@@ -699,14 +720,18 @@ fn fetch_release_asset_set_from_metadata(
     let created_at = metadata.created_at.clone();
     let flag_url = optional_release_asset_url(&metadata, "release.flag")
         .ok_or_else(|| "release-asset-missing tag=release.flag asset=release.flag".to_string())?;
-    let release_flag = download_release_asset(request, &flag_url, "release.flag", true)?;
+    let release_flag = if let Some(seen) = observation { seen.flag.clone() } else {
+        download_release_asset(request, &flag_url, "release.flag", true)?
+    };
     let mut releases = Vec::with_capacity(asset_names.len());
     for (asset_name, sidecar_name) in asset_names {
         let artifact_url = release_asset_url(&metadata, tag, asset_name)?;
         let sidecar_url = release_asset_url(&metadata, tag, sidecar_name)?;
         releases.push(ReleaseAssets {
             artifact: download_release_asset(request, &artifact_url, asset_name, true)?,
-            sidecar: download_release_asset(request, &sidecar_url, sidecar_name, true)?,
+            sidecar: if let Some(seen) = observation.filter(|seen| seen.sidecar_name == *sidecar_name) {
+                seen.sidecar.clone()
+            } else { download_release_asset(request, &sidecar_url, sidecar_name, true)? },
             release_flag: Some(release_flag.clone()),
             metadata_url: metadata.url.clone(),
             target_commitish: metadata.target_commitish.clone(),
@@ -2021,6 +2046,7 @@ pub(crate) fn download_latest_release(
         None,
         None,
         release_schema_base,
+        None,
     )?;
     if let Some(download) = download.as_mut() {
         download.identity = identity.to_owned();
@@ -2061,6 +2087,7 @@ fn fetch_exact_pinned_asset_set(
     request: &ReleaseRequest,
     tag: &str,
     asset_set: &[(String, String)],
+    observation: Option<&ReleaseObservation>,
 ) -> Result<Option<(Vec<ReleaseAssets>, Option<String>)>, String> {
     if asset_set.is_empty()
         || !matches!(request.kind.as_str(), "forgejo-release" | "github-release")
@@ -2068,8 +2095,14 @@ fn fetch_exact_pinned_asset_set(
     {
         return Err("release-declaration-incomplete".into());
     }
-    let Some(metadata) = lookup_release_metadata_single(request, tag, true)? else {
-        return Ok(None);
+    let observation = observation.filter(|seen| seen.tag == tag);
+    if observation.is_some() {
+        fs::create_dir_all(&request.cache_dir)
+            .map_err(|error| format!("release-cache-create-failed: {error}"))?;
+    }
+    let metadata = if let Some(seen) = observation { seen.metadata.clone() } else {
+        let Some(metadata) = lookup_release_metadata_single(request, tag, true)? else { return Ok(None); };
+        metadata
     };
     if metadata.tag_name.as_deref() != Some(tag) {
         return Err("fetch-artifact-pinned-release-tag-mismatch".into());
@@ -2085,7 +2118,9 @@ fn fetch_exact_pinned_asset_set(
     }
     let flag_url = optional_release_asset_url(&metadata, "release.flag")
         .ok_or_else(|| "fetch-artifact-release-flag-missing".to_string())?;
-    let flag = download_release_asset(request, &flag_url, "release.flag", true)?;
+    let flag = if let Some(seen) = observation { seen.flag.clone() } else {
+        download_release_asset(request, &flag_url, "release.flag", true)?
+    };
     let mut assets = Vec::with_capacity(asset_set.len());
     for (asset_name, sidecar_name) in asset_set {
         if !safe_asset_name(asset_name) || !safe_asset_name(sidecar_name) {
@@ -2095,7 +2130,9 @@ fn fetch_exact_pinned_asset_set(
         let sidecar_url = release_asset_url(&metadata, tag, sidecar_name)?;
         assets.push(ReleaseAssets {
             artifact: download_release_asset(request, &artifact_url, asset_name, true)?,
-            sidecar: download_release_asset(request, &sidecar_url, sidecar_name, true)?,
+            sidecar: if let Some(seen) = observation.filter(|seen| seen.sidecar_name == *sidecar_name) {
+                seen.sidecar.clone()
+            } else { download_release_asset(request, &sidecar_url, sidecar_name, true)? },
             release_flag: Some(flag.clone()),
             metadata_url: metadata.url.clone(),
             target_commitish: metadata.target_commitish.clone(),
@@ -2189,6 +2226,7 @@ pub(crate) fn download_pinned_engine_release_for_provider(
     api_root: &str,
     source_sha: &str,
     release_schema_base: Option<&str>,
+    observation: Option<&ReleaseObservation>,
 ) -> Result<Option<Download>, String> {
     if !validate_source_sha(source_sha) {
         return Err("fetch-artifact-pinned-release-sha-invalid".into());
@@ -2217,7 +2255,7 @@ pub(crate) fn download_pinned_engine_release_for_provider(
     let asset_set = vec![("harmonia-x86_64".to_owned(), "harmonia-x86_64.sha256".to_owned())];
     let tag = format!("sha-{source_sha}");
     let result = (|| {
-        let Some((assets, created_at)) = fetch_exact_pinned_asset_set(&request, &tag, &asset_set)? else {
+        let Some((assets, created_at)) = fetch_exact_pinned_asset_set(&request, &tag, &asset_set, observation)? else {
             return Ok(None);
         };
         let (download, _) = verify_exact_pinned_module_release(
@@ -2250,7 +2288,7 @@ pub(crate) fn observe_module_release_identity(
     profile: Option<&str>,
     pin: Option<&str>,
     schema_base: Option<&str>,
-) -> Result<Option<(String, String)>, String> {
+) -> Result<Option<ReleaseObservation>, String> {
     let (owner, repo) = release_repo.split_once('/').ok_or("release-repository-invalid")?;
     validate_segment(owner, "release-owner")?;
     validate_segment(repo, "release-repo")?;
@@ -2271,6 +2309,7 @@ pub(crate) fn observe_module_release_identity(
     };
     let result = (|| {
         let asset_set = module_release_asset_set(component, asset_name, sidecar_name, profile);
+        let mut observed_releases = None;
         let metadata = if let Some(sha) = pin {
             let tag = format!("sha-{sha}");
             let Some(metadata) = lookup_release_metadata_single(&request, &tag, true)? else { return Ok(None); };
@@ -2282,12 +2321,13 @@ pub(crate) fn observe_module_release_identity(
         } else {
             let mut releases = lookup_published_releases(&request)?;
             releases.sort_by(|a, b| b.created_at_order.cmp(&a.created_at_order).then_with(|| b.id.cmp(&a.id)));
-            let Some(candidate) = releases.into_iter().find(|candidate| {
+            let Some(candidate) = releases.iter().find(|candidate| {
                 !candidate.draft && source_sha_from_release_tag(&candidate.tag_name).is_some()
                     && candidate.has_asset("release.flag")
                     && asset_set.iter().all(|(asset, sidecar)| candidate.has_asset(asset) && candidate.has_asset(sidecar))
             }) else { return Ok(None); };
             let Some(metadata) = lookup_release_metadata_inner(&request, &candidate.tag_name, true)? else { return Ok(None); };
+            observed_releases = Some(releases);
             metadata
         };
         if metadata.draft || asset_set.iter().any(|(asset, sidecar)|
@@ -2321,7 +2361,10 @@ pub(crate) fn observe_module_release_identity(
         {
             return Err("release-flag-sidecar-mismatch".into());
         }
-        Ok(Some((source_sha, digest.to_owned())))
+        let digest = digest.to_owned();
+        let tag = tag.to_owned();
+        Ok(Some(ReleaseObservation { source_sha, digest, tag, metadata, flag,
+            sidecar_name: sidecar_name.to_owned(), sidecar, releases: observed_releases }))
     })();
     let _ = fs::remove_dir_all(&request.cache_dir);
     result
@@ -2338,6 +2381,7 @@ pub(crate) fn download_latest_engine_release_for_assets(
     profile: Option<&str>,
     pinned_release_sha: Option<&str>,
     release_schema_base: Option<&str>,
+    observation: Option<&ReleaseObservation>,
 ) -> Result<Option<Download>, String> {
     if let Some(source_sha) = pinned_release_sha {
         if !validate_source_sha(source_sha) {
@@ -2373,7 +2417,7 @@ pub(crate) fn download_latest_engine_release_for_assets(
         if let Some(source_sha) = pinned_release_sha {
             let tag = format!("sha-{source_sha}");
             let Some((assets, created_at)) =
-                fetch_exact_pinned_asset_set(&request, &tag, &asset_set)?
+                fetch_exact_pinned_asset_set(&request, &tag, &asset_set, observation)?
             else {
                 return Err("fetch-artifact-pinned-release-missing".into());
             };
@@ -2390,7 +2434,9 @@ pub(crate) fn download_latest_engine_release_for_assets(
             )?;
             return Ok(Some(download));
         }
-        let mut releases = lookup_published_releases(&request)?;
+        let mut releases = if let Some(releases) = observation.and_then(|seen| seen.releases.as_ref()) {
+            releases.clone()
+        } else { lookup_published_releases(&request)? };
         releases.sort_by(|left, right| {
             right
                 .created_at_order
@@ -2429,7 +2475,9 @@ pub(crate) fn download_latest_engine_release_for_assets(
             let fetched = fetch_release_asset_set_for_inspection(
                 &request,
                 &candidate.tag_name,
+                &candidate.tag_name,
                 &refs,
+                observation,
             );
             let (assets, _created_at) = match fetched {
                 Ok(Some(value)) => value,
@@ -2487,6 +2535,7 @@ pub(crate) fn download_github_latest_engine_release_for_assets(
     profile: Option<&str>,
     pinned_release_sha: Option<&str>,
     release_schema_base: Option<&str>,
+    observation: Option<&ReleaseObservation>,
 ) -> Result<Option<Download>, String> {
     let (owner, repo) = release_repo
         .split_once('/')
@@ -2520,7 +2569,7 @@ pub(crate) fn download_github_latest_engine_release_for_assets(
         if let Some(source_sha) = pinned_release_sha {
             let tag = format!("sha-{source_sha}");
             let Some((assets, created_at)) =
-                fetch_exact_pinned_asset_set(&request, &tag, &asset_set)?
+                fetch_exact_pinned_asset_set(&request, &tag, &asset_set, observation)?
             else {
                 return Err("fetch-artifact-pinned-release-missing".into());
             };
@@ -2541,8 +2590,11 @@ pub(crate) fn download_github_latest_engine_release_for_assets(
             .iter()
             .map(|(asset, sidecar)| (asset.as_str(), sidecar.as_str()))
             .collect::<Vec<_>>();
+        // The observation resolved the rolling alias once for this press. Keep
+        // that concrete selection distinct from the alias used by the fallback.
+        let selected_tag = observation.map(|seen| seen.tag.as_str()).unwrap_or("latest");
         let Some((assets, created_at)) =
-            fetch_release_asset_set_for_inspection(&request, "latest", &refs)?
+            fetch_release_asset_set_for_inspection(&request, "latest", selected_tag, &refs, observation)?
         else {
             return Ok(None);
         };
@@ -2759,7 +2811,7 @@ pub(crate) fn download_member_release_binary(
             let sidecar_name = format!("{asset_name}.sha256");
             let asset_set = module_release_asset_set(component, asset_name, &sidecar_name, None);
             let Some((assets, created_at)) =
-                fetch_exact_pinned_asset_set(&request, expected_tag, &asset_set)?
+                fetch_exact_pinned_asset_set(&request, expected_tag, &asset_set, None)?
             else {
                 return Ok(None);
             };
@@ -2820,7 +2872,7 @@ pub(crate) fn download_member_release_binary(
             .map(|(asset, sidecar)| (asset.as_str(), sidecar.as_str()))
             .collect::<Vec<_>>();
         let (assets, created_at) =
-            fetch_release_asset_set_from_metadata(&request, metadata_tag, &metadata, &refs)?;
+            fetch_release_asset_set_from_metadata(&request, metadata_tag, &metadata, &refs, None)?;
         let (download, fetched_flag) = verify_module_release_assets_with_flag(
             component,
             asset_name,
@@ -3107,6 +3159,7 @@ pub(crate) fn download_latest_engine_release(
     release_repo: &str,
     api_root: &str,
     release_schema_base: Option<&str>,
+    observation: Option<&ReleaseObservation>,
 ) -> Result<Option<Download>, String> {
     download_latest_engine_release_for_assets(
         component,
@@ -3117,6 +3170,7 @@ pub(crate) fn download_latest_engine_release(
         None,
         None,
         release_schema_base,
+        observation,
     )
 }
 
@@ -3128,6 +3182,7 @@ pub(crate) fn download_github_latest_engine_release(
     release_repo: &str,
     api_root: &str,
     release_schema_base: Option<&str>,
+    observation: Option<&ReleaseObservation>,
 ) -> Result<Option<Download>, String> {
     download_github_latest_engine_release_for_assets(
         component,
@@ -3138,10 +3193,11 @@ pub(crate) fn download_github_latest_engine_release(
         None,
         None,
         release_schema_base,
+        observation,
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PublishedRelease {
     id: u64,
     created_at: String,

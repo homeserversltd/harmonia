@@ -2069,6 +2069,7 @@ fn probe_engine_release_candidates(
     release_schema_base: Option<&str>,
     mode: ReleaseCandidateReceiptMode,
     member_flag_seat: Option<&crate::atoms::ask::mint_seats::Seat>,
+    observation: Option<&crate::atoms::ask::fetch_artifact::ReleaseObservation>,
 ) -> ReleaseCandidateProbe {
     use crate::atoms::ask::fetch_artifact::{
         download_github_latest_engine_release_for_assets,
@@ -2175,6 +2176,7 @@ fn probe_engine_release_candidates(
             continue;
         }
 
+        let observation = if index == 0 { observation } else { None };
         let mut provider_name = None;
         let mut target = Some(format!("{}@release-source", candidate.locator));
         let mut release_refusals = Vec::new();
@@ -2290,6 +2292,7 @@ fn probe_engine_release_candidates(
                                 component,
                                 &source,
                                 effective_pinned_sha,
+                                observation,
                             ),
                             ReleaseCandidateReceiptMode::Module => match source.provider {
                                 EngineReleaseProvider::Forgejo => {
@@ -2302,6 +2305,7 @@ fn probe_engine_release_candidates(
                                         profile,
                                         effective_pinned_sha,
                                         release_schema_base,
+                                        observation,
                                     )
                                 }
                                 EngineReleaseProvider::GitHub => {
@@ -2314,6 +2318,7 @@ fn probe_engine_release_candidates(
                                         profile,
                                         effective_pinned_sha,
                                         release_schema_base,
+                                        observation,
                                     )
                                 }
                                 _ => unreachable!("release provider enum is exhaustive"),
@@ -2500,6 +2505,7 @@ pub(crate) fn probe_member_release_candidates(
             ReleaseCandidateReceiptMode::MemberFlag
         },
         Some(seat),
+        None,
     );
     MemberReleaseProbe {
         selected: probe.selected_flag,
@@ -2533,17 +2539,19 @@ pub(crate) fn download_module_release_candidates(
     );
     // Do not skip a higher-priority candidate on an inconclusive observation:
     // the existing acquisition path decides all fallback and refusal behavior.
+    let mut observation = None;
     if let (Some(installed), Some(candidate)) = (installed_digest, source_plan.candidates.first()) {
         if let Ok(source) = engine_release_source_for_candidate(candidate) {
             let stamp = crate::atoms::ask::collective_stamp::current();
             let pin = stamp.target(component).or(pinned_release_sha);
-            if let Ok(Some((source_sha, desired))) = crate::atoms::ask::fetch_artifact::observe_module_release_identity(
+            if let Ok(Some(seen)) = crate::atoms::ask::fetch_artifact::observe_module_release_identity(
                 source.provider.name(), component, &source.repository, &source.api_root,
                 asset_name, sidecar_name, profile, pin, release_schema_base,
             ) {
-                if installed == desired {
-                    return (None, Vec::new(), Some((source_sha, desired)));
+                if installed == seen.digest {
+                    return (None, Vec::new(), Some((seen.source_sha, seen.digest)));
                 }
+                observation = Some(seen);
             }
         }
     }
@@ -2557,6 +2565,7 @@ pub(crate) fn download_module_release_candidates(
         release_schema_base,
         ReleaseCandidateReceiptMode::Module,
         None,
+        observation.as_ref(),
     );
     (probe.download, probe.receipts, None)
 }
@@ -2565,6 +2574,7 @@ fn download_engine_release_for_preflight(
     component: &str,
     source: &EngineReleaseSource,
     pinned_release_sha: Option<&str>,
+    observation: Option<&crate::atoms::ask::fetch_artifact::ReleaseObservation>,
 ) -> Result<Option<crate::atoms::ask::fetch_artifact::Download>, String> {
     #[cfg(test)]
     if let Some(injected) = injected_engine_release() {
@@ -2578,6 +2588,7 @@ fn download_engine_release_for_preflight(
             &source.api_root,
             source_sha,
             None,
+            observation,
         )?;
         return download
             .map(Some)
@@ -2590,6 +2601,7 @@ fn download_engine_release_for_preflight(
                 &source.repository,
                 &source.api_root,
                 None,
+                observation,
             )
         }
         EngineReleaseProvider::GitHub => {
@@ -2598,6 +2610,7 @@ fn download_engine_release_for_preflight(
                 &source.repository,
                 &source.api_root,
                 None,
+                observation,
             )
         }
     }
@@ -2830,6 +2843,7 @@ pub(crate) fn run_engine_preflight(
             } else {
                 None
             };
+            let mut observation = None;
             if !guarded || handoff.is_some() {
                 if let (Some(installed), Some(candidate)) =
                     (install_before.as_deref(), source_plan.candidates.first())
@@ -2838,13 +2852,15 @@ pub(crate) fn run_engine_preflight(
                     if running.as_deref() == Some(installed) {
                         if let Ok(source) = engine_release_source_for_candidate(candidate) {
                             let stamp = crate::atoms::ask::collective_stamp::current();
-                            if let Ok(Some((observed_head, desired))) =
+                            if let Ok(Some(seen)) =
                                 crate::atoms::ask::fetch_artifact::observe_module_release_identity(
                                     source.provider.name(), &component, &source.repository,
                                     &source.api_root, "harmonia-x86_64", "harmonia-x86_64.sha256",
                                     None, stamp.target(&component), None,
                                 )
                             {
+                                let observed_head = seen.source_sha.clone();
+                                let desired = seen.digest.clone();
                                 if desired == installed {
                                     let seat = observe_or_acquire_content_seat(
                                         &resolution, &observed_head, apply, invocation, &preflight_dir,
@@ -2904,6 +2920,8 @@ pub(crate) fn run_engine_preflight(
                                             placements: Vec::new(),
                                         });
                                     }
+                                } else {
+                                    observation = Some(seen);
                                 }
                             }
                         }
@@ -2920,6 +2938,7 @@ pub(crate) fn run_engine_preflight(
                 None,
                 ReleaseCandidateReceiptMode::Engine,
                 None,
+                observation.as_ref(),
             );
             release_candidate_receipts = probe.receipts;
             if let Some(download) = probe.download {
