@@ -458,7 +458,7 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
     // pull/build/install + suffix, or the same with one proposal child.
     if step.tool != "routine"
         || step.permutation != "execute"
-        || step.steps.len() < stages.len() - 1
+        || step.steps.len() < 6
     {
         return false;
     }
@@ -534,7 +534,11 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
             && child.tool == "place-file"
             && child.permutation.as_deref() == Some("source-sha-record")
     });
-    let expected_suffix = if authority_present {
+    let expected_suffix = if suffix.len() == 3 {
+        &stages[4..7]
+    } else if suffix.len() == 4 && source_sha_present {
+        &[stages[4], stages[5], stages[6], stages[10]][..]
+    } else if authority_present {
         if source_sha_present {
             &stages[4..]
         } else {
@@ -595,7 +599,6 @@ pub(crate) fn is_lowered_service_runtime_converge(step: &LadderStep) -> bool {
         "source_dir",
         "install_bin",
         "service",
-        "url",
         "binary_name",
         "op_prefix",
         "run_schema",

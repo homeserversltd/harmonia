@@ -74,6 +74,8 @@ pub(crate) fn enter(enter: &mut impl FnMut(Band) -> Result<(), String>) -> Resul
 
 
 pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
+    // Xenia reshapes this routine and still consumes its post-restart proof.
+    let preserve_xenia_probes = manifest.id == "xenia";
     for step in &mut manifest.ladder {
         if step.tool != "service-runtime" || step.permutation != "converge" {
             continue;
@@ -146,6 +148,8 @@ pub(crate) fn lower_service_runtime_steps(manifest: &mut LadderManifest) {
             .into_iter()
             .filter(|(name, _, _)| {
                 (*name != "managed-files" || has_managed_files)
+                    && (preserve_xenia_probes
+                        || !matches!(*name, "service-active" | "unit-authority-proof" | "health-proof"))
                     && (*name != "source-sha-record"
                         || args
                             .get("source_sha_file")
@@ -585,8 +589,8 @@ pub(crate) fn execute_manifest_band(
                 .get(&step.step_id)
                 .is_some_and(|children| {
                     children.iter().any(|child| {
-                        child.name == "health-proof"
-                            && child.tool == "check-health"
+                        child.name == "service-restart"
+                            && child.tool == "systemd"
                             && child.args.get("component").and_then(Value::as_str)
                                 == Some("caduceus")
                     })

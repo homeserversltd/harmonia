@@ -1310,7 +1310,7 @@
             {
               "name": "url",
               "kind": "string",
-              "required": true
+              "required": false
             },
             {
               "name": "binary_name",

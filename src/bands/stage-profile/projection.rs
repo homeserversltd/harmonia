@@ -73,8 +73,8 @@ impl ProfileProjection {
                         fetch_count += 1;
                     }
                     if is_component(&child.args)
-                        && child.name == "health-proof"
-                        && child.tool == "check-health"
+                        && child.name == "service-restart"
+                        && child.tool == "systemd"
                     {
                         health_count += 1;
                     }
