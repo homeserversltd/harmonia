@@ -40,8 +40,8 @@ pub(crate) fn decide_restart_for_observation(
             reason: "service-material-unchanged",
         },
         Some("inactive") | Some("failed") | Some("not-found") => RestartDecision {
-            execute: true,
-            reason: "unit-not-active",
+            execute: material,
+            reason: if material { "service-material-changed" } else { "unit-not-active-no-material" },
         },
         _ => RestartDecision {
             execute: false,
@@ -72,7 +72,7 @@ fn decide_action(
         "enable" => observation.enabled.as_deref() != Some("enabled"),
         "enable-now" => {
             observation.enabled.as_deref() != Some("enabled")
-                || observation.active.as_deref() != Some("active")
+                || (service_material_changed && observation.active.as_deref() != Some("active"))
         }
         "disable-stop" => {
             !unit_absent
@@ -745,7 +745,11 @@ fn run_action_with_material_gate(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
                         service,
-                        crate::atoms::r#do::change_unit::UnitVerb::EnableNow,
+                        if service_material_changed {
+                            crate::atoms::r#do::change_unit::UnitVerb::EnableNow
+                        } else {
+                            crate::atoms::r#do::change_unit::UnitVerb::Enable
+                        },
                         user,
                         target_user,
                         timeout_secs,
@@ -968,6 +972,13 @@ fn run_action_with_material_gate(
             outcome.changed,
         ),
     )?;
+    if action == "restart" && decision == DiffDecision::Empty {
+        if let Some(restart) = restart_decision {
+            attest_change_unit::augment_comparison_receipt(receipt_dir, name, json!({
+                "reason": restart.reason,
+            }))?;
+        }
+    }
     if action == "is-active-probe" {
         let snapshot = before.condition_snapshot.as_ref();
         let probe_state = if condition_skip_evidence.is_some() {
