@@ -319,7 +319,8 @@ fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObserva
             continue;
         };
 
-        match fetch_candidate_stamp(&locator, &configured_key_candidates) {
+        let mut release_pages_read = None;
+        match fetch_candidate_stamp(&locator, &configured_key_candidates, &mut release_pages_read) {
             Ok(fetched) => {
                 let parsed = &fetched.parsed;
                 receipt["key_attempts"] = json!(fetched.key_attempts);
@@ -356,6 +357,9 @@ fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObserva
                     best_failure = Some(failure);
                 }
             }
+        }
+        if let Some(count) = release_pages_read {
+            receipt["release_pages_read"] = json!(count);
         }
         observation.attempts.push(receipt);
     }
@@ -1218,13 +1222,14 @@ fn https_sibling(locator: &str, filename: &str) -> Option<String> {
 fn fetch_candidate_stamp(
     locator: &str,
     configured_key_candidates: &[String],
+    release_pages_read: &mut Option<usize>,
 ) -> Result<FetchedStamp, CandidateFailure> {
     #[cfg(all(feature = "test-facade", unix))]
     if fixture_stamp_file_path(locator).is_some() {
         return fetch_fixture_stamp_file(locator, configured_key_candidates);
     }
     if let Some((api, authority, repo_path)) = release_endpoint(locator) {
-        return fetch_release_stamp(&api, &authority, &repo_path, configured_key_candidates);
+        return fetch_release_stamp(&api, &authority, &repo_path, configured_key_candidates, release_pages_read);
     }
     let safe_locator = safe_locator(locator).ok_or_else(|| CandidateFailure {
         verdict: "UNKNOWN".into(),
@@ -1329,10 +1334,13 @@ fn fetch_release_stamp(
     authority: &str,
     repo_path: &str,
     configured_key_candidates: &[String],
+    release_pages_read: &mut Option<usize>,
 ) -> Result<FetchedStamp, CandidateFailure> {
     let mut releases = Vec::<Value>::new();
+    *release_pages_read = Some(0);
     for page_number in 1..=MAX_RELEASE_PAGES {
         let url = format!("{api}?limit={RELEASES_PER_PAGE}&page={page_number}");
+        *release_pages_read = Some(page_number);
         let response = request(&url, MAX_HTTP_BODY).map_err(|reason| CandidateFailure {
             verdict: "UNAVAILABLE".into(),
             signal: reason,
@@ -1363,7 +1371,7 @@ fn fetch_release_stamp(
         })?;
         let count = page.len();
         releases.extend(page);
-        if count < RELEASES_PER_PAGE {
+        if count < RELEASES_PER_PAGE || releases.iter().any(|release| eligible_release(release).is_some()) {
             break;
         }
     }
