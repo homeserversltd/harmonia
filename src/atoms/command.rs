@@ -987,7 +987,9 @@ pub(crate) fn capture_with_options(
     options: CaptureOptions<'_>,
 ) -> CmdResult {
     let mut cmd = Command::new(program);
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // A probe never reads the caller's stdin: an inherited open stdin (a hand
+    // press over SSH) blocks a child that waits for EOF until the timeout.
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if !program.contains('/') && !options.env.contains_key("PATH") {
         cmd.env("PATH", DEFAULT_SYSTEM_PATH);
     }
