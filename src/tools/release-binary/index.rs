@@ -264,7 +264,7 @@ fn execute_external_archive(
     let ownership = crate::place_file::DeclaredOwnership { uid: observed.uid, gid: observed.gid };
     let placed = match crate::place_file::execute(crate::place_file::PlaceFileRequest {
         path, declared_bytes: &binary, mode: Some(mode), ownership,
-        backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation),
+        backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation), pre_write_validator: None,
     }) {
         Ok(placed) => placed,
         Err(signal) => {
@@ -275,7 +275,7 @@ fn execute_external_archive(
                     crate::place_file::execute(crate::place_file::PlaceFileRequest {
                         path, declared_bytes: &old_bytes, mode: observed.mode,
                         ownership: crate::place_file::DeclaredOwnership { uid: observed.uid, gid: observed.gid },
-                        backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation),
+                        backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation), pre_write_validator: None,
                     }).is_ok() && running_service_sha(service, service_user).is_ok_and(|sha| sha == old_sha)
                 }
                 _ => false,
@@ -308,7 +308,7 @@ fn execute_external_archive(
             crate::place_file::execute(crate::place_file::PlaceFileRequest {
                 path, declared_bytes: &old_bytes, mode: observed.mode,
                 ownership: crate::place_file::DeclaredOwnership { uid: observed.uid, gid: observed.gid },
-                backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation),
+                backup: crate::place_file::BackupPolicy::None, invocation: Some(invocation), pre_write_validator: None,
             })
         } else { Err("external-release-rollback-target-changed".into()) };
         let restored = match restore {
@@ -892,6 +892,7 @@ pub(crate) fn execute(
         },
         backup: crate::place_file::BackupPolicy::None,
         invocation: Some(invocation),
+        pre_write_validator: None,
     })?;
     crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &placed.receipt, &[], placed.movement.changed())?;
 

@@ -918,6 +918,7 @@ pub(crate) fn promote_staged_binary(
         },
         backup: crate::place_file::BackupPolicy::To(&receipt_dir.join("backups/prior-binary")),
         invocation,
+        pre_write_validator: None,
     })?;
     if !placed.receipt.ok || placed.movement.changed() {
         crate::atoms::attest::attest(&receipt_dir.join("harmonia"), &placed.receipt, &[], placed.movement.changed())?;
@@ -3088,6 +3089,7 @@ pub(crate) fn run_engine_preflight(
                         &preflight_dir.join("backups/prior-staged-binary"),
                     ),
                     invocation: Some(invocation),
+                    pre_write_validator: None,
                 });
                 match placed {
                     Ok(placed) => {

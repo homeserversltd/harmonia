@@ -834,6 +834,7 @@ pub(crate) fn compile_fragments_step(
         },
         backup: crate::place_file::BackupPolicy::To(&backup_path),
         invocation,
+        pre_write_validator: None,
     };
     let placed = crate::place_file::execute(request)?;
     let changed = placed.movement.changed();
@@ -1712,30 +1713,10 @@ where
         })?;
     }
 
-    // Validate the staged bytes that the actuator will promote; no target is
-    // promoted until every selected fragment has a successful visudo receipt.
-    for fragment in &expected {
-        let candidate = staged_root.join(&fragment.name);
-        let candidate_text = candidate.to_string_lossy();
-        let refs = ["-cf", candidate_text.as_ref()];
-        let result = validator(validator_program, &refs, 30);
-        crate::write_command_receipt(
-            module_dir,
-            &format!("{}-{}-validation", step.step_id, fragment.name),
-            &result,
-        )?;
-        if !result.ok {
-            return Err(format!(
-                "validated-sudoers-visudo-rejected {}",
-                fragment.name
-            ));
-        }
-    }
-
     let request = crate::atoms::files::FileConvergenceRequest {
             #[cfg(not(test))]
             prior_head: crate::bands::renew_self::content_prior_head(),
-        source_root: staged_root,
+        source_root: staged_root.clone(),
         target_root,
         files: expected
             .iter()
@@ -1751,13 +1732,38 @@ where
         owner: Some("root".to_string()),
         group: Some("root".to_string()),
     };
+    let mut validate_bytes = |target: &Path, bytes: &[u8]| -> Result<(), String> {
+        let name = target.file_name().and_then(|name| name.to_str())
+            .ok_or_else(|| "validated-sudoers-fragment-name-invalid".to_string())?;
+        use std::io::Write;
+        let candidate = staged_root.join(format!(".validation-{name}"));
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&candidate)
+            .map_err(|error| format!("validated-sudoers-validation-stage-failed {name}: {error}"))?;
+        file.write_all(bytes).map_err(|error| {
+            format!("validated-sudoers-validation-stage-failed {name}: {error}")
+        })?;
+        drop(file);
+        let candidate_text = candidate.to_string_lossy();
+        let refs = ["-cf", candidate_text.as_ref()];
+        let result = validator(validator_program, &refs, 30);
+        crate::write_command_receipt(
+            module_dir,
+            &format!("{}-{}-validation", step.step_id, name),
+            &result,
+        )?;
+        if !result.ok {
+            return Err(format!("validated-sudoers-visudo-rejected {name}"));
+        }
+        Ok(())
+    };
     let outcome =
-        crate::atoms::r#do::place_file::converge_declared_sudoers_fragments_authorized_at(
+        crate::atoms::r#do::place_file::converge_declared_sudoers_fragments_authorized_at_with_validator(
             &request,
             module_dir,
             authorization,
             invocation,
             declared_target_root,
+            Some(&mut validate_bytes),
         )?;
     let mut outcome = OperationOutcome {
         ok: outcome.ok,

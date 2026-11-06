@@ -883,6 +883,7 @@ pub(crate) fn execute_routine_child(
                     .map(crate::place_file::BackupPolicy::To)
                     .unwrap_or(crate::place_file::BackupPolicy::To(&default_backup)) },
                 invocation: invocation,
+                pre_write_validator: None,
             };
             let placed = if manifest.id == "xenia" && permutation.name == "binary-promotion" {
                 crate::place_file::update_existing_xenia(request)?

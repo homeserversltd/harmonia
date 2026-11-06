@@ -35,6 +35,7 @@ pub(crate) struct PlaceFileRequest<'a> {
     pub ownership: DeclaredOwnership,
     pub backup: BackupPolicy<'a>,
     pub invocation: Option<&'a atoms::r#do::InvocationKey>,
+    pub pre_write_validator: Option<&'a mut dyn FnMut(&Path, &[u8]) -> Result<(), String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +114,9 @@ fn execute_estate_owned_declared_sudoers_fragment_at(
     {
         return Err("declared-sudoers-forced-clobber-contract-refused".into());
     }
+    if request.invocation.is_some() && request.pre_write_validator.is_none() {
+        return Err("declared-sudoers-validator-required".into());
+    }
     execute_with_authority(request, Authority::EstateOwnedDeclaredSudoers)
 }
 
@@ -124,7 +128,7 @@ enum Authority {
 }
 
 fn execute_with_authority(
-    request: PlaceFileRequest<'_>,
+    mut request: PlaceFileRequest<'_>,
     authority: Authority,
 ) -> Result<PlaceFileOutcome, String> {
     match crate::atoms::files::classify_target(request.path) {
@@ -180,6 +184,11 @@ fn execute_with_authority(
                     authorization, invocation, request.path, request.declared_bytes,
                     request.mode, request.ownership, observation,
                 );
+            }
+            if !observation.bytes_equal {
+                if let Some(validator) = request.pre_write_validator.as_mut() {
+                    validator(request.path, request.declared_bytes)?;
+                }
             }
             mutation::place(
                 authorization,
@@ -424,6 +433,7 @@ pub(crate) fn execute_strict(
             },
             backup: request.backup,
             invocation: Some(request.invocation),
+            pre_write_validator: None,
         });
     }
     let result: Result<PlaceFileOutcome, String> = (|| {
@@ -437,6 +447,7 @@ pub(crate) fn execute_strict(
             },
             backup: request.backup,
             invocation: Some(request.invocation),
+            pre_write_validator: None,
         })?;
         strict_set_xattrs(request.path, request.xattrs)?;
         if request.fail_after_action {
@@ -729,6 +740,7 @@ mod authority_tests {
             },
             backup: BackupPolicy::None,
             invocation: Some(&invocation),
+            pre_write_validator: None,
         });
         assert_eq!(
             result.unwrap_err(),
@@ -1055,6 +1067,7 @@ pub(crate) fn hotfix_file_backfill(
             ownership,
             backup: BackupPolicy::None,
             invocation: actuator_invocation,
+            pre_write_validator: None,
         })
     })();
     let outcome = match result {
@@ -1356,6 +1369,19 @@ pub(crate) fn converge_declared_sudoers_fragments_authorized_at(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     target_root: &Path,
 ) -> Result<FileConvergenceOutcome, String> {
+    converge_declared_sudoers_fragments_authorized_at_with_validator(
+        request, receipt_dir, authorization, invocation, target_root, None,
+    )
+}
+
+pub(crate) fn converge_declared_sudoers_fragments_authorized_at_with_validator(
+    request: &FileConvergenceRequest,
+    receipt_dir: &Path,
+    authorization: Option<&crate::SoftwareApplyAuthorization>,
+    invocation: Option<&crate::atoms::r#do::InvocationKey>,
+    target_root: &Path,
+    validator: Option<&mut dyn FnMut(&Path, &[u8]) -> Result<(), String>>,
+) -> Result<FileConvergenceOutcome, String> {
     if authorization.is_some() && invocation.is_none() {
         return Err("declared-sudoers-forced-clobber-invocation-required".into());
     }
@@ -1377,6 +1403,7 @@ pub(crate) fn converge_declared_sudoers_fragments_authorized_at(
         authorization,
         invocation,
         ConvergencePolicy::EstateOwnedDeclaredSudoers(target_root.to_path_buf()),
+        validator,
     )
 }
 
@@ -1398,6 +1425,7 @@ pub(crate) fn converge_files_authorized_with_interactable_policy(
         authorization,
         invocation,
         ConvergencePolicy::Interactable(interactable_policy),
+        None,
     )
 }
 
@@ -1407,6 +1435,7 @@ fn converge_files_authorized_with_policy(
     authorization: Option<&crate::SoftwareApplyAuthorization>,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     policy: ConvergencePolicy,
+    mut validator: Option<&mut dyn FnMut(&Path, &[u8]) -> Result<(), String>>,
 ) -> Result<FileConvergenceOutcome, String> {
     if request.files.is_empty() {
         return Err("files-converge-empty-request".to_string());
@@ -1653,6 +1682,7 @@ fn converge_files_authorized_with_policy(
                 crate::place_file::BackupPolicy::None
             },
             invocation: actuation_invocation,
+            pre_write_validator: validator.as_mut().map(|v| &mut **v as &mut dyn FnMut(&Path, &[u8]) -> Result<(), String>),
         };
         let place = match &policy {
             ConvergencePolicy::EstateOwnedDeclaredSudoers(target_root) => {
@@ -1995,6 +2025,7 @@ pub(crate) fn hard_stamp_interactable(
             },
             backup: crate::place_file::BackupPolicy::To(&backup),
             invocation,
+            pre_write_validator: None,
         },
         operator_hand,
     )?;
