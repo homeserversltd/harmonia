@@ -1371,7 +1371,11 @@ fn fetch_release_stamp(
         })?;
         let count = page.len();
         releases.extend(page);
-        if count < RELEASES_PER_PAGE || releases.iter().any(|release| eligible_release(release).is_some()) {
+        if count < RELEASES_PER_PAGE
+            || releases.iter().any(|release| {
+                eligible_release(release).is_some() && stamp_asset(release).is_some()
+            })
+        {
             break;
         }
     }
@@ -1400,11 +1404,7 @@ fn fetch_release_stamp(
         let selected_release = release_tag(release).unwrap_or("unknown-tag").to_owned();
         let commit = eligible_release(release).unwrap_or_default().to_owned();
         let assets = release.get("assets").and_then(Value::as_array);
-        let Some(stamp_asset) = assets.and_then(|assets| {
-            assets.iter().find(|asset| {
-                asset.get("name").and_then(Value::as_str) == Some("stamp.mgla")
-            })
-        }) else {
+        let Some(stamp_asset) = stamp_asset(release) else {
             last_failure = CandidateFailure {
                 verdict: "UNAVAILABLE".into(),
                 signal: "wukong-staff-stamp-absent".into(),
@@ -1629,6 +1629,12 @@ fn mirror_base_key_url(mirror_base: &MirrorBase, key_id: &str) -> Option<String>
             "https://{authority}/{repo_path}/raw/commit/{commit}/keys/{key_id}.txt"
         )),
     }
+}
+
+fn stamp_asset(release: &Value) -> Option<&Value> {
+    release.get("assets").and_then(Value::as_array)?.iter().find(|asset| {
+        asset.get("name").and_then(Value::as_str) == Some("stamp.mgla")
+    })
 }
 
 fn release_asset_url(asset: &Value) -> Option<String> {
