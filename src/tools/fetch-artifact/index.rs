@@ -381,7 +381,10 @@ fn execute_with_module_provenance(
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{asset_name}.sha256"));
         credential_state = "managed-by-configured-release-provider";
-        let (download, candidate_receipts) =
+        let installed_digest = if beam_refetch { None } else {
+            crate::known_good_ledger::sha256_file(installed_binary).ok()
+        };
+        let (download, candidate_receipts, current_identity) =
             crate::bands::renew_self::download_module_release_candidates(
                 component,
                 resolution,
@@ -390,7 +393,23 @@ fn execute_with_module_provenance(
                 resolved_profile_segment.as_deref(),
                 pinned_release_sha.as_deref(),
                 None,
+                installed_digest.as_deref(),
             );
+        if let Some((source_sha, desired)) = current_identity {
+            let observed = installed_digest.as_deref().expect("current requires installed digest");
+            crate::atoms::attest::fetch_artifact::attest(
+                &receipt_dir.join("harmonia-atoms.log"), true, false,
+                &format!("state=Current; care=bytes-true currentness; after=Current; road=artifact; digest_supplier=release; observed={observed}; desired={desired}; diff=empty; movement=none{profile_receipt_fields}"),
+            )?;
+            return Ok(FetchArtifactExecution {
+                outcome: crate::OperationOutcome {
+                    ok: true, changed: false, skipped: true,
+                    message: "fetch-artifact-current".into(), command: None,
+                },
+                source_sha,
+                artifact_path: installed_binary.to_path_buf(),
+            });
+        }
         std::fs::create_dir_all(receipt_dir)
             .map_err(|error| format!("fetch-artifact-receipt-dir-create: {error}"))?;
         crate::write_json(

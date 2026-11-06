@@ -2237,6 +2237,87 @@ pub(crate) fn download_pinned_engine_release_for_provider(
     result
 }
 
+/// Observe the same first eligible module release without acquiring its binaries.
+/// A missing or invalid witness is deliberately returned to the caller as an
+/// error: only a complete observation may establish Current.
+pub(crate) fn observe_module_release_identity(
+    provider: &str,
+    component: &str,
+    release_repo: &str,
+    api_root: &str,
+    asset_name: &str,
+    sidecar_name: &str,
+    profile: Option<&str>,
+    pin: Option<&str>,
+    schema_base: Option<&str>,
+) -> Result<Option<(String, String)>, String> {
+    let (owner, repo) = release_repo.split_once('/').ok_or("release-repository-invalid")?;
+    validate_segment(owner, "release-owner")?;
+    validate_segment(repo, "release-repo")?;
+    validate_segment(component, "component")?;
+    validate_segment(asset_name, "asset-name")?;
+    validate_segment(sidecar_name, "sidecar-name")?;
+    if pin.is_some_and(|sha| !validate_source_sha(sha)) {
+        return Err("fetch-artifact-pinned-release-sha-invalid".into());
+    }
+    let credential = if provider == "forgejo" {
+        crate::atoms::forge_credential::credential_for_url(api_root)?
+    } else if provider == "github" { None } else { return Err("release-provider-invalid".into()); };
+    let request = ReleaseRequest {
+        kind: format!("{provider}-release"), base_url: api_root.into(), owner: owner.into(), repo: repo.into(),
+        credential_host: crate::atoms::forge_credential::url_host(api_root),
+        credential_scope_found: credential.is_some(), credential,
+        cache_dir: std::env::temp_dir().join(format!("harmonia-module-observe-{}", unique_temp_suffix())),
+    };
+    let result = (|| {
+        let asset_set = module_release_asset_set(component, asset_name, sidecar_name, profile);
+        let metadata = if let Some(sha) = pin {
+            let tag = format!("sha-{sha}");
+            let Some(metadata) = lookup_release_metadata_single(&request, &tag, true)? else { return Ok(None); };
+            if metadata.tag_name.as_deref() != Some(tag.as_str()) { return Err("release-tag-mismatch".into()); }
+            metadata
+        } else if provider == "github" {
+            let Some(metadata) = lookup_release_metadata_single(&request, "latest", true)? else { return Ok(None); };
+            metadata
+        } else {
+            let mut releases = lookup_published_releases(&request)?;
+            releases.sort_by(|a, b| b.created_at_order.cmp(&a.created_at_order).then_with(|| b.id.cmp(&a.id)));
+            let Some(candidate) = releases.into_iter().find(|candidate| {
+                !candidate.draft && source_sha_from_release_tag(&candidate.tag_name).is_some()
+                    && candidate.has_asset("release.flag")
+                    && asset_set.iter().all(|(asset, sidecar)| candidate.has_asset(asset) && candidate.has_asset(sidecar))
+            }) else { return Ok(None); };
+            let Some(metadata) = lookup_release_metadata_inner(&request, &candidate.tag_name, true)? else { return Ok(None); };
+            metadata
+        };
+        if metadata.draft || asset_set.iter().any(|(asset, sidecar)|
+            optional_release_asset_url(&metadata, asset).is_none() || optional_release_asset_url(&metadata, sidecar).is_none()) {
+            return Err("release-assets-incomplete".into());
+        }
+        let tag = metadata.tag_name.as_deref().ok_or("release-tag-missing")?;
+        let flag_url = release_asset_url(&metadata, tag, "release.flag")?;
+        let flag = download_release_asset(&request, &flag_url, "release.flag", true)?;
+        let (source_sha, _) = release_flag_source_revision(&flag, component, schema_base)?;
+        if pin.is_some_and(|sha| sha != source_sha) || metadata.target_commitish != source_sha
+            || (provider == "forgejo" && pin.is_none() && source_sha_from_release_tag(tag) != Some(source_sha.as_str())) {
+            return Err("release-source-mismatch".into());
+        }
+        let flag_value: Value = serde_json::from_slice(&flag).map_err(|_| "release-flag-malformed")?;
+        if !flag_value.get("pipeline_url").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty())
+            || flag_value.get("env_sha").is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| is_hex(s, 64))) {
+            return Err("release-flag-invalid".into());
+        }
+        let url = release_asset_url(&metadata, tag, sidecar_name)?;
+        let sidecar = download_release_asset(&request, &url, sidecar_name, true)?;
+        let text = std::str::from_utf8(&sidecar).map_err(|_| "release-sidecar-malformed")?;
+        let (digest, name) = text.strip_suffix('\n').and_then(|line| line.split_once("  ")).ok_or("release-sidecar-malformed")?;
+        if !is_hex(digest, 64) || name != asset_name { return Err("release-sidecar-malformed".into()); }
+        Ok(Some((source_sha, digest.to_owned())))
+    })();
+    let _ = fs::remove_dir_all(&request.cache_dir);
+    result
+}
+
 /// Module Release path: same bounded release-list and exact-latest machinery as
 /// the engine, with asset names selected by the module/profile declaration.
 pub(crate) fn download_latest_engine_release_for_assets(

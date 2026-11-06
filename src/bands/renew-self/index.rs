@@ -2518,15 +2518,33 @@ pub(crate) fn download_module_release_candidates(
     profile: Option<&str>,
     pinned_release_sha: Option<&str>,
     release_schema_base: Option<&str>,
+    installed_digest: Option<&str>,
 ) -> (
     Option<crate::atoms::ask::fetch_artifact::Download>,
     Vec<Value>,
+    Option<(String, String)>,
 ) {
     let source_plan = crate::bands::pull_source::bridge_acquisition_plan(
         resolution,
         engine_source_root(),
         None,
     );
+    // Do not skip a higher-priority candidate on an inconclusive observation:
+    // the existing acquisition path decides all fallback and refusal behavior.
+    if let (Some(installed), Some(candidate)) = (installed_digest, source_plan.candidates.first()) {
+        if let Ok(source) = engine_release_source_for_candidate(candidate) {
+            let stamp = crate::atoms::ask::collective_stamp::current();
+            let pin = stamp.target(component).or(pinned_release_sha);
+            if let Ok(Some((source_sha, desired))) = crate::atoms::ask::fetch_artifact::observe_module_release_identity(
+                source.provider.name(), component, &source.repository, &source.api_root,
+                asset_name, sidecar_name, profile, pin, release_schema_base,
+            ) {
+                if installed == desired {
+                    return (None, Vec::new(), Some((source_sha, desired)));
+                }
+            }
+        }
+    }
     let probe = probe_engine_release_candidates(
         component,
         &source_plan.candidates,
@@ -2538,7 +2556,7 @@ pub(crate) fn download_module_release_candidates(
         ReleaseCandidateReceiptMode::Module,
         None,
     );
-    (probe.download, probe.receipts)
+    (probe.download, probe.receipts, None)
 }
 
 fn download_engine_release_for_preflight(
