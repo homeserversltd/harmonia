@@ -2314,6 +2314,13 @@ pub(crate) fn observe_module_release_identity(
         let text = std::str::from_utf8(&sidecar).map_err(|_| "release-sidecar-malformed")?;
         let (digest, name) = text.strip_suffix('\n').and_then(|line| line.split_once("  ")).ok_or("release-sidecar-malformed")?;
         if !is_hex(digest, 64) || name != asset_name { return Err("release-sidecar-malformed".into()); }
+        // Engine flags bind the single selected engine asset. A flag that
+        // disagrees with its sidecar cannot establish a complete identity.
+        if matches!(component, "harmonia" | "harmonia-monad")
+            && flag_value.get("sha256").is_some_and(|value| value.as_str() != Some(digest))
+        {
+            return Err("release-flag-sidecar-mismatch".into());
+        }
         Ok(Some((source_sha, digest.to_owned())))
     })();
     let _ = fs::remove_dir_all(&request.cache_dir);

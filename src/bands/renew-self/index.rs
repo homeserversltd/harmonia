@@ -2850,55 +2850,60 @@ pub(crate) fn run_engine_preflight(
                                         &resolution, &observed_head, apply, invocation, &preflight_dir,
                                     )?;
                                     operation_count += 1;
-                                    let signal = if !seat.move_ok {
-                                        "engine-content-seat-move-failed"
-                                    } else if !seat.matches {
-                                        "engine-content-seat-head-mismatch"
-                                    } else {
-                                        "none"
-                                    };
-                                    let ok = signal == "none";
-                                    emit_preflight_receipt(
-                                        module_root, &preflight_dir, &component,
-                                        engine_component_ignored.as_deref(), Some(&observed_head),
-                                        None, Some(installed), ok, apply, seat.changed, signal,
-                                        operation_count, None, false, None,
-                                    )?;
-                                    update_engine_preflight_contract(
-                                        &preflight_dir, Some("artifact"), Some(&observed_head), None,
-                                    )?;
-                                    let path = preflight_dir.join("run.json");
-                                    let mut receipt: Value = serde_json::from_str(
-                                        &fs::read_to_string(&path)
-                                            .map_err(|e| format!("engine-preflight-receipt-read-failed: {e}"))?,
-                                    ).map_err(|e| format!("engine-preflight-receipt-parse-failed: {e}"))?;
-                                    receipt["observed_sha256"] = json!(installed);
-                                    receipt["desired_sha256"] = json!(desired);
-                                    receipt["running_sha256"] = json!(running);
-                                    receipt["diff"] = json!("empty");
-                                    receipt["engine_movement"] = json!("none");
-                                    receipt["movement"] = json!(if seat.changed { "content-seat" } else { "none" });
-                                    if ok {
-                                        receipt["successor_promoted_only_after"] = json!("no-engine-change");
-                                        receipt["presses_per_engine_change"] = json!(0);
+                                    // The release and content-seat reads can take time.
+                                    // If the installed binary changed meanwhile, do not
+                                    // publish the earlier snapshot as Current.
+                                    if install_bin_fingerprint(&install_bin).as_deref() == Some(installed) {
+                                        let signal = if !seat.move_ok {
+                                            "engine-content-seat-move-failed"
+                                        } else if !seat.matches {
+                                            "engine-content-seat-head-mismatch"
+                                        } else {
+                                            "none"
+                                        };
+                                        let ok = signal == "none";
+                                        emit_preflight_receipt(
+                                            module_root, &preflight_dir, &component,
+                                            engine_component_ignored.as_deref(), Some(&observed_head),
+                                            None, Some(installed), ok, apply, seat.changed, signal,
+                                            operation_count, None, false, None,
+                                        )?;
+                                        update_engine_preflight_contract(
+                                            &preflight_dir, Some("artifact"), Some(&observed_head), None,
+                                        )?;
+                                        let path = preflight_dir.join("run.json");
+                                        let mut receipt: Value = serde_json::from_str(
+                                            &fs::read_to_string(&path)
+                                                .map_err(|e| format!("engine-preflight-receipt-read-failed: {e}"))?,
+                                        ).map_err(|e| format!("engine-preflight-receipt-parse-failed: {e}"))?;
+                                        receipt["observed_sha256"] = json!(installed);
+                                        receipt["desired_sha256"] = json!(desired);
+                                        receipt["running_sha256"] = json!(running);
+                                        receipt["diff"] = json!("empty");
+                                        receipt["engine_movement"] = json!("none");
+                                        receipt["movement"] = json!(if seat.changed { "content-seat" } else { "none" });
+                                        if ok {
+                                            receipt["successor_promoted_only_after"] = json!("no-engine-change");
+                                            receipt["presses_per_engine_change"] = json!(0);
+                                        }
+                                        write_json(&path, &receipt)?;
+                                        let whole_press_handoff = handoff.as_ref().filter(|record| {
+                                            apply && installed == record.to_sha.as_str()
+                                        });
+                                        if let Some(record) = whole_press_handoff {
+                                            compose_self_update_reexec_receipt(&preflight_dir, record)?;
+                                        }
+                                        let whole_press_changed = seat.changed || whole_press_handoff.is_some();
+                                        forward_preflight_receipt(
+                                            ok, apply, whole_press_changed, signal, &component,
+                                            engine_component_ignored.as_deref(),
+                                        );
+                                        return Ok(ModuleExecution {
+                                            ok, changed: whole_press_changed, operation_count,
+                                            first_missing_signal: (!ok).then(|| signal.to_string()),
+                                            placements: Vec::new(),
+                                        });
                                     }
-                                    write_json(&path, &receipt)?;
-                                    let whole_press_handoff = handoff.as_ref().filter(|record| {
-                                        apply && installed == record.to_sha.as_str()
-                                    });
-                                    if let Some(record) = whole_press_handoff {
-                                        compose_self_update_reexec_receipt(&preflight_dir, record)?;
-                                    }
-                                    let whole_press_changed = seat.changed || whole_press_handoff.is_some();
-                                    forward_preflight_receipt(
-                                        ok, apply, whole_press_changed, signal, &component,
-                                        engine_component_ignored.as_deref(),
-                                    );
-                                    return Ok(ModuleExecution {
-                                        ok, changed: whole_press_changed, operation_count,
-                                        first_missing_signal: (!ok).then(|| signal.to_string()),
-                                        placements: Vec::new(),
-                                    });
                                 }
                             }
                         }
