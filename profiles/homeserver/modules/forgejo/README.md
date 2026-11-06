@@ -4,9 +4,7 @@ This module carries the HOMESERVER product Forgejo desired state lifted from the
 
 The ladder:
 
-- fails closed unless the birth-provided `/opt/forgejo/forgejo` executable exists;
 - converges `/opt/forgejo` itself and `/opt/forgejo/forgejo` to `root:root` `0755` without recursively changing git-owned subdirectories, because sshd requires the `AuthorizedKeysCommand` binary and every directory in its path to have safe root ownership and modes;
-- requires the installed birth-owned `/opt/forgejo/custom/conf/app.ini` to be non-empty but never overwrites it;
 - converges the quarry `forgejo.service` unit with a backup of any replaced file;
 - reloads systemd after file convergence;
 - proves the service is active and probes its loopback HTTP endpoint.

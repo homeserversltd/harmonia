@@ -5,8 +5,6 @@ This module carries the HOMESERVER product Samba and LAN discovery desired state
 The ladder:
 
 - fails closed unless the birth-provided `smbd`, `nmbd`, `testparm`, `avahi-daemon`, and `wsdd2` executables exist;
-- requires the installed `/etc/samba/smb.conf` and `/etc/hosts` to be non-empty but never overwrites them;
-- validates the installed Samba configuration with `testparm`;
 - converges the quarry Avahi host map and Samba discovery service with backups of replaced files;
 - proves each declared service is active.
 

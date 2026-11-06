@@ -4,8 +4,7 @@ This module carries the HOMESERVER product Navidrome desired state lifted from t
 
 The ladder:
 
-- fails closed unless the birth-provided `navidrome` and `ffmpeg` executables exist;
-- requires the installed `navidrome.toml` to be non-empty but never overwrites it;
+- fails closed unless the birth-provided `ffmpeg` executable exists;
 - converges the quarry `navidrome.service` unit with a backup of any replaced file;
 - reloads systemd after file convergence;
 - proves the service is active.

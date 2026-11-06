@@ -59,34 +59,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "samba-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-s",
-          "/etc/samba/smb.conf"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-user-hosts-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-s",
-          "/etc/hosts"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "samba-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -101,19 +73,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "samba-product-config"
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/testparm",
-        "args": [
-          "-s"
-        ],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },

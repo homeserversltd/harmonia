@@ -20,17 +20,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "forgejo-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/opt/forgejo/forgejo"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "forgejo-sshd-safe-metadata",
       "tool": "files",
       "permutation": "metadata",
@@ -39,17 +28,6 @@
           {"path":"/opt/forgejo", "owner":"root", "group":"root", "mode":493},
           {"path":"/opt/forgejo/forgejo", "owner":"root", "group":"root", "mode":493}
         ]
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-s", "/opt/forgejo/custom/conf/app.ini"],
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     },

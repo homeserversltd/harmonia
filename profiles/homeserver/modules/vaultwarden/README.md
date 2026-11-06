@@ -4,8 +4,6 @@ This module carries the HOMESERVER product Vaultwarden desired state lifted from
 
 The ladder:
 
-- fails closed unless the birth-provided Vaultwarden executable exists;
-- requires the installed secret-bearing `/etc/vaultwarden.env` to be non-empty but never overwrites it;
 - converges the quarry `vaultwarden.service` unit with a backup of any replaced file;
 - reloads systemd after file convergence;
 - proves the service is active.

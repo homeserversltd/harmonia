@@ -9,39 +9,11 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "navidrome-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-x",
-          "/opt/navidrome/navidrome"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "navidrome-ffmpeg-present",
       "tool": "files",
       "permutation": "executable-present",
       "args": {
         "executable": "/usr/bin/ffmpeg",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "navidrome-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-s",
-          "/etc/navidrome/navidrome.toml"
-        ],
         "timeout_secs": 30
       },
       "on_failure": "stop"

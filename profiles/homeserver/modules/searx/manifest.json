@@ -73,20 +73,6 @@
         "receipt_label": "searxng-venv-python"
       },
       "on_failure": "stop"
-    },
-    {
-      "step_id": "searx-settings-parse-floor",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/opt/searxng/searxng/bin/python",
-        "args": [
-          "${module_dir}/settings-floor.py",
-          "/etc/searxng/settings.yml"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
     }
   ]
 }

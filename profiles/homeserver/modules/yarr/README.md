@@ -4,7 +4,6 @@ This module maintains Yarr on an already-born appliance. It does not build Yarr,
 
 The ladder:
 
-- fails closed unless the birth-provided `/opt/yarr/yarr` executable exists;
 - reads the appliance's ordered Yarr release sources, verifies the ZIP digest, and extracts only its `yarr` executable;
 - leaves an identical executable alone; for a changed executable, atomically replaces it, restarts `yarr.service`, and checks the running process image;
 - converges the quarry `yarr.service` unit with a backup of any replaced file;

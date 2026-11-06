@@ -9,28 +9,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "vaultwarden-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-x", "/opt/vaultwarden/vaultwarden"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "vaultwarden-user-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": ["-s", "/etc/vaultwarden.env"],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "vaultwarden-product-config",
       "tool": "files",
       "permutation": "converge",

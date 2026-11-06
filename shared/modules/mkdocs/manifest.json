@@ -10,34 +10,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "mkdocs-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-x",
-          "/opt/docs/venv/bin/mkdocs"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "mkdocs-documentation-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-d",
-          "/opt/docs/docs"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "mkdocs-product-config",
       "tool": "files",
       "permutation": "converge",

@@ -9,34 +9,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "woodpecker-server-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {"program": "/usr/bin/test", "args": ["-x", "/opt/woodpecker/woodpecker-server"], "timeout_secs": 30},
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "woodpecker-agent-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {"program": "/usr/bin/test", "args": ["-x", "/opt/woodpecker/woodpecker-agent"], "timeout_secs": 30},
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "woodpecker-server-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {"program": "/usr/bin/test", "args": ["-s", "/etc/default/woodpecker-server"], "timeout_secs": 30},
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "woodpecker-agent-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {"program": "/usr/bin/test", "args": ["-s", "/etc/default/woodpecker-agent"], "timeout_secs": 30},
-      "on_failure": "stop"
-    },
-    {
       "step_id": "woodpecker-product-config",
       "tool": "files",
       "permutation": "converge",

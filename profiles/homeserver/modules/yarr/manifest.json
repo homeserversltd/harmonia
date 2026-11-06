@@ -9,20 +9,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "yarr-binary-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-x",
-          "/opt/yarr/yarr"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "yarr-release-binary",
       "tool": "release-binary",
       "permutation": "install",

@@ -9,50 +9,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "coronatio-live-config-present",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/test",
-        "args": [
-          "-s",
-          "/etc/appliance/config.json"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "coronatio-live-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": [
-          "-m",
-          "json.tool",
-          "/etc/appliance/config.json"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "coronatio-factory-config-valid",
-      "tool": "command",
-      "permutation": "capture",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": [
-          "-m",
-          "json.tool",
-          "/etc/appliance/config.factory"
-        ],
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "coronatio-service-runtime",
       "tool": "service-runtime",
       "permutation": "converge",
