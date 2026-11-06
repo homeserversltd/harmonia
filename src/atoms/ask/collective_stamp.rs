@@ -1340,13 +1340,13 @@ fn fetch_release_stamp(
     *release_pages_read = Some(0);
     for page_number in 1..=MAX_RELEASE_PAGES {
         let url = format!("{api}?limit={RELEASES_PER_PAGE}&page={page_number}");
-        *release_pages_read = Some(page_number);
         let response = request(&url, MAX_HTTP_BODY).map_err(|reason| CandidateFailure {
             verdict: "UNAVAILABLE".into(),
             signal: reason,
             selected_release: "release-listing".into(),
             http_status: None,
         })?;
+        *release_pages_read = Some(page_number);
         if response.oversized {
             return Err(CandidateFailure {
                 verdict: "UNAVAILABLE".into(),
