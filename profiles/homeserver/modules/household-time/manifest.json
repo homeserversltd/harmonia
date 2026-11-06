@@ -13,15 +13,6 @@
   ],
   "ladder": [
     {
-      "step_id": "household-time-resolve",
-      "tool": "household-time",
-      "permutation": "resolve",
-      "args": {
-        "backend": "caduceus",
-        "timeout_secs": 15
-      }
-    },
-    {
       "step_id": "household-time-chrony-lan-policy",
       "tool": "files",
       "permutation": "managed-files",

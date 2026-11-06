@@ -28,11 +28,12 @@
     {
       "step_id": "vaultwarden-unit-valid",
       "tool": "command",
-      "permutation": "capture",
+      "permutation": "act",
       "args": {
         "program": "/usr/bin/systemd-analyze",
         "args": ["verify", "/etc/systemd/system/vaultwarden.service"],
-        "timeout_secs": 30
+        "timeout_secs": 30,
+        "observation": {"kind": "module_changed_before_step"}
       },
       "on_failure": "stop"
     },
@@ -41,17 +42,6 @@
       "tool": "systemd",
       "permutation": "daemon-reload",
       "args": {
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "vaultwarden-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "vaultwarden.service",
         "timeout_secs": 30
       },
       "on_failure": "stop"

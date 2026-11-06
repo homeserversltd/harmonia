@@ -4,10 +4,9 @@ This module carries the HOMESERVER product Navidrome desired state lifted from t
 
 The ladder:
 
-- fails closed unless the birth-provided `ffmpeg` executable exists;
 - converges the quarry `navidrome.service` unit with a backup of any replaced file;
-- reloads systemd after file convergence;
-- proves the service is active.
+- validates the unit when the module has moved;
+- reloads systemd after file convergence.
 
 The public TOML is a user-editable birth seed, not a maintenance overwrite. Its quarry `${PORT}` placeholder is resolved to the product port `4533`; `${ADMIN_PASSWORD}` remains an unfilled birth-owned placeholder. The quarry installer fills that value from `/root/key/skeleton.key` for first launch and then removes the entire `DevAutoCreateAdminPassword` line, so Harmonia does not restore or replace the appliance copy. Both carried files otherwise preserve quarry text; the public copies only remove trailing spaces and add final newlines for repository-safe module form.
 

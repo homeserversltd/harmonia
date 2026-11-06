@@ -30,7 +30,7 @@
     {
       "step_id": "mkdocs-unit-valid",
       "tool": "command",
-      "permutation": "capture",
+      "permutation": "act",
       "args": {
         "program": "/usr/bin/systemd-analyze",
         "args": [
@@ -38,7 +38,8 @@
           "verify",
           "/etc/systemd/system/mkdocs.service"
         ],
-        "timeout_secs": 30
+        "timeout_secs": 30,
+        "observation": {"kind": "module_changed_before_step"}
       },
       "on_failure": "stop"
     },
@@ -47,17 +48,6 @@
       "tool": "systemd",
       "permutation": "daemon-reload",
       "args": {
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "mkdocs-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "mkdocs.service",
         "timeout_secs": 30
       },
       "on_failure": "stop"

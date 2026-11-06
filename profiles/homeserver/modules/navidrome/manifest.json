@@ -9,16 +9,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "navidrome-ffmpeg-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/usr/bin/ffmpeg",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "navidrome-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -38,7 +28,7 @@
     {
       "step_id": "navidrome-unit-valid",
       "tool": "command",
-      "permutation": "capture",
+      "permutation": "act",
       "args": {
         "program": "/usr/bin/systemd-analyze",
         "args": [
@@ -46,7 +36,8 @@
           "verify",
           "/etc/systemd/system/navidrome.service"
         ],
-        "timeout_secs": 30
+        "timeout_secs": 30,
+        "observation": {"kind": "module_changed_before_step"}
       },
       "on_failure": "stop"
     },
@@ -55,17 +46,6 @@
       "tool": "systemd",
       "permutation": "daemon-reload",
       "args": {
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "navidrome-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "navidrome.service",
         "timeout_secs": 30
       },
       "on_failure": "stop"

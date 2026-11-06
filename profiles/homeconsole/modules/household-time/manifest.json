@@ -15,16 +15,6 @@
   },
   "ladder": [
     {
-      "step_id": "household-time-peer-state",
-      "tool": "household-time",
-      "permutation": "watch-and-set",
-      "args": {
-        "backend": "caduceus",
-        "state_url": "$constants.resolver_time_state_url",
-        "timeout_secs": 10
-      }
-    },
-    {
       "step_id": "household-time-timesyncd-gateway",
       "tool": "files",
       "permutation": "managed-files",

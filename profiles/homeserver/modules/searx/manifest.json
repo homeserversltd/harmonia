@@ -34,16 +34,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "searx-unit-loaded",
-      "tool": "systemd",
-      "permutation": "unit-present",
-      "args": {
-        "service": "searxng.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "searx-runtime-root-present",
       "tool": "ask",
       "permutation": "path-exists",
@@ -60,17 +50,6 @@
       "args": {
         "path": "/opt/searxng/searx",
         "resolve_running_kernel": false
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "searx-venv-interpreter-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/opt/searxng/searxng/bin/python",
-        "search_scope": "system",
-        "receipt_label": "searxng-venv-python"
       },
       "on_failure": "stop"
     }

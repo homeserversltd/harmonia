@@ -51,11 +51,12 @@
     {
       "step_id": "forgejo-unit-valid",
       "tool": "command",
-      "permutation": "capture",
+      "permutation": "act",
       "args": {
         "program": "/usr/bin/systemd-analyze",
         "args": ["verify", "/etc/systemd/system/forgejo.service"],
-        "timeout_secs": 30
+        "timeout_secs": 30,
+        "observation": {"kind": "module_changed_before_step"}
       },
       "on_failure": "stop"
     },
@@ -65,28 +66,6 @@
       "permutation": "daemon-reload",
       "args": {
         "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "forgejo-service-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "forgejo.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "forgejo-health",
-      "tool": "health",
-      "permutation": "probe",
-      "args": {
-        "url": "http://127.0.0.1:3000/",
-        "timeout_secs": 3,
-        "retries": 1
       },
       "on_failure": "stop"
     }

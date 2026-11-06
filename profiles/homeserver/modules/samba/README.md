@@ -4,9 +4,7 @@ This module carries the HOMESERVER product Samba and LAN discovery desired state
 
 The ladder:
 
-- fails closed unless the birth-provided `smbd`, `nmbd`, `testparm`, `avahi-daemon`, and `wsdd2` executables exist;
-- converges the quarry Avahi host map and Samba discovery service with backups of replaced files;
-- proves each declared service is active.
+- converges the quarry Avahi host map and Samba discovery service with backups of replaced files.
 
 The public `smb.conf` and `hosts` copies are user-editable birth seeds, not maintenance overwrites. The Samba seed resolves the quarry `${ADMIN_USER}` placeholder to root `config.json`'s product administrator `owner`. The literal `192.168.123.1`, `home`, `home.local`, and `home.arpa` values are the quarry product values. All four carried files otherwise preserve quarry text; the public copies only remove trailing spaces and add final newlines for repository-safe module form. This is the conservative candidate policy pending operator verdict on the per-file table in publication.
 

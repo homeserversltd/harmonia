@@ -7,9 +7,8 @@ The ladder:
 - reads the appliance's ordered Yarr release sources, verifies the ZIP digest, and extracts only its `yarr` executable;
 - leaves an identical executable alone; for a changed executable, atomically replaces it, restarts `yarr.service`, and checks the running process image;
 - converges the quarry `yarr.service` unit with a backup of any replaced file;
-- validates the installed unit;
-- reloads systemd after file convergence;
-- proves the service is active.
+- validates the unit when the module has moved;
+- reloads systemd after file convergence.
 
 The unit runs `/opt/yarr/yarr` directly. Root `config.json` confirms Yarr's product port is `7070`; the unit relies on Yarr's matching default and requires no substituted value.
 

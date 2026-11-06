@@ -6,8 +6,8 @@ The ladder:
 
 - converges `/opt/forgejo` itself and `/opt/forgejo/forgejo` to `root:root` `0755` without recursively changing git-owned subdirectories, because sshd requires the `AuthorizedKeysCommand` binary and every directory in its path to have safe root ownership and modes;
 - converges the quarry `forgejo.service` unit with a backup of any replaced file;
-- reloads systemd after file convergence;
-- proves the service is active and probes its loopback HTTP endpoint.
+- validates the unit when the module has moved;
+- reloads systemd after file convergence.
 
 The public `app.ini` is a user-editable birth seed, not a maintenance overwrite. `${PG_PASS}` and `${SECRET_KEY}` remain unfilled birth-owned placeholders; first birth replaces them and Forgejo may add instance-generated secret keys. The `[webhook]` `ALLOWED_HOST_LIST = external,loopback,private` setting permits delivery to the household CI on its private LAN address; see the upstream configuration cheat sheet: https://forgejo.org/docs/latest/admin/config-cheat-sheet/#webhook-webhook. Existing installed instance configuration remains birth-owned and is never overwritten by this module.
 

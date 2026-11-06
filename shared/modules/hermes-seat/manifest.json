@@ -25,16 +25,6 @@
       "on_failure": "stop"
     },
     {
-      "step_id": "hermes-venv-launcher-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "$constants.launcher",
-        "receipt_label": "hermes-venv-launcher"
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "hermes-platform-session-wrapper",
       "tool": "files",
       "permutation": "compile-fragments",

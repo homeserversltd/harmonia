@@ -12,7 +12,7 @@ The files are declared at birth as settings mode `0640` and unit/site mode `0644
 
 The module's managed-files step declares those modes and presents `/etc` drift through the `interactable` whole-file proposal path. There is no field-level secret merge, and this source does not claim that a proposal exists or has been accepted. Maintenance does not automatically write a proposal or replace a birth-filled secret; the placeholder-bearing settings file must not be accepted as a replacement for a filled appliance file without preserving that unit's secret.
 
-The floor is deliberately read-only apart from a truthful, same-run-change-gated systemd daemon reload: require the service unit to be loaded, the `/opt/searxng` runtime/source and virtual-environment interpreter to exist. It does not start, enable, restart, or claim that SearXNG is active or reachable. A loaded unit is not endpoint proof.
+The module checks that the `/opt/searxng` runtime and source paths exist and reloads systemd when the module changes. It does not start, enable, restart, or claim that SearXNG is active or reachable.
 
 ## Known work outside this module
 

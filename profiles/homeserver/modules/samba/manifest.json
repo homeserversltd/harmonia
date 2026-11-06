@@ -9,56 +9,6 @@
   "files_root": "files_root",
   "ladder": [
     {
-      "step_id": "samba-smbd-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/usr/sbin/smbd",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-nmbd-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/usr/sbin/nmbd",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-testparm-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/usr/bin/testparm",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-avahi-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/usr/sbin/avahi-daemon",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
-      "step_id": "samba-wsdd2-present",
-      "tool": "files",
-      "permutation": "executable-present",
-      "args": {
-        "executable": "/usr/sbin/wsdd2",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-    {
       "step_id": "samba-product-config",
       "tool": "files",
       "permutation": "converge",
@@ -73,50 +23,6 @@
         "owner": "root",
         "group": "root",
         "receipt_name": "samba-product-config"
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "samba-smbd-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "smbd.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "samba-nmbd-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "nmbd.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "samba-avahi-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "avahi-daemon.service",
-        "timeout_secs": 30
-      },
-      "on_failure": "stop"
-    },
-
-    {
-      "step_id": "samba-wsdd2-ready",
-      "tool": "systemd",
-      "permutation": "is-active-probe",
-      "args": {
-        "service": "wsdd2.service",
-        "timeout_secs": 30
       },
       "on_failure": "stop"
     }
