@@ -61,6 +61,7 @@ fn decide_action(
     action: &str,
     observation: &change_unit::Observation,
     service_material_changed: bool,
+    preserve_first_present_now: bool,
 ) -> DiffDecision {
     let unit_absent = observation.load_state.as_deref() == Some("not-found")
         || observation.unit_file_state.as_deref() == Some("not-found");
@@ -72,7 +73,8 @@ fn decide_action(
         "enable" => observation.enabled.as_deref() != Some("enabled"),
         "enable-now" => {
             observation.enabled.as_deref() != Some("enabled")
-                || (service_material_changed && observation.active.as_deref() != Some("active"))
+                || ((service_material_changed || preserve_first_present_now)
+                    && observation.active.as_deref() != Some("active"))
         }
         "disable-stop" => {
             !unit_absent
@@ -539,7 +541,7 @@ fn run_enable_first_present_now(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let service = select_first_present_unit(candidate_units, timeout_secs)?;
-    let outcome = run_action(
+    let outcome = run_action_with_material_gate(
         receipt_dir,
         name,
         "enable-now",
@@ -550,6 +552,9 @@ fn run_enable_first_present_now(
         apply,
         false,
         invocation,
+        false,
+        true,
+        true,
     )?;
     attest_change_unit::annotate_candidate_selection(receipt_dir, name, candidate_units, &service)?;
     Ok(OperationOutcome {
@@ -647,6 +652,7 @@ fn run_restart(
         invocation,
         false,
         true,
+        false,
     )
 }
 
@@ -676,6 +682,7 @@ pub(crate) fn run_action(
         invocation,
         false,
         true,
+        false,
     )
 }
 
@@ -688,7 +695,7 @@ pub(crate) fn run_release_account_restart(
 ) -> Result<OperationOutcome, String> {
     run_action_with_material_gate(
         receipt_dir, name, "restart", Some(service), true, Some(target_user),
-        30, true, true, Some(invocation), true, true,
+        30, true, true, Some(invocation), true, true, false,
     )
 }
 
@@ -706,6 +713,7 @@ fn run_action_with_material_gate(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     direct_account: bool,
     persist_receipt: bool,
+    preserve_first_present_now: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     // Edge-trigger actions are consumed only within this comparison run.
@@ -725,7 +733,7 @@ fn run_action_with_material_gate(
             if edge_triggered && acted.get() {
                 DiffDecision::Empty
             } else {
-                decide_action(action, observation, service_material_changed)
+                decide_action(action, observation, service_material_changed, preserve_first_present_now)
             }
         },
         |authorization, before| {
@@ -745,7 +753,7 @@ fn run_action_with_material_gate(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
                         service,
-                        if service_material_changed {
+                        if service_material_changed || preserve_first_present_now {
                             crate::atoms::r#do::change_unit::UnitVerb::EnableNow
                         } else {
                             crate::atoms::r#do::change_unit::UnitVerb::Enable
@@ -974,9 +982,11 @@ fn run_action_with_material_gate(
     )?;
     if action == "restart" && decision == DiffDecision::Empty {
         if let Some(restart) = restart_decision {
-            attest_change_unit::augment_comparison_receipt(receipt_dir, name, json!({
-                "reason": restart.reason,
-            }))?;
+            if restart.reason == "unit-not-active-no-material" {
+                attest_change_unit::augment_comparison_receipt(receipt_dir, name, json!({
+                    "reason": restart.reason,
+                }))?;
+            }
         }
     }
     if action == "is-active-probe" {
@@ -1028,7 +1038,7 @@ pub(crate) fn execute_after_config_acceptance(
         Path::new("."), &step.step_id, action, service, user,
         step.args.get("user").and_then(serde_json::Value::as_str),
         step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(30),
-        true, true, invocation, false, false,
+        true, true, invocation, false, false, false,
     )
 }
 
