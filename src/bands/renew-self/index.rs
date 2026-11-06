@@ -2821,9 +2821,16 @@ pub(crate) fn run_engine_preflight(
                 engine_source_root(),
                 None,
             );
-            // Only a complete first-candidate identity and matching running process
-            // may close Current; every inconclusive witness retains today's Act path.
-            if !self_update_reexec_guard_active() {
+            // A guarded child may close Current only after validating the entire
+            // generation-zero handoff, including running and installed identities.
+            // An invalid or unavailable handoff retains the existing guarded path.
+            let guarded = self_update_reexec_guard_active();
+            let handoff = if guarded {
+                read_self_update_reexec_handoff(&preflight_dir).ok().flatten()
+            } else {
+                None
+            };
+            if !guarded || handoff.is_some() {
                 if let (Some(installed), Some(candidate)) =
                     (install_before.as_deref(), source_plan.candidates.first())
                 {
@@ -2876,12 +2883,19 @@ pub(crate) fn run_engine_preflight(
                                         receipt["presses_per_engine_change"] = json!(0);
                                     }
                                     write_json(&path, &receipt)?;
+                                    let whole_press_handoff = handoff.as_ref().filter(|record| {
+                                        apply && installed == record.to_sha.as_str()
+                                    });
+                                    if let Some(record) = whole_press_handoff {
+                                        compose_self_update_reexec_receipt(&preflight_dir, record)?;
+                                    }
+                                    let whole_press_changed = seat.changed || whole_press_handoff.is_some();
                                     forward_preflight_receipt(
-                                        ok, apply, seat.changed, signal, &component,
+                                        ok, apply, whole_press_changed, signal, &component,
                                         engine_component_ignored.as_deref(),
                                     );
                                     return Ok(ModuleExecution {
-                                        ok, changed: seat.changed, operation_count,
+                                        ok, changed: whole_press_changed, operation_count,
                                         first_missing_signal: (!ok).then(|| signal.to_string()),
                                         placements: Vec::new(),
                                     });
