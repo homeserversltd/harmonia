@@ -237,7 +237,7 @@ pub(crate) fn command(
         }
         "staff" => {
             let mut args =
-                vec!["PYTHONPATH=/usr/local/sbin:/usr/local/lib/harmonia-household-time".into()];
+                vec!["PYTHONPATH=/usr/local/sbin".into()];
             if let Some(path) = request.state_path {
                 args.push(format!("CADUCEUS_HOUSEHOLD_TIME_STATE_PATH={path}"));
             }
