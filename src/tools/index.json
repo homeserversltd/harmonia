@@ -1227,7 +1227,7 @@
       "permutations": [
         {
           "name": "check",
-          "description": "check package database/update state without mutation",
+          "description": "Check declared packages are installed using the local dpkg or pacman database; never refresh or install packages.",
           "args": [
             {
               "name": "packages",

@@ -564,6 +564,9 @@ fn package_tool_with_policy_for_backend_and_pins_inner(
             serde_json::from_slice(&fs::read(&witness_path).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
     }
+    if action == "check" {
+        return check_package_presence(receipt_dir, name, packages, timeout_secs, backend);
+    }
     match backend {
         PackageBackend::Pacman if matches!(action, "check" | "upgrade" | "update") => {
             package_update_tool(
@@ -598,6 +601,69 @@ fn package_tool_with_policy_for_backend_and_pins_inner(
         }
         PackageBackend::Apt => Err(format!("unsupported package action {action}")),
     }
+}
+
+fn check_package_presence(
+    receipt_dir: &Path,
+    name: &str,
+    packages: &[String],
+    timeout_secs: u64,
+    backend: PackageBackend,
+) -> Result<OperationOutcome, String> {
+    use crate::atoms::comparison::DiffDecision;
+
+    let query = match backend {
+        PackageBackend::Apt => command::capture_with_timeout(
+            "/usr/bin/dpkg-query", &["-W", "-f=${binary:Package}\t${Status}\n"], timeout_secs,
+        ),
+        PackageBackend::Pacman => command::capture_with_timeout(&pacman_program(), &["-Q"], timeout_secs),
+    };
+    let mut installed = std::collections::BTreeSet::new();
+    if query.ok {
+        for line in query.stdout.lines() {
+            match backend {
+                PackageBackend::Apt => {
+                    if let Some((package, status)) = line.split_once('\t') {
+                        if status == "install ok installed" {
+                            installed.insert(package.to_string());
+                            if let Some((base, _)) = package.split_once(':') {
+                                installed.insert(base.to_string());
+                            }
+                        }
+                    }
+                }
+                PackageBackend::Pacman => {
+                    if let Some(package) = line.split_whitespace().next() {
+                        installed.insert(package.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut normalized = query.clone();
+    normalized.stdout = packages.iter().filter(|package| installed.contains(*package))
+        .map(String::as_str).collect::<Vec<_>>().join("\n");
+    let observation = crate::atoms::ask::install_package::install_observation(normalized.clone(), packages);
+    let decision = if query.ok && packages.iter().all(|package| installed.contains(package)) {
+        DiffDecision::Empty
+    } else {
+        DiffDecision::Different
+    };
+    let mut comparison = package_receipt_fields(&observation, decision, None, false);
+    let ok = comparison["converged"].as_bool().unwrap_or(false);
+    let signal = comparison["first_missing_signal"].as_str().unwrap_or("package-probe-unavailable");
+    let outcome = OperationOutcome {
+        ok,
+        changed: false,
+        skipped: false,
+        message: if ok { "declared packages present".into() } else { signal.to_string() },
+        command: Some(normalized),
+    };
+    comparison["checked_packages"] = serde_json::json!(packages);
+    comparison["backend"] = backend.name().into();
+    write_json(&receipt_dir.join(format!("{name}.comparison.json")), &comparison)?;
+    write_package_receipt_with_backend(receipt_dir, name, "check", &outcome, backend)?;
+    Ok(outcome)
 }
 
 fn apt_program() -> String {

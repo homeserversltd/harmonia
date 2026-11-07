@@ -154,6 +154,7 @@ pub(crate) fn write_package_receipt_with_backend(
         for field in [
             "observed_state",
             "desired_state",
+            "checked_packages",
             "diff_decision",
             "movement",
             "observed_before",
