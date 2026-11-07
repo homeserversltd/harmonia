@@ -1,0 +1,17 @@
+[Unit]
+Description=Woodpecker CI Agent
+After=network.target
+
+[Service]
+Type=simple
+User=woodpecker-agent
+Group=woodpecker-agent
+WorkingDirectory=/var/lib/woodpecker-agent
+Environment=HOME=/var/lib/woodpecker-agent
+EnvironmentFile=/etc/default/woodpecker-agent
+ExecCondition=/bin/sh -c 'test -s /etc/woodpecker-agent/token'
+ExecStart=/opt/woodpecker/woodpecker-agent
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

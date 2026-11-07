@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.profile.v1",
   "id": "homesi",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "package_authority": {
     "os_family": "debian",
     "package_manager": "apt"
@@ -24,6 +24,7 @@
     "documentation",
     "mkdocs",
     "web-front",
+    "woodpecker-agent",
     "sudoers",
     "grub-branding",
     "sway-seat",

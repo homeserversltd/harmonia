@@ -1,0 +1,34 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "woodpecker-agent",
+  "title": "Household CI agent",
+  "summary": "Keeps the household's build agent configured.",
+  "category": "interactable",
+  "version": "1.0.0",
+  "description": "Maintain the birth-provided Woodpecker agent unit and its secret-free environment; its token and runtime data remain outside Harmonia.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "woodpecker-agent-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": ["etc/systemd/system/woodpecker-agent.service", "etc/default/woodpecker-agent"],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "woodpecker-agent-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "woodpecker-agent-systemd-reload",
+      "tool": "systemd",
+      "permutation": "daemon-reload",
+      "args": {"timeout_secs": 30},
+      "on_failure": "stop"
+    }
+  ]
+}
