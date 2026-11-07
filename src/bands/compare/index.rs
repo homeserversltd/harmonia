@@ -1,8 +1,7 @@
 use super::Band;
 use crate::tools::ladder::{LadderManifest, ProjectedRoutineChild, ValidatedStep};
-use crate::tools::routine::execute_validated_step;
 use crate::ModuleExecution;
-use crate::{validate_group, OperationOutcome};
+use crate::OperationOutcome;
 use crate::{
     LoadedModule, PackageAuthority, Profile, ProfileProjection, SoftwareApplyAuthorization,
     UpdateMode,
@@ -373,28 +372,6 @@ pub(crate) fn execute_manifest_modules(
     }
     Ok(())
 }
-
-pub(crate) fn execute_group_live_probe_validated(
-    manifest: &LadderManifest,
-    step: &ValidatedStep,
-    receipt_dir: &Path,
-) -> Result<OperationOutcome, String> {
-    crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
-    execute_validated_step(step, manifest, receipt_dir, None, None, false, None, None)
-}
-pub(crate) fn execute_group_live_probe(
-    manifest: &LadderManifest,
-    receipt_dir: &Path,
-) -> Result<OperationOutcome, String> {
-    let Some(group) = &manifest.group else {
-        return Err(format!("module-{}-has-no-group", manifest.id));
-    };
-    let step = validate_group(group, &manifest.constants)
-        .map_err(|err| format!("module-invalid {}", err.first_missing_signal()))?;
-    execute_group_live_probe_validated(manifest, &step, receipt_dir)
-}
-
-
 
 // Arcadia fast-check ownership: preserve the legacy CLI surface while keeping
 // source comparison and SHA probes in the Compare band.

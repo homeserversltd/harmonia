@@ -27,8 +27,6 @@ pub(crate) struct LadderManifest {
     #[serde(skip)]
     pub(crate) category: Option<String>,
     #[serde(default)]
-    pub group: Option<LadderGroup>,
-    #[serde(default)]
     pub constants: BTreeMap<String, Value>,
     /// Package names mapped to the exact installed version Harmonia must hold.
     #[serde(default)]
@@ -63,21 +61,6 @@ pub(crate) struct LadderManifest {
     // deserialized from module or routine arguments.
     #[serde(skip)]
     pub(crate) release_staging_roots: BTreeMap<String, crate::atoms::r#do::fetch_artifact::ReleaseStagingRoot>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub(crate) struct LadderGroup {
-    pub group_id: String,
-    pub group_order: i64,
-    pub live_probe: LadderProbe,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub(crate) struct LadderProbe {
-    pub tool: String,
-    pub permutation: String,
-    #[serde(default)]
-    pub args: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -124,6 +107,13 @@ fn reject_restart_policy(value: &Value, path: &Path) -> Result<(), String> {
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn reject_top_level_group(value: &Value, path: &Path) -> Result<(), String> {
+    if value.as_object().is_some_and(|object| object.contains_key("group")) {
+        return Err(format!("ladder-manifest-retired-field {} group", path.display()));
     }
     Ok(())
 }
@@ -192,6 +182,7 @@ pub(crate) fn load_ladder_manifest_with_context(
         .map_err(|e| format!("ladder-manifest-parse-failed {}: {e}", path.display()))?;
     crate::tools::service_runtime::apply_profile_input(&mut raw, path, selected_profile_index)?;
     reject_restart_policy(&raw, path)?;
+    reject_top_level_group(&raw, path)?;
     let module_category = raw
         .get("category")
         .and_then(Value::as_str)
@@ -706,9 +697,6 @@ pub(crate) fn validate_ladder(
             defect: "config-deploy-unsupported".into(),
         });
     }
-    if let Some(group) = &manifest.group {
-        validate_group(group, &manifest.constants)?;
-    }
     let mut seen = BTreeSet::new();
     let mut validated = Vec::new();
     for step in &manifest.ladder {
@@ -877,51 +865,6 @@ fn validate_routine(
         }
     }
     Ok(())
-}
-
-pub(crate) fn validate_group(
-    group: &LadderGroup,
-    constants: &BTreeMap<String, Value>,
-) -> Result<ValidatedStep, LadderValidationError> {
-    if group.group_id.trim().is_empty() {
-        return Err(LadderValidationError {
-            step_id: "group".into(),
-            defect: "missing-group_id".into(),
-        });
-    }
-    let step_id = "group.live_probe";
-    let Some(tool) = tools::get(&group.live_probe.tool) else {
-        return Err(LadderValidationError {
-            step_id: step_id.into(),
-            defect: format!("unknown-tool-{}", group.live_probe.tool),
-        });
-    };
-    let Some(permutation) = tool.permutation(&group.live_probe.permutation) else {
-        return Err(LadderValidationError {
-            step_id: step_id.into(),
-            defect: format!("undeclared-permutation-{}", group.live_probe.permutation),
-        });
-    };
-    let resolved = resolve_args(&group.live_probe.args, constants).map_err(|defect| {
-        LadderValidationError {
-            step_id: step_id.into(),
-            defect,
-        }
-    })?;
-    validate_args(step_id, permutation, &resolved)?;
-    validate_tool_semantics(
-        step_id,
-        &group.live_probe.tool,
-        &group.live_probe.permutation,
-        &resolved,
-    )?;
-    Ok(ValidatedStep {
-        step_id: step_id.into(),
-        tool: group.live_probe.tool.clone(),
-        permutation: group.live_probe.permutation.clone(),
-        args: resolved,
-        on_failure: OnFailure::Stop,
-    })
 }
 
 #[cfg(test)]

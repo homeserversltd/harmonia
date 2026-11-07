@@ -15,7 +15,6 @@ pub(crate) enum LoadedModule {
 pub(crate) struct ProjectedModule {
     pub(crate) loaded: LoadedModule,
     pub(crate) steps: Vec<crate::tools::routine::ValidatedStep>,
-    pub(crate) group_probe: Option<crate::tools::routine::ValidatedStep>,
     pub(crate) routines: BTreeMap<String, Vec<crate::tools::routine::ProjectedRoutineChild>>,
 }
 
@@ -184,25 +183,10 @@ pub(crate) fn load_profile_projection(
                 continue;
             }
         };
-        let (steps, group_probe, routines) = match &loaded {
+        let (steps, routines) = match &loaded {
             LoadedModule::Ladder(m) => {
                 let steps = match crate::tools::ladder::validate_ladder(m) {
                     Ok(steps) => steps,
-                    Err(e) => {
-                        errors.insert(
-                            id.clone(),
-                            format!("module-invalid {}", e.first_missing_signal()),
-                        );
-                        continue;
-                    }
-                };
-                let group_probe = match m
-                    .group
-                    .as_ref()
-                    .map(|g| crate::tools::ladder::validate_group(g, &m.constants))
-                    .transpose()
-                {
-                    Ok(probe) => probe,
                     Err(e) => {
                         errors.insert(
                             id.clone(),
@@ -229,16 +213,15 @@ pub(crate) fn load_profile_projection(
                     errors.insert(id.clone(), error);
                     continue;
                 }
-                (steps, group_probe, routines)
+                (steps, routines)
             }
-            LoadedModule::Sidecar(_) => (Vec::new(), None, BTreeMap::new()),
+            LoadedModule::Sidecar(_) => (Vec::new(), BTreeMap::new()),
         };
         modules.insert(
             id.clone(),
             ProjectedModule {
                 loaded,
                 steps,
-                group_probe,
                 routines,
             },
         );

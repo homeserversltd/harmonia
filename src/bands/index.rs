@@ -251,9 +251,7 @@ fn remember_halt_origins(
     }
 }
 
-use crate::bands::stage_profile::groups::{
-    group_loser_winners, read_device_module_policy, resolve_group_selections,
-};
+use crate::bands::stage_profile::groups::read_device_module_policy;
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -378,7 +376,6 @@ pub(crate) fn run_profile_engine_with_projection(
     let mut halt_origins: BTreeMap<String, String> = BTreeMap::new();
     let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> =
         BTreeMap::new();
-    let mut group_losers: BTreeMap<String, String> = BTreeMap::new();
     let mut final_result: Option<Result<(), String>> = None;
     let device_module_policy = read_device_module_policy()?;
     let _walk_result = crate::bands::walk(|band| {
@@ -659,13 +656,6 @@ pub(crate) fn run_profile_engine_with_projection(
                         active_projection = refreshed.clone();
                     }
                 }
-                let group_selections = resolve_group_selections(
-                    &active_profile,
-                    module_root,
-                    receipt_dir,
-                    &active_projection,
-                )?;
-                group_losers = group_loser_winners(&group_selections);
                 crate::bands::compare::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
