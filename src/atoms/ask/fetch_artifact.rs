@@ -9,9 +9,60 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ReleaseCommand, Stdio as ReleaseStdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const INSPECTION_MAX_BODY_BYTES: &str = "67108864";
 const INSPECTION_OVERSIZE_BLOCKER: &str = "release-inspection-fetch-oversize max_bytes=67108864";
+
+// One press runs in one process after engine re-exec. Serialize first reads so
+// even concurrent consumers share the first successful identity observation.
+static RELEASE_IDENTITIES: OnceLock<Mutex<BTreeMap<String, (u16, Vec<u8>)>>> = OnceLock::new();
+
+pub(crate) fn memo_release_identity<T>(
+    url: &str,
+    destination: &Path,
+    fetch: impl FnOnce() -> Result<(T, Option<u16>), String>,
+    replay: impl FnOnce(u16) -> T,
+) -> Result<T, String> {
+    let mut memo = RELEASE_IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((status, body)) = memo.get(url) {
+        if *status == 200 {
+            fs::write(destination, body).map_err(|e| format!("release-identity-write-failed: {e}"))?;
+        }
+        return Ok(replay(*status));
+    }
+    let (result, status) = fetch()?;
+    match status {
+        Some(200) => if let Ok(body) = fs::read(destination) {
+            memo.insert(url.to_owned(), (200, body));
+        },
+        Some(404) => { memo.insert(url.to_owned(), (404, Vec::new())); },
+        _ => {}
+    }
+    Ok(result)
+}
+
+fn memo_curl(url: &str, path: &Path, args: &[String], credential: Option<&crate::atoms::forge_credential::Credential>, inspection_bounds: bool) -> Result<crate::CmdResult, String> {
+    memo_release_identity(url, path, || {
+        let result = run_curl(args, credential)?;
+        let status = match (result.code, result.stdout.trim()) {
+            (0, "200") => Some(200),
+            (22, "404") => Some(404),
+            _ => None,
+        };
+        Ok((result, status))
+    }, |status| {
+        let oversized = status == 200 && inspection_bounds
+            && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 67_108_864);
+        crate::CmdResult {
+            ok: status == 200 && !oversized,
+            code: if oversized { 63 } else if status == 200 { 0 } else { 22 },
+            stdout: status.to_string(),
+            stderr: if status == 404 { "curl: (22) The requested URL returned error: 404".into() } else { String::new() },
+        }
+    })
+}
 
 pub(crate) fn is_external_release_kind(kind: &str) -> bool {
     matches!(kind, "forgejo-release" | "github-release")
@@ -257,7 +308,7 @@ fn lookup_release_metadata_with_tag_mode(
         curl_args(&url, &path.to_string_lossy())
     };
     args.extend(["-w".into(), "%{http_code}".into()]);
-    let result = run_curl(&args, r.credential_for_url(&url))?;
+    let result = memo_curl(&url, &path, &args, r.credential_for_url(&url), inspection_bounds)?;
     if result.stdout.trim() == "404" {
         let _ = fs::remove_file(&path);
         return Ok(None);
@@ -339,12 +390,17 @@ fn download_release_asset(
     let p = r
         .cache_dir
         .join(format!(".{name}-{}", unique_temp_suffix()));
-    let args = if inspection_bounds {
+    let mut args = if inspection_bounds {
         inspection_curl_args(url, &p.to_string_lossy())
     } else {
         curl_args(url, &p.to_string_lossy())
     };
-    let x = run_curl(&args, r.credential_for_url(url))?;
+    let x = if name == "release.flag" || name.ends_with(".sha256") {
+        args.extend(["-w".into(), "%{http_code}".into()]);
+        memo_curl(url, &p, &args, r.credential_for_url(url), inspection_bounds)?
+    } else {
+        run_curl(&args, r.credential_for_url(url))?
+    };
     if inspection_bounds && x.code == 63 {
         let _ = fs::remove_file(&p);
         return Err(INSPECTION_OVERSIZE_BLOCKER.into());
@@ -3243,7 +3299,7 @@ fn lookup_published_releases(request: &ReleaseRequest) -> Result<Vec<PublishedRe
         let args = inspection_curl_args(&page_url, &path.to_string_lossy());
         let mut args = args;
         args.extend(["-w".into(), "%{http_code}".into()]);
-        let response = run_curl(&args, request.credential_for_url(&page_url))?;
+        let response = memo_curl(&page_url, &path, &args, request.credential_for_url(&page_url), true)?;
         if response.code == 63 {
             let _ = fs::remove_file(&path);
             return Err(INSPECTION_OVERSIZE_BLOCKER.into());

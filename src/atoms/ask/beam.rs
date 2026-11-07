@@ -306,7 +306,7 @@ fn flag_request(
     url: &str,
     destination: &std::path::Path,
     token: Option<&str>,
-) -> Result<u16, String> {
+) -> Result<(u16, bool), String> {
     let mut command = Command::new("curl");
     command.args([
         "--fail",
@@ -340,26 +340,36 @@ fn flag_request(
         let output = child
             .wait_with_output()
             .map_err(|_| "beam-flag-unresolvable".to_string())?;
-        return Ok(String::from_utf8_lossy(&output.stdout)
+        let status = String::from_utf8_lossy(&output.stdout)
             .trim()
             .parse()
-            .unwrap_or(0));
+            .unwrap_or(0);
+        return Ok((status, output.status.success() || (status == 404 && output.status.code() == Some(22))));
     }
     let output = command
         .arg(url)
         .output()
         .map_err(|_| "beam-flag-unresolvable".to_string())?;
-    Ok(String::from_utf8_lossy(&output.stdout)
+    let status = String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse()
-        .unwrap_or(0))
+        .unwrap_or(0);
+    Ok((status, output.status.success() || (status == 404 && output.status.code() == Some(22))))
 }
 fn fetch_flag(
     url: &str,
     destination: &std::path::Path,
     token: Option<&str>,
 ) -> Result<u16, String> {
-    let status = flag_request(url, destination, token)?;
+    let status = crate::atoms::ask::fetch_artifact::memo_release_identity(
+        url,
+        destination,
+        || {
+            let (status, complete) = flag_request(url, destination, token)?;
+            Ok((status, if complete && (status == 200 || status == 404) { Some(status) } else { None }))
+        },
+        |status| status,
+    )?;
     if status == 401 || status == 403 {
         return Err("beam-flag-unresolvable".into());
     }
