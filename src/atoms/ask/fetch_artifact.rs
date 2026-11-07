@@ -22,15 +22,13 @@ pub(crate) fn memo_release_identity<T>(
     url: &str,
     destination: &Path,
     fetch: impl FnOnce() -> Result<(T, Option<u16>), String>,
-    replay: impl FnOnce(u16) -> T,
+    replay: impl FnOnce(u16, Option<std::io::Error>) -> T,
 ) -> Result<T, String> {
     let mut memo = RELEASE_IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((status, body)) = memo.get(url) {
-        if *status == 200 {
-            fs::write(destination, body).map_err(|e| format!("release-identity-write-failed: {e}"))?;
-        }
-        return Ok(replay(*status));
+        let write_error = if *status == 200 { fs::write(destination, body).err() } else { None };
+        return Ok(replay(*status, write_error));
     }
     let (result, status) = fetch()?;
     match status {
@@ -52,14 +50,15 @@ fn memo_curl(url: &str, path: &Path, args: &[String], credential: Option<&crate:
             _ => None,
         };
         Ok((result, status))
-    }, |status| {
+    }, |status, write_error| {
+        let write_failed = write_error.is_some();
         let oversized = status == 200 && inspection_bounds
             && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 67_108_864);
         crate::CmdResult {
-            ok: status == 200 && !oversized,
-            code: if oversized { 63 } else if status == 200 { 0 } else { 22 },
+            ok: status == 200 && !oversized && !write_failed,
+            code: if write_failed { 23 } else if oversized { 63 } else if status == 200 { 0 } else { 22 },
             stdout: status.to_string(),
-            stderr: if status == 404 { "curl: (22) The requested URL returned error: 404".into() } else { String::new() },
+            stderr: if write_failed { "curl: (23) Failed writing received data to disk/application".into() } else if status == 404 { "curl: (22) The requested URL returned error: 404".into() } else { String::new() },
         }
     })
 }

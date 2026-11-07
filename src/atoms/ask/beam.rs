@@ -368,7 +368,7 @@ fn fetch_flag(
             let (status, complete) = flag_request(url, destination, token)?;
             Ok((status, if complete && (status == 200 || status == 404) { Some(status) } else { None }))
         },
-        |status| status,
+        |status, _write_error| status,
     )?;
     if status == 401 || status == 403 {
         return Err("beam-flag-unresolvable".into());
