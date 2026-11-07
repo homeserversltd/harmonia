@@ -154,7 +154,7 @@ pub(crate) fn fetch_external_archive(
         } else {
             let sidecar_name = format!("{asset_name}.sha256");
             let sidecar_url = release_asset_url(&metadata, tag, &sidecar_name)?;
-            let sidecar = download_release_asset(&request, &sidecar_url, &sidecar_name, true)?;
+            let sidecar = download_release_identity(&request, &sidecar_url, &sidecar_name, true)?;
             let text = std::str::from_utf8(&sidecar).map_err(|_| "external-release-sidecar-invalid")?;
             let mut parts = text.split_whitespace();
             let digest = parts.next().filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -386,6 +386,25 @@ fn download_release_asset(
     name: &str,
     inspection_bounds: bool,
 ) -> Result<Vec<u8>, String> {
+    download_release_asset_with_role(r, url, name, inspection_bounds, false)
+}
+
+fn download_release_identity(
+    r: &ReleaseRequest,
+    url: &str,
+    name: &str,
+    inspection_bounds: bool,
+) -> Result<Vec<u8>, String> {
+    download_release_asset_with_role(r, url, name, inspection_bounds, true)
+}
+
+fn download_release_asset_with_role(
+    r: &ReleaseRequest,
+    url: &str,
+    name: &str,
+    inspection_bounds: bool,
+    identity: bool,
+) -> Result<Vec<u8>, String> {
     let p = r
         .cache_dir
         .join(format!(".{name}-{}", unique_temp_suffix()));
@@ -394,7 +413,7 @@ fn download_release_asset(
     } else {
         curl_args(url, &p.to_string_lossy())
     };
-    let x = if name == "release.flag" || name.ends_with(".sha256") {
+    let x = if identity && (name == "release.flag" || name.ends_with(".sha256")) {
         args.extend(["-w".into(), "%{http_code}".into()]);
         memo_curl(url, &p, &args, r.credential_for_url(url), inspection_bounds)?
     } else {
@@ -506,7 +525,7 @@ pub(crate) fn read_pinned_member_release_flag(
             Err(format!("release-flag-release-draft provider={provider} tag={tag}"))
         } else {
             match optional_release_asset_url(&metadata, "release.flag") {
-                Some(url) => download_release_asset(&request, &url, "release.flag", true)
+                Some(url) => download_release_identity(&request, &url, "release.flag", true)
                     .and_then(|bytes| decode_release_flag(bytes, provider, &tag))
                     .map_err(|reason| {
                         format!(
@@ -602,7 +621,7 @@ pub(crate) fn read_member_release_flags(
             let tag = metadata.tag_name.clone().unwrap_or_else(|| "latest".into());
             let metadata_url = metadata.url.clone();
             let flag = match optional_release_asset_url(&metadata, "release.flag") {
-                Some(url) => download_release_asset(&request, &url, "release.flag", true)
+                Some(url) => download_release_identity(&request, &url, "release.flag", true)
                     .and_then(|bytes| decode_release_flag(bytes, provider, &tag)),
                 None => Err(format!("release-flag-asset-missing provider={provider} tag={tag}")),
             };
@@ -667,7 +686,7 @@ pub(crate) fn read_member_release_flags(
                 let Some(url) = optional_release_asset_url(&metadata, "release.flag") else {
                     return Err(format!("release-flag-asset-missing provider={provider} tag={tag}"));
                 };
-                download_release_asset(&request, &url, "release.flag", true)
+                download_release_identity(&request, &url, "release.flag", true)
                     .and_then(|bytes| decode_release_flag(bytes, provider, &tag))
             })()
             .map_err(|reason| {
@@ -776,7 +795,7 @@ fn fetch_release_asset_set_from_metadata(
     let flag_url = optional_release_asset_url(&metadata, "release.flag")
         .ok_or_else(|| "release-asset-missing tag=release.flag asset=release.flag".to_string())?;
     let release_flag = if let Some(seen) = observation { seen.flag.clone() } else {
-        download_release_asset(request, &flag_url, "release.flag", true)?
+        download_release_identity(request, &flag_url, "release.flag", true)?
     };
     let mut releases = Vec::with_capacity(asset_names.len());
     for (asset_name, sidecar_name) in asset_names {
@@ -786,7 +805,7 @@ fn fetch_release_asset_set_from_metadata(
             artifact: download_release_asset(request, &artifact_url, asset_name, true)?,
             sidecar: if let Some(seen) = observation.filter(|seen| seen.sidecar_name == *sidecar_name) {
                 seen.sidecar.clone()
-            } else { download_release_asset(request, &sidecar_url, sidecar_name, true)? },
+            } else { download_release_identity(request, &sidecar_url, sidecar_name, true)? },
             release_flag: Some(release_flag.clone()),
             metadata_url: metadata.url.clone(),
             target_commitish: metadata.target_commitish.clone(),
@@ -866,12 +885,12 @@ fn fetch_release_assets_inner_with_created_at(
     let release_flag = inspect_release_flag
         .then(|| optional_release_asset_url(&m, "release.flag"))
         .flatten()
-        .map(|url| download_release_asset(r, &url, "release.flag", inspect_release_flag))
+        .map(|url| download_release_identity(r, &url, "release.flag", inspect_release_flag))
         .transpose()?;
     Ok(Some((
         ReleaseAssets {
             artifact: download_release_asset(r, &au, asset_name, inspect_release_flag)?,
-            sidecar: download_release_asset(r, &su, sidecar_name, inspect_release_flag)?,
+            sidecar: download_release_identity(r, &su, sidecar_name, inspect_release_flag)?,
             release_flag,
             metadata_url: m.url,
             target_commitish: m.target_commitish,
@@ -1712,7 +1731,7 @@ fn inspect_xenia_metadata(
         return Err("xenia-release-unavailable".into());
     }
     let url = optional_release_asset_url(metadata, "release.flag").ok_or("xenia-release-unverified")?;
-    let flag_bytes = download_release_asset(request, &url, "release.flag", true)?;
+    let flag_bytes = download_release_identity(request, &url, "release.flag", true)?;
     let (resolved_revision, version) = release_flag_source_revision(&flag_bytes, flag_component, schema_base)?;
     let valid_tag = if candidate_url.is_some() { tag == "latest" } else { tag == resolved_revision || tag == format!("sha-{resolved_revision}") };
     if metadata.target_commitish != resolved_revision || !valid_tag {
@@ -1825,7 +1844,7 @@ pub(crate) fn download_xenia_release(
         if candidate_url.is_some() {
             let sidecar_name = format!("{asset}.sha256");
             let sidecar_url = release_asset_url(&metadata, tag, &sidecar_name)?;
-            let sidecar = download_release_asset(&request, &sidecar_url, &sidecar_name, true)?;
+            let sidecar = download_release_identity(&request, &sidecar_url, &sidecar_name, true)?;
             let expected = format!("{expected_digest}  {asset}");
             if std::str::from_utf8(&sidecar).map_err(|_| "xenia-release-sidecar-invalid")?.trim_end_matches(['\r', '\n']) != expected {
                 return Err("xenia-release-sidecar-mismatch".into());
@@ -1986,7 +2005,7 @@ pub(crate) fn probe_release_digest(
             return Err("fetch-artifact-release-commit-mismatch".into());
         }
         let url = release_asset_url(&metadata, tag, &sidecar)?;
-        let bytes = download_release_asset(&request, &url, &sidecar, true)?;
+        let bytes = download_release_identity(&request, &url, &sidecar, true)?;
         let text = String::from_utf8(bytes).map_err(|_| "fetch-artifact-release-sidecar-malformed".to_string())?;
         let line = text.trim_end_matches(['\r', '\n']);
         if line.contains('\n') || line.contains('\r') {
@@ -2174,7 +2193,7 @@ fn fetch_exact_pinned_asset_set(
     let flag_url = optional_release_asset_url(&metadata, "release.flag")
         .ok_or_else(|| "fetch-artifact-release-flag-missing".to_string())?;
     let flag = if let Some(seen) = observation { seen.flag.clone() } else {
-        download_release_asset(request, &flag_url, "release.flag", true)?
+        download_release_identity(request, &flag_url, "release.flag", true)?
     };
     let mut assets = Vec::with_capacity(asset_set.len());
     for (asset_name, sidecar_name) in asset_set {
@@ -2187,7 +2206,7 @@ fn fetch_exact_pinned_asset_set(
             artifact: download_release_asset(request, &artifact_url, asset_name, true)?,
             sidecar: if let Some(seen) = observation.filter(|seen| seen.sidecar_name == *sidecar_name) {
                 seen.sidecar.clone()
-            } else { download_release_asset(request, &sidecar_url, sidecar_name, true)? },
+            } else { download_release_identity(request, &sidecar_url, sidecar_name, true)? },
             release_flag: Some(flag.clone()),
             metadata_url: metadata.url.clone(),
             target_commitish: metadata.target_commitish.clone(),
@@ -2391,7 +2410,7 @@ pub(crate) fn observe_module_release_identity(
         }
         let tag = metadata.tag_name.as_deref().ok_or("release-tag-missing")?;
         let flag_url = release_asset_url(&metadata, tag, "release.flag")?;
-        let flag = download_release_asset(&request, &flag_url, "release.flag", true)?;
+        let flag = download_release_identity(&request, &flag_url, "release.flag", true)?;
         let (source_sha, _) = release_flag_source_revision(&flag, component, schema_base)?;
         if pin.is_some_and(|sha| sha != source_sha) || metadata.target_commitish != source_sha
             || (provider == "forgejo" && pin.is_none() && source_sha_from_release_tag(tag) != Some(source_sha.as_str())) {
@@ -2405,7 +2424,7 @@ pub(crate) fn observe_module_release_identity(
             return Err("release-flag-invalid".into());
         }
         let url = release_asset_url(&metadata, tag, sidecar_name)?;
-        let sidecar = download_release_asset(&request, &url, sidecar_name, true)?;
+        let sidecar = download_release_identity(&request, &url, sidecar_name, true)?;
         let text = std::str::from_utf8(&sidecar).map_err(|_| "release-sidecar-malformed")?;
         let (digest, name) = text.strip_suffix('\n').and_then(|line| line.split_once("  ")).ok_or("release-sidecar-malformed")?;
         if !is_hex(digest, 64) || name != asset_name { return Err("release-sidecar-malformed".into()); }
