@@ -99,7 +99,7 @@ pub(crate) fn augment_condition_skip_receipt(
 pub(crate) fn desired_state(action: &str, service_material_changed: bool) -> Value {
     match action {
         "daemon-reload" => json!({"manager_reload_required": service_material_changed}),
-        "enable-now" => json!({"enabled": "enabled", "active": "active"}),
+        "enable-now" => json!({"enabled": "enabled", "active": if service_material_changed { "active" } else { "unchanged" }}),
         "disable-stop" => json!({"enabled": "disabled", "active": "inactive"}),
         "disable-stop-remove" => json!({"unit_file": "absent"}),
         "restart" => json!({"service_material_changed": service_material_changed}),

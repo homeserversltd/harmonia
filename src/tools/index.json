@@ -1422,7 +1422,7 @@
         },
         {
           "name": "enable-first-present-now",
-          "description": "select the first present system unit from an ordered typed candidate list, then enable and start it",
+          "description": "select the first present system unit from an ordered typed candidate list, enable it, and start it only when module material changed",
           "args": [
             {
               "name": "candidate_units",

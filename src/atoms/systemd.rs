@@ -61,7 +61,6 @@ fn decide_action(
     action: &str,
     observation: &change_unit::Observation,
     service_material_changed: bool,
-    preserve_first_present_now: bool,
 ) -> DiffDecision {
     let unit_absent = observation.load_state.as_deref() == Some("not-found")
         || observation.unit_file_state.as_deref() == Some("not-found");
@@ -73,7 +72,7 @@ fn decide_action(
         "enable" => observation.enabled.as_deref() != Some("enabled"),
         "enable-now" => {
             observation.enabled.as_deref() != Some("enabled")
-                || ((service_material_changed || preserve_first_present_now)
+                || (service_material_changed
                     && observation.active.as_deref() != Some("active"))
         }
         "disable-stop" => {
@@ -247,6 +246,7 @@ pub(crate) fn run_permutation_with_material_gate(
             candidate_units,
             timeout_secs,
             apply,
+            module_changed_before_step,
             invocation,
         );
     }
@@ -538,6 +538,7 @@ fn run_enable_first_present_now(
     candidate_units: &[String],
     timeout_secs: u64,
     apply: bool,
+    service_material_changed: bool,
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
 ) -> Result<OperationOutcome, String> {
     let service = select_first_present_unit(candidate_units, timeout_secs)?;
@@ -550,10 +551,9 @@ fn run_enable_first_present_now(
         None,
         timeout_secs,
         apply,
-        false,
+        service_material_changed,
         invocation,
         false,
-        true,
         true,
     )?;
     attest_change_unit::annotate_candidate_selection(receipt_dir, name, candidate_units, &service)?;
@@ -652,7 +652,6 @@ fn run_restart(
         invocation,
         false,
         true,
-        false,
     )
 }
 
@@ -682,7 +681,6 @@ pub(crate) fn run_action(
         invocation,
         false,
         true,
-        false,
     )
 }
 
@@ -695,7 +693,7 @@ pub(crate) fn run_release_account_restart(
 ) -> Result<OperationOutcome, String> {
     run_action_with_material_gate(
         receipt_dir, name, "restart", Some(service), true, Some(target_user),
-        30, true, true, Some(invocation), true, true, false,
+        30, true, true, Some(invocation), true, true,
     )
 }
 
@@ -713,7 +711,6 @@ fn run_action_with_material_gate(
     invocation: Option<&crate::atoms::r#do::InvocationKey>,
     direct_account: bool,
     persist_receipt: bool,
-    preserve_first_present_now: bool,
 ) -> Result<OperationOutcome, String> {
     let service = service.unwrap_or("");
     // Edge-trigger actions are consumed only within this comparison run.
@@ -733,7 +730,7 @@ fn run_action_with_material_gate(
             if edge_triggered && acted.get() {
                 DiffDecision::Empty
             } else {
-                decide_action(action, observation, service_material_changed, preserve_first_present_now)
+                decide_action(action, observation, service_material_changed)
             }
         },
         |authorization, before| {
@@ -753,7 +750,7 @@ fn run_action_with_material_gate(
                         authorization,
                         invocation.ok_or("invocation-key-missing")?,
                         service,
-                        if service_material_changed || preserve_first_present_now {
+                        if service_material_changed {
                             crate::atoms::r#do::change_unit::UnitVerb::EnableNow
                         } else {
                             crate::atoms::r#do::change_unit::UnitVerb::Enable
@@ -1038,7 +1035,7 @@ pub(crate) fn execute_after_config_acceptance(
         Path::new("."), &step.step_id, action, service, user,
         step.args.get("user").and_then(serde_json::Value::as_str),
         step.args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(30),
-        true, true, invocation, false, false, false,
+        true, true, invocation, false, false,
     )
 }
 
