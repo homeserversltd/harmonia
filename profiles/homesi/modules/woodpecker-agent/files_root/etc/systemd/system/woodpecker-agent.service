@@ -1,6 +1,6 @@
 [Unit]
 Description=Woodpecker CI Agent
-After=network.target
+After=network.target woodpecker-server.service
 
 [Service]
 Type=simple
