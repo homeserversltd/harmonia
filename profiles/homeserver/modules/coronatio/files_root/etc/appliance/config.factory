@@ -15,6 +15,10 @@
         "candidates": [
           {
             "kind": "git",
+            "url": "https://git.home.arpa/HOMESERVERSLTD/documentation.git"
+          },
+          {
+            "kind": "git",
             "url": "https://github.com/homeserversltd/documentation"
           }
         ]
