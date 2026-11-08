@@ -1159,6 +1159,7 @@ fn observe_update(
                 Vec::new()
             };
             p.retain(|item| !pins.contains_key(&item.name));
+            let stale_line_count = apt_stale_line_count(&refresh);
             UpdateObservation {
                 backend: bn,
                 observed_state: if !ok {
@@ -1174,7 +1175,7 @@ fn observe_update(
                 pending_count: p.len(),
                 pending: p,
                 ignored_upgrades: Vec::new(),
-                db_synced_at: ok.then(|| now_rfc3339()),
+                db_synced_at: (ok && stale_line_count == 0).then(now_rfc3339),
                 refresh_command: refresh,
                 query: q,
                 cleanup_failure: None,
@@ -1408,6 +1409,9 @@ fn package_update_tool_inner(
         PackageBackend::Pacman => false,
     };
     let mut out = serde_json::json!({"schema":"harmonia.package_tool.v1","name":n,"tool":NAME,"permutation":a,"declared_package_backend":b.name(),"backend":b.name(),"observed_state":pre.observed_state.clone(),"desired_state":"no-pending-updates","diff_decision":if different {"different"} else {"empty"},"probe_ok":pre.probe_ok,"pending_count":pre.pending_count,"pending":pre.pending,"ignored_upgrades":pre.ignored_upgrades,"db_synced_at":pre.db_synced_at,"refresh_command":pre.refresh_command,"command":pre.query,"upgraded_count":0,"upgraded":[],"backend_log_tail":serde_json::Value::Null,"movement":serde_json::Value::Null,"observed_before":pre,"observed_after":serde_json::Value::Null,"act":serde_json::Value::Null,"converged":pre.probe_ok && pre.pending_count == 0,"changed":false,"skipped":false,"exclusion_set":pins.keys().collect::<Vec<_>>()});
+    if b == PackageBackend::Apt && a == "upgrade" {
+        add_apt_stale_note(&mut out, "refresh_stale_line_count", &pre.refresh_command);
+    }
     if kernel_only {
         out["desired_state"] = "no-removable-kernels-within-ceiling".into();
     }
@@ -1573,6 +1577,12 @@ fn package_update_tool_inner(
         out["act"] = serde_json::json!({"ok":act.ok,"changed":changed,"skipped":false,"message":format!("package {a}"),"command":act,"act_refresh_command":refresh,"ignored_upgrades":post.ignored_upgrades.clone()});
         out["movement"] = out["act"].clone();
         out["observed_after"] = serde_json::to_value(&post).map_err(|e| e.to_string())?;
+        if b == PackageBackend::Apt && a == "upgrade" {
+            if let Some(ref refresh) = refresh {
+                add_apt_stale_note(&mut out, "act_refresh_stale_line_count", refresh);
+            }
+            add_apt_stale_note(&mut out, "post_refresh_stale_line_count", &post.refresh_command);
+        }
         out["ignored_upgrades"] = serde_json::to_value(&post.ignored_upgrades).map_err(|e| e.to_string())?;
         out["upgraded_count"] = upgraded.len().into();
         out["upgraded"] = serde_json::to_value(upgraded).map_err(|e| e.to_string())?;
@@ -1603,6 +1613,21 @@ fn package_update_tool_inner(
         return Err("package-act-did-not-converge".into());
     }
     Ok(outcome)
+}
+
+fn apt_stale_line_count(result: &CmdResult) -> usize {
+    result.stdout.lines().chain(result.stderr.lines())
+        .filter(|line| ["Err:", "Ign:", "W:", "E:"].iter().any(|prefix| line.starts_with(prefix)))
+        .take(1000)
+        .count()
+}
+
+fn add_apt_stale_note(out: &mut serde_json::Value, count_field: &str, refresh: &CmdResult) {
+    let count = apt_stale_line_count(refresh);
+    if count > 0 {
+        out[count_field] = serde_json::json!(count);
+        out["notes"] = serde_json::json!(["apt-lists-stale"]);
+    }
 }
 
 fn apt_release_info_change_accepted(result: &CmdResult) -> bool {
