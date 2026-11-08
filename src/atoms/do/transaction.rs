@@ -1230,6 +1230,7 @@ fn write_transaction_failure_run_receipt(
     }
 
     println!("schema=harmonia.run_profile.v1");
+    println!("run_id={}", crate::receipts::run_id_from_stamp());
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
     crate::bands::report_home::emit_transaction_failure(profile, run_started, failures, Some(&signal));
     carrier.borrow_mut().terminal_deed_emitted = true;

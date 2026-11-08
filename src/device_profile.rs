@@ -34,7 +34,7 @@ fn set_run_identity_source(source: &'static str) {
     RUN_IDENTITY_SOURCE.with(|current| current.set(source));
 }
 
-fn emit_fixed_refusal_stdout(receipt: &serde_json::Value) {
+fn emit_fixed_refusal_stdout(receipt: &serde_json::Value, run_id: &str) {
     let schema = receipt
         .get("schema")
         .and_then(serde_json::Value::as_str)
@@ -45,6 +45,7 @@ fn emit_fixed_refusal_stdout(receipt: &serde_json::Value) {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("refused");
     println!("schema={schema}");
+    println!("run_id={run_id}");
     let bounded_schema = crate::hyalos::bounded_json_string(schema, 96);
     let bounded_reason = crate::hyalos::bounded_json_string(reason, 320);
     let mut metadata = json!({
@@ -89,12 +90,14 @@ pub(crate) fn persist_fixed_refusal(
     reason: &str,
     failure_label: &str,
 ) -> Result<(), String> {
+    let run_id = crate::receipts::run_id_from_stamp();
+    let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
     let write_result = crate::atoms::attest::convergence_receipts::write_fixed_refusal_receipt(
         receipt_dir,
         fallback_stem,
         receipt,
     );
-    emit_fixed_refusal_stdout(receipt);
+    emit_fixed_refusal_stdout(receipt, &run_id);
     match write_result {
         Ok(()) => Ok(()),
         Err(error) => {

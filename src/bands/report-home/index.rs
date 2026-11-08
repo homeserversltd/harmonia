@@ -632,6 +632,7 @@ pub(crate) fn settle(
         eprintln!("profile-ledger-projection-warning: {error}");
     }
     println!("schema=harmonia.run_profile.v1");
+    println!("run_id={}", state.run_id);
     let run_ok = state.ok && state.module_states.values().all(|step| step.ok);
     let degraded = engine_debt.is_some() || !module_artifact_debt.is_empty();
     let overall_ok = run_ok && !degraded;
@@ -724,6 +725,7 @@ pub(crate) fn finalize_deferred_terminal(
         eprintln!("profile-ledger-projection-warning: {error}");
     }
     println!("schema=harmonia.run_profile.v1");
+    println!("run_id={}", summary.run_id);
     let degraded = engine_debt.is_some() || !summary.module_artifact_debt.is_empty();
     let overall_ok = summary.ok && !degraded;
     forward_module_outcomes_from_steps(profile, &summary.module_steps, Some(&summary.run_id));
