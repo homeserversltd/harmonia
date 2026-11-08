@@ -38,7 +38,7 @@ pub(crate) fn package_receipt_fields(
     } else if let Some(package) = absent_package {
         format!("package-absent:{package}")
     } else if let Some(current) = observation.current.as_ref().filter(|current| !current.ok) {
-        format!("pacman-package-probe-failed:code={}", current.code)
+        format!("package-probe-failed:code={}", current.code)
     } else if movement.is_some_and(|movement| !movement.ok) {
         "package-operation-failed".to_string()
     } else if observation.current.is_none() {
