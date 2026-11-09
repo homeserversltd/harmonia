@@ -1,8 +1,7 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 const HYALOS_PATH: &str = "/api/v1/hyalos/reflect";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -352,10 +351,9 @@ pub(crate) fn forward_receipt(
         .and_then(|rest| rest.strip_suffix(".v1"))
         .map(|rest| format!("harmonia.{rest}"));
     let kind = normalized.as_deref().unwrap_or(kind);
-    let payload = receipt_payload(kind, message, attributes_redacted.clone(), ok, correlation_id);
-    if try_forward_bounded_payload(payload).is_none() {
-        let _ = forward_bounded_receipt(kind, message, attributes_redacted, ok, correlation_id);
-    }
+    let payload = receipt_payload(kind, message, attributes_redacted, ok, correlation_id);
+    let Ok(body) = serde_json::to_vec(&payload) else { return; };
+    let _ = forward_serialized_payload(body, kind);
 }
 
 fn forward_serialized_payload(body: Vec<u8>, kind: &str) -> bool {
@@ -382,34 +380,13 @@ fn remaining(deadline: Instant) -> std::io::Result<Duration> {
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "hyalos-door-timeout"))
 }
 
-// A blocked system resolver cannot accumulate one thread per deed.
-static RESOLVING: AtomicBool = AtomicBool::new(false);
-
 fn forward_receipt_inner(base: &str, body: &[u8], deadline: Instant) -> std::io::Result<()> {
     let host = base.strip_prefix("http://").expect("resolved HTTP base");
-    if RESOLVING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
-        return Err(std::io::Error::other("hyalos-resolver-busy"));
-    }
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    let address = host.to_owned();
-    if let Err(error) = std::thread::Builder::new().spawn(move || {
-        let result = address.to_socket_addrs().map(|it| it.collect::<Vec<_>>());
-        RESOLVING.store(false, Ordering::Release);
-        let _ = sender.send(result);
-    }) {
-        RESOLVING.store(false, Ordering::Release);
-        return Err(error);
-    }
-    let addresses = receiver.recv_timeout(remaining(deadline)?)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "hyalos-resolve-timeout"))??;
-    let mut stream = None;
-    for address in addresses {
-        match TcpStream::connect_timeout(&address, remaining(deadline)?) {
-            Ok(connected) => { stream = Some(connected); break; }
-            Err(_) => continue,
-        }
-    }
-    let mut stream = stream.ok_or_else(|| std::io::Error::other("hyalos-door-unreachable"))?;
+    let port = host.rsplit_once(':').and_then(|(_, port)| port.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .ok_or_else(|| std::io::Error::other("caduceus-bind-undeclared"))?;
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, remaining(deadline)?)?;
     let header = format!(
         "POST {HYALOS_PATH} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()
     );
