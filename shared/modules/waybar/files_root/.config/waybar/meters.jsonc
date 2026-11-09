@@ -1,0 +1,38 @@
+{
+  "modules-right": ["tray", "pulseaudio", "clock"],
+  "custom/cpu": {
+    "exec": "curl -sS -m 5 -X POST http://127.0.0.1:8787/api/v1/face/meter -H 'Content-Type: application/json' -d '{\"kind\":\"cpu\"}'",
+    "return-type": "json",
+    "format": "{}",
+    "interval": 3,
+    "tooltip": true
+  },
+  "custom/temperature": {
+    "exec": "curl -sS -m 5 -X POST http://127.0.0.1:8787/api/v1/face/meter -H 'Content-Type: application/json' -d '{\"kind\":\"temp\"}'",
+    "return-type": "json",
+    "format": "{}",
+    "interval": 3,
+    "tooltip": true
+  },
+  "custom/gpu": {
+    "exec": "curl -sS -m 5 -X POST http://127.0.0.1:8787/api/v1/face/meter -H 'Content-Type: application/json' -d '{\"kind\":\"gpu\"}'",
+    "return-type": "json",
+    "format": "{}",
+    "interval": 3,
+    "tooltip": true
+  },
+  "custom/memory": {
+    "exec": "curl -sS -m 5 -X POST http://127.0.0.1:8787/api/v1/face/meter -H 'Content-Type: application/json' -d '{\"kind\":\"ram\"}'",
+    "return-type": "json",
+    "format": "{}",
+    "interval": 5,
+    "tooltip": true
+  },
+  "custom/disk": {
+    "exec": "curl -sS -m 5 -X POST http://127.0.0.1:8787/api/v1/face/meter -H 'Content-Type: application/json' -d '{\"kind\":\"disk\"}'",
+    "return-type": "json",
+    "format": "{}",
+    "interval": 30,
+    "tooltip": true
+  }
+}

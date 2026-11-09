@@ -12,12 +12,14 @@ window#waybar {
     background: transparent;
 }
 
+.module,
 #custom-launcher,
 #taskbar,
 #workspaces,
 #custom-cpu,
 #temperature,
 #custom-temperature,
+#custom-gpu,
 #custom-memory,
 #custom-disk,
 #bluetooth,
@@ -70,6 +72,7 @@ window#waybar {
 
 #custom-cpu,
 #custom-temperature,
+#custom-gpu,
 #custom-memory,
 #custom-disk {
     padding: 0 8px;
@@ -80,6 +83,7 @@ window#waybar {
 
 #custom-cpu.low,
 #custom-temperature.low,
+#custom-gpu.low,
 #custom-memory.low,
 #custom-disk.low {
     color: #a3be8c;
@@ -87,6 +91,7 @@ window#waybar {
 
 #custom-cpu.medium,
 #custom-temperature.medium,
+#custom-gpu.medium,
 #custom-memory.medium,
 #custom-disk.medium {
     color: #ebcb8b;
@@ -94,9 +99,18 @@ window#waybar {
 
 #custom-cpu.high,
 #custom-temperature.high,
+#custom-gpu.high,
 #custom-memory.high,
 #custom-disk.high {
     color: #bf616a;
+}
+
+#custom-cpu.unknown,
+#custom-temperature.unknown,
+#custom-gpu.unknown,
+#custom-memory.unknown,
+#custom-disk.unknown {
+    color: #6b7280;
 }
 
 #backlight {
