@@ -7,6 +7,25 @@ const HYALOS_PATH: &str = "/api/v1/hyalos/reflect";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const MAX_FORWARD_PAYLOAD_BYTES: usize = 1023;
 
+thread_local! {
+    static READ_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Suppress forwarding for a read invocation, restoring any enclosing scope.
+pub(crate) struct ReadGuard(bool);
+
+impl ReadGuard {
+    pub(crate) fn enter(read_only: bool) -> Self {
+        Self(READ_ONLY.with(|active| active.replace(read_only)))
+    }
+}
+
+impl Drop for ReadGuard {
+    fn drop(&mut self) {
+        READ_ONLY.with(|active| active.set(self.0));
+    }
+}
+
 fn receipt_payload(
     kind: &str,
     message: &str,
@@ -328,6 +347,9 @@ pub(crate) fn forward_receipt(
 }
 
 fn forward_serialized_payload(body: Vec<u8>) {
+    if READ_ONLY.with(std::cell::Cell::get) {
+        return;
+    }
     let base = match crate::atoms::ask::caduceus_door::base_url() {
         Ok(base) => base,
         Err(signal) => {
