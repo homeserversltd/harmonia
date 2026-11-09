@@ -1,0 +1,72 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "udev",
+  "title": "Hardware access",
+  "summary": "Keeps required hardware monitoring access available to local system tools.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "description": "HomeSI udev configuration, the homeserver udev module's twin: converge the product-owned RAPL rule granting group caduceus read, with backups; reload udev when the rule changed, and replay powercap add events whenever the package counter is not group caduceus, so the grant holds without a reboot.",
+  "files_root": "files_root",
+  "ladder": [
+    {
+      "step_id": "udev-product-config",
+      "tool": "files",
+      "permutation": "converge",
+      "args": {
+        "source_root": "files_root",
+        "target_root": "/",
+        "files": [
+          "etc/udev/rules.d/99-rapl-permissions.rules"
+        ],
+        "backup_existing": true,
+        "owner": "root",
+        "group": "root",
+        "receipt_name": "udev-product-config"
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "udev-reload-rules",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/udevadm",
+        "args": [
+          "control",
+          "--reload"
+        ],
+        "timeout_secs": 30,
+        "observation": {
+          "kind": "module_changed_before_step"
+        }
+      },
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "udev-replay-powercap-add",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/udevadm",
+        "args": [
+          "trigger",
+          "--action=add",
+          "--subsystem-match=powercap",
+          "--settle"
+        ],
+        "timeout_secs": 60,
+        "observation": {
+          "program": "/usr/bin/stat",
+          "args": [
+            "-c",
+            "%G",
+            "/sys/class/powercap/intel-rapl:0/energy_uj"
+          ],
+          "expected_exit_code": 0,
+          "expected_stdout": "caduceus"
+        }
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
