@@ -1,5 +1,10 @@
 {
+  "modules-left": ["hyprland/workspaces"],
   "modules-right": ["tray", "pulseaudio", "clock"],
+  "hyprland/workspaces": {
+    "format": "{name}",
+    "on-click": "activate"
+  },
   "custom/cpu": {
     "exec": "curl -sS -m 5 -X POST http://127.0.0.1:8787/api/v1/face/meter -H 'Content-Type: application/json' -d '{\"kind\":\"cpu\"}'",
     "return-type": "json",
