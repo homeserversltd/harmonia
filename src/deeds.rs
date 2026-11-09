@@ -1,12 +1,6 @@
 //! One appliance deed stream. Callers supply outcome fields, never a body.
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, MetadataExt};
-use std::path::Path;
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
-
-const LOG: &str = "/var/log/appliance/appliance.log";
 
 thread_local! {
     static OBSERVATION_ONLY: Cell<bool> = const { Cell::new(false) };
@@ -112,18 +106,6 @@ pub(crate) fn annotate_reporting(receipt: &mut serde_json::Value) {
     }
 }
 
-fn append(line: &str) -> Result<(), String> {
-    fs::create_dir_all(Path::new(LOG).parent().unwrap())
-        .map_err(|_| "appliance-log-parent-failed")?;
-    let mut log = OpenOptions::new().create(true).append(true).mode(0o644)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(LOG)
-        .map_err(|_| "appliance-log-open-failed")?;
-    let metadata = log.metadata().map_err(|_| "appliance-log-stat-failed")?;
-    if !metadata.is_file() || metadata.nlink()!=1 {
-        return Err("appliance-log-not-regular".into());
-    }
-    log.write_all(line.as_bytes()).map_err(|_| "appliance-log-write-failed".into())
-}
 
 /// Only a pending handoff needs acknowledgement. Failure is not an action error.
 pub(crate) fn record_delivery(
@@ -151,19 +133,16 @@ pub(crate) fn record_delivery(
         count.map(|value|value.to_string()).unwrap_or_else(||"none".into()),
     );
     debug_assert!(line.len()<850);
-    match append(&line) {
-        Ok(()) => true,
-        Err(signal) => {
-            DEED_FAILURE.with(|failure| {
-                let mut failure = failure.borrow_mut();
-                if failure.is_none() {
-                    *failure = Some(signal.clone());
-                    eprintln!("{} deed_recorded=false recording_signal={signal}", line.trim_end());
-                }
-            });
-            false
-        }
-    }
+    crate::hyalos::forward_bounded_receipt(
+        &format!("harmonia.{verb}"), line.trim_end(),
+        Some(serde_json::json!({
+            "target": token(target, 192), "outcome": if ok { "changed" } else { "failed" },
+            "duration_ms": duration.map(|value| value.min(u64::MAX as u128) as u64),
+            "duration_scope": scope, "run_id": run_id.map(|value| token(value, 80)),
+            "module_id": module_id.map(|value| token(value, 96)),
+            "first_missing_signal": signal.map(|value| token(value, 96)), "count": count,
+        })), Some(ok), run_id,
+    )
 }
 
 /// Existing callers keep their Result interface, but a deed never fails them.

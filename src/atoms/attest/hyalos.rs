@@ -1,7 +1,8 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const HYALOS_PATH: &str = "/api/v1/hyalos/reflect";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -96,6 +97,11 @@ pub(crate) fn bounded_json_string(value: &str, max_serialized_bytes: usize) -> S
 
 const FORWARD_METADATA_FIELDS: &[&str] = &[
     "schema",
+    "target",
+    "duration_scope",
+    "run_id",
+    "module_id",
+    "count",
     "profile_id",
     "outcome",
     "ok",
@@ -194,15 +200,15 @@ pub(crate) struct RunProfileFailure {
     pub signal: Option<String>,
 }
 
-fn try_forward_bounded_payload(payload: Value) -> bool {
+fn try_forward_bounded_payload(payload: Value) -> Option<bool> {
     let Ok(body) = serde_json::to_vec(&payload) else {
-        return false;
+        return None;
     };
     if body.len() > MAX_FORWARD_PAYLOAD_BYTES {
-        return false;
+        return None;
     }
-    forward_serialized_payload(body);
-    true
+    let kind = payload.get("kind").and_then(Value::as_str).unwrap_or("unknown");
+    Some(forward_serialized_payload(body, kind))
 }
 
 /// Forward one run-profile deed while preserving its required typed summary.
@@ -277,10 +283,10 @@ pub(crate) fn forward_run_profile_deed(
         Some(outcome == "ok"),
         Some(&run_id),
     );
-    if !try_forward_bounded_payload(payload) {
+    if try_forward_bounded_payload(payload).is_none() {
         // Mandatory scalar fields use fixed, serialized-size bounds; this is
         // only reachable if the fixed envelope itself stops fitting.
-        eprintln!("harmonia hyalos first_missing_signal=run-profile-deed-envelope-overflow");
+        eprintln!("harmonia hyalos post=failed kind=harmonia.run_profile first_missing_signal=run-profile-deed-envelope-overflow");
     }
 }
 
@@ -293,7 +299,7 @@ pub(crate) fn forward_bounded_receipt(
     attributes_redacted: Option<Value>,
     ok: Option<bool>,
     correlation_id: Option<&str>,
-) {
+) -> bool {
     for string_budget in [384, 192, 96, 48, 24, 12, 8] {
         let bounded_kind = bounded_json_string(kind, string_budget);
         let bounded_message = bounded_json_string(message, string_budget);
@@ -308,23 +314,26 @@ pub(crate) fn forward_bounded_receipt(
             ok,
             bounded_correlation.as_deref(),
         );
-        if try_forward_bounded_payload(payload) {
-            return;
+        if let Some(delivered) = try_forward_bounded_payload(payload) {
+            return delivered;
         }
     }
 
     let fallback_attributes = Some(bounded_compacted_attributes(attributes_redacted.as_ref(), ok));
     let fallback_payload = receipt_payload(
         &bounded_json_string(kind, 64),
-        "bounded receipt metadata compacted",
+        &bounded_json_string(message, 64),
         fallback_attributes,
         ok,
         correlation_id.map(|value| bounded_json_string(value, 64)).as_deref(),
     );
-    if !try_forward_bounded_payload(fallback_payload) {
+    if let Some(delivered) = try_forward_bounded_payload(fallback_payload) {
+        delivered
+    } else {
         // The fixed envelope and capped failure fields fit by construction;
         // retain a bounded local signal if serialization ever violates that invariant.
-        eprintln!("harmonia hyalos first_missing_signal=bounded-forward-payload-overflow");
+        eprintln!("harmonia hyalos post=failed kind={:?} first_missing_signal=bounded-forward-payload-overflow", bounded_json_string(kind, 128));
+        false
     }
 }
 
@@ -339,50 +348,95 @@ pub(crate) fn forward_receipt(
     ok: Option<bool>,
     correlation_id: Option<&str>,
 ) {
-    let payload = receipt_payload(kind, message, attributes_redacted, ok, correlation_id);
-    let Ok(body) = serde_json::to_vec(&payload) else {
-        return;
-    };
-    forward_serialized_payload(body);
-}
-
-fn forward_serialized_payload(body: Vec<u8>) {
-    if READ_ONLY.with(std::cell::Cell::get) {
-        return;
+    let normalized = kind.strip_prefix("schema=harmonia.")
+        .and_then(|rest| rest.strip_suffix(".v1"))
+        .map(|rest| format!("harmonia.{rest}"));
+    let kind = normalized.as_deref().unwrap_or(kind);
+    let payload = receipt_payload(kind, message, attributes_redacted.clone(), ok, correlation_id);
+    if try_forward_bounded_payload(payload).is_none() {
+        let _ = forward_bounded_receipt(kind, message, attributes_redacted, ok, correlation_id);
     }
-    let base = match crate::atoms::ask::caduceus_door::base_url() {
-        Ok(base) => base,
-        Err(signal) => {
-            // Declaration absence remains visible without recursively trying
-            // to forward its own diagnostic through the missing door.
-            static DECLARATION_REPORTED: std::sync::Once = std::sync::Once::new();
-            DECLARATION_REPORTED.call_once(|| {
-                eprintln!(
-                    "harmonia hyalos first_missing_signal={}",
-                    bounded_json_string(&signal, 128)
-                );
-            });
-            return;
-        }
-    };
-    let _ = forward_receipt_inner(base, &body);
 }
 
-fn forward_receipt_inner(base: &str, body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+fn forward_serialized_payload(body: Vec<u8>, kind: &str) -> bool {
+    if READ_ONLY.with(std::cell::Cell::get) {
+        return true;
+    }
+    let deadline = Instant::now() + REQUEST_TIMEOUT;
+    let result = match crate::atoms::ask::caduceus_door::base_url() {
+        Ok(base) => forward_receipt_inner(base, &body, deadline),
+        Err(_) => Err(std::io::Error::other("caduceus-bind-undeclared")),
+    };
+    if let Err(error) = result {
+        let signal = if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) || Instant::now() >= deadline {
+            "hyalos-door-timeout"
+        } else { "hyalos-door-unavailable" };
+        eprintln!("harmonia hyalos post=failed kind={:?} first_missing_signal={signal}", bounded_json_string(kind, 128));
+        return false;
+    }
+    true
+}
+
+fn remaining(deadline: Instant) -> std::io::Result<Duration> {
+    deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "hyalos-door-timeout"))
+}
+
+// A blocked system resolver cannot accumulate one thread per deed.
+static RESOLVING: AtomicBool = AtomicBool::new(false);
+
+fn forward_receipt_inner(base: &str, body: &[u8], deadline: Instant) -> std::io::Result<()> {
     let host = base.strip_prefix("http://").expect("resolved HTTP base");
-    let mut stream = host
-        .to_socket_addrs()?
-        .find_map(|address| TcpStream::connect_timeout(&address, REQUEST_TIMEOUT).ok())
-        .ok_or_else(|| std::io::Error::other("hyalos-door-unreachable"))?;
-    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
-    write!(
-        stream,
-        "POST {HYALOS_PATH} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(body)?;
-    let mut response = Vec::new();
-    let _ = stream.read_to_end(&mut response);
+    if RESOLVING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return Err(std::io::Error::other("hyalos-resolver-busy"));
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let address = host.to_owned();
+    if let Err(error) = std::thread::Builder::new().spawn(move || {
+        let result = address.to_socket_addrs().map(|it| it.collect::<Vec<_>>());
+        RESOLVING.store(false, Ordering::Release);
+        let _ = sender.send(result);
+    }) {
+        RESOLVING.store(false, Ordering::Release);
+        return Err(error);
+    }
+    let addresses = receiver.recv_timeout(remaining(deadline)?)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "hyalos-resolve-timeout"))??;
+    let mut stream = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, remaining(deadline)?) {
+            Ok(connected) => { stream = Some(connected); break; }
+            Err(_) => continue,
+        }
+    }
+    let mut stream = stream.ok_or_else(|| std::io::Error::other("hyalos-door-unreachable"))?;
+    let header = format!(
+        "POST {HYALOS_PATH} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()
+    );
+    for mut bytes in [header.as_bytes(), body] {
+        while !bytes.is_empty() {
+            stream.set_write_timeout(Some(remaining(deadline)?))?;
+            let n = stream.write(bytes)?;
+            if n == 0 { return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "hyalos-write")); }
+            bytes = &bytes[n..];
+        }
+    }
+    let mut status = Vec::new();
+    let mut complete = false;
+    for _ in 0..128 {
+        stream.set_read_timeout(Some(remaining(deadline)?))?;
+        let mut byte = [0];
+        if stream.read(&mut byte)? == 0 { break; }
+        if byte[0] == b'\n' { complete = true; break; }
+        status.push(byte[0]);
+    }
+    let status = std::str::from_utf8(&status).map_err(|_| std::io::Error::other("hyalos-status-invalid"))?;
+    let mut parts = status.split_whitespace();
+    let version = parts.next();
+    let code = parts.next().and_then(|s| s.parse::<u16>().ok());
+    if !complete || !matches!(version, Some("HTTP/1.0" | "HTTP/1.1"))
+        || !code.is_some_and(|code| (200..300).contains(&code)) {
+        return Err(std::io::Error::other("hyalos-post-refused"));
+    }
     Ok(())
 }
