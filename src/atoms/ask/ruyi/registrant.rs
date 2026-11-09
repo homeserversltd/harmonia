@@ -804,7 +804,7 @@ pub(crate) fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
         })
 }
 
-fn local_seat_hostname_matches(port: u16, own_hostname: &str) -> bool {
+fn local_seat_is_local(port: u16, row: &Value) -> bool {
     let url = format!("http://127.0.0.1:{port}/api/v1/ruyi");
     // This is a decision-only observation: every door or answer failure
     // becomes false so registration can continue through its other arms.
@@ -822,11 +822,20 @@ fn local_seat_hostname_matches(port: u16, own_hostname: &str) -> bool {
         return false;
     }
     roster
-        .pointer("/seat/hostname")
+        .pointer("/seat/ipv4")
         .and_then(Value::as_str)
-        .is_some_and(|seat_hostname| {
-            seat_hostname.trim().to_ascii_lowercase() == own_hostname.trim().to_ascii_lowercase()
-        })
+        .and_then(|address| address.parse::<Ipv4Addr>().ok())
+        .is_some_and(|address| gateway_is_local(address, row))
+}
+
+fn persisted_seat_is_local(perspective: &Value, row: &Value) -> bool {
+    let seat = &perspective["gateway_seat"];
+    let matching_mac = row.get("mac").and_then(Value::as_str)
+        .filter(|mac| !mac.is_empty())
+        .is_some_and(|mac| seat.get("mac").and_then(Value::as_str) == Some(mac));
+    matching_mac && seat.get("ipv4").and_then(Value::as_str)
+        .and_then(|address| address.parse::<Ipv4Addr>().ok())
+        .is_some_and(|address| gateway_is_local(address, row))
 }
 
 pub(crate) trait RuyiSeatPort {
@@ -853,37 +862,18 @@ pub(crate) fn self_is_gateway(
     declared_port: impl RuyiSeatPort,
     row: &Value,
 ) -> bool {
-    let persisted_gateway_mac = perspective
-        .pointer("/gateway_seat/mac")
-        .and_then(Value::as_str);
-    if row
-        .get("mac")
-        .and_then(Value::as_str)
-        .is_some_and(|self_mac| Some(self_mac) == persisted_gateway_mac)
+    if default_gateway().is_ok_and(|gateway| gateway_is_local(gateway, row))
+        || persisted_seat_is_local(perspective, row)
     {
         return true;
     }
-    let Some(port) = declared_port.declared_port() else {
-        return false;
-    };
-    let Some(own_hostname) = row.get("hostname").and_then(Value::as_str) else {
-        return false;
-    };
-    local_seat_hostname_matches(port, own_hostname)
+    declared_port.declared_port().is_some_and(|port| local_seat_is_local(port, row))
 }
 
 pub(crate) fn routed_host(row: &Value) -> Result<Ipv4Addr, String> {
-    let mac = row.get("mac").and_then(Value::as_str).unwrap_or_default();
     let prior_self_seat = read_perspective()
         .ok()
-        .and_then(|perspective| {
-            perspective
-                .pointer("/gateway_seat/mac")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .as_deref()
-        == Some(mac);
+        .is_some_and(|perspective| persisted_seat_is_local(&perspective, row));
     if prior_self_seat {
         return Ok(Ipv4Addr::LOCALHOST);
     }
