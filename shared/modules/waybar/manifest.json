@@ -4,7 +4,7 @@
   "title": "Status bar",
   "summary": "Shows status and quick controls in the bar along the bottom of the screen.",
   "category": "interactable",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "One shared owner status-bar job; TV keeps its face controls and HomeSI selects native desktop controls through its profile pool.",
   "optional": false,
   "constants": {
