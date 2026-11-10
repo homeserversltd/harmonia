@@ -133,7 +133,7 @@ fn observe() -> Result<Value, String> {
                     for child in children {
                         let child_step = ValidatedStep { step_id: format!("{}:{}", step.step_id, child.name), tool: child.tool.clone(), permutation: child.permutation.clone(), args: child.args.clone(), on_failure: child.on_failure };
                         modules.get_mut(module_id).unwrap().steps.insert(child_step.step_id.clone());
-                        if matches!(child_step.tool.as_str(), "package" | "packages") && !matches!(child_step.permutation.as_str(), "update" | "upgrade") {
+                        if matches!(child_step.tool.as_str(), "package" | "packages") {
                             package_observers.insert((module_id.clone(), child_step.step_id.clone()));
                         }
                         if observe_step(&child_step, manifest, module_id, &profile, &mut pending_steps, &mut step_proposals, &mut package_updates).is_err() {
@@ -144,7 +144,7 @@ fn observe() -> Result<Value, String> {
                     fail_step(&mut modules, &mut errors, module_id, &step.step_id, "update-check-routine-unobserved");
                 }
             } else {
-                if matches!(step.tool.as_str(), "package" | "packages") && !matches!(step.permutation.as_str(), "update" | "upgrade") {
+                if matches!(step.tool.as_str(), "package" | "packages") {
                     package_observers.insert((module_id.clone(), step.step_id.clone()));
                 }
                 if observe_step(step, manifest, module_id, &profile, &mut pending_steps, &mut step_proposals, &mut package_updates).is_err() {
@@ -187,11 +187,13 @@ fn observe() -> Result<Value, String> {
         })();
         if index_refresh == "failed" {
             for (module, step) in &package_observers {
+                errors.retain(|row| row["module"].as_str() != Some(module.as_str()) || row["step"].as_str() != Some(step.as_str()));
                 fail_step(&mut modules, &mut errors, module, step, "update-check-index-refresh-failed");
                 modules.get_mut(module).unwrap().signal = Some("update-check-index-refresh-failed");
             }
         }
         for update in package_updates {
+            if index_refresh == "failed" { continue; }
             let (module, step) = update.label.split_once(':').unwrap_or((&update.label, ""));
             let result = (|| -> Result<bool, String> {
                 let (backend, entries, ignored) = common.as_ref().map_err(|e| e.clone())?;
