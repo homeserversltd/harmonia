@@ -118,7 +118,18 @@ pub(crate) fn source(step: &ValidatedStep, manifest: &LadderManifest, surface: &
     let head = read(&["--no-optional-locks", "rev-parse", "HEAD^{commit}"], Some(cwd));
     let worn = head.stdout.trim();
     if !head.ok || !valid_hex(worn, 40) { return Err("update-check-checkout-head-unavailable".into()); }
-    let reference = if plan.reference.starts_with("refs/") { plan.reference.clone() } else { format!("refs/heads/{}", plan.reference) };
+    // The acquisition plan may replace the declared branch with a stamped
+    // commit.  A stamp is not a remote ref and cannot answer its current tip.
+    let component = step.args.get("component").and_then(Value::as_str).ok_or("update-check-source-component-missing")?;
+    let config: Value = serde_json::from_slice(&std::fs::read(crate::bands::pull_source::appliance_config_path())
+        .map_err(|_| "update-check-source-config-unavailable")?)
+        .map_err(|_| "update-check-source-config-invalid")?;
+    let configured = config.get("sources").and_then(|v| v.get(component))
+        .and_then(|v| v.get("ref")).and_then(Value::as_str)
+        .map(str::trim).filter(|s| !s.is_empty()).ok_or("update-check-source-ref-unavailable")?;
+    let branch = if plan.source_policy == "developer" { "main" } else { configured };
+    if valid_hex(branch, 40) { return Err("update-check-source-ref-not-branch".into()); }
+    let reference = if branch.starts_with("refs/") { branch.to_owned() } else { format!("refs/heads/{branch}") };
     let remote = read(&["--no-optional-locks", "ls-remote", "--refs", &candidate.locator, &reference], None);
     let newest = remote.stdout.lines().find_map(|line| line.split_once('\t').filter(|(_, name)| *name == reference).map(|(sha, _)| sha)).filter(|s| valid_hex(s, 40)).ok_or("update-check-source-tip-unavailable")?;
     if !remote.ok { return Err("update-check-source-tip-unavailable".into()); }
