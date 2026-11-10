@@ -202,7 +202,7 @@ fn observe() -> Result<Value, String> {
     Ok(json!({"schema":"harmonia.update.check.v1","ok":true,"pending":!pending_steps.is_empty(),"first_missing_signal":signal,"checked_at":checked_at(),
         "wearing":{"profile":profile.id,"harmonia_sha":option_env!("HARMONIA_BUILD_SHA"),"caduceus_sha":null,"set_digest":null},
         "modules":{"total":list.len(),"current":count("current"),"pending":count("pending"),"config":count("config"),"unobserved":count("unobserved"),"list":list},
-        "software":{"pending_steps":pending_steps.len(),"packages_upgradable":packages.len(),"releases_newer":[],"kernel_purge_plan":kernel_plan},
+        "software":{"pending_steps":pending_steps.len(),"packages_upgradable":packages.len(),"releases_newer":crate::atoms::ask::update_check_releases::take_newer(),"kernel_purge_plan":kernel_plan},
         "config":{"proposals":config_proposals.len()},"interactables":interactables,"interactables_signal":ledger_signal,"last_run":last_run(),"unobserved_steps":errors,
         "index_refresh":"never","freshness":"relative-to-cached-package-indexes","cached_index_roots_consulted":cached_roots,
         "coverage":"readable file and cached-package steps observed; unsupported or unreadable steps marked unobserved; release lookup deferred"}))
@@ -400,17 +400,17 @@ fn observe_step(
             package_updates.push(collect_package_scope(step, manifest, module_id)?);
         }
         "check-health" | "health" | "probe" | "executable-present" => {}
-        "pull-repo" | "pull_repo" => {
-            return Err(format!(
-                "update-check-git-transport-trace-free-observer-unavailable-{module_id}-{}",
-                step.step_id
-            ));
+        "pull-repo" | "pull_repo" | "git-artifact" => {
+            let label = format!("{module_id}:{}", step.step_id);
+            if crate::atoms::ask::update_check_releases::source(step, manifest, &label)? {
+                pending_steps.insert(label);
+            }
         }
-        "fetch-artifact" | "artifact" | "source" => {
-            return Err(format!(
-                "update-check-release-artifact-observer-unavailable-{module_id}-{}-{}",
-                step.step_id, step.tool
-            ))
+        "fetch-artifact" | "artifact" | "source" | "release-binary" => {
+            let label = format!("{module_id}:{}", step.step_id);
+            if crate::atoms::ask::update_check_releases::binary(step, &label)? {
+                pending_steps.insert(label);
+            }
         }
         other => {
             return Err(format!(
