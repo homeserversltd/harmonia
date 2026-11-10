@@ -13,22 +13,32 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 const PACKAGE_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const STDERR_OUTPUT_LIMIT: usize = 16 * 1024;
 
-fn response(
-    ok: bool,
-    pending: Option<bool>,
-    software: Option<usize>,
-    proposals: Option<usize>,
-    signal: &str,
-    cached_roots: &[String],
-    kernel_purge_plan: &[String],
-) -> Value {
-    json!({"ok":ok,"pending":pending,"pending_software_steps":software,
-          "config_proposals":proposals,"first_missing_signal":signal,
-          "index_refresh":"never",
-          "freshness":"relative-to-cached-package-indexes",
-          "cached_index_roots_consulted":cached_roots,
-          "kernel_purge_plan":kernel_purge_plan,
-          "coverage":"certificate profile; files/converge, managed-files, metadata, symlink/remove observers, and per-upgrade-step cached package comparisons; unobserved actuators fail closed"})
+#[derive(Default)]
+struct ModuleObservation {
+    steps: BTreeSet<String>,
+    pending: bool,
+    config: bool,
+    signal: Option<&'static str>,
+}
+
+fn fail_step(modules: &mut std::collections::BTreeMap<String, ModuleObservation>, errors: &mut Vec<Value>, module: &str, step: &str, signal: &'static str) {
+    let entry = modules.entry(module.to_owned()).or_default();
+    if !step.is_empty() { entry.steps.insert(step.to_owned()); }
+    entry.signal.get_or_insert(signal);
+    errors.push(json!({"module":module,"step":step,"signal":signal}));
+}
+
+fn response_error(signal: &'static str) -> Value {
+    json!({"schema":"harmonia.update.check.v1","ok":false,"pending":null,
+        "first_missing_signal":signal,"checked_at":checked_at(),
+        "wearing":{"profile":null,"harmonia_sha":option_env!("HARMONIA_BUILD_SHA"),"caduceus_sha":null,"set_digest":null},
+        "modules":null,"software":null,"config":null,"interactables":null,"last_run":null,
+        "freshness":"relative-to-cached-package-indexes","index_refresh":"never",
+        "coverage":"profile could not be resolved"})
+}
+
+fn checked_at() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 fn emit(value: Value, code: i32) -> i32 {
@@ -36,32 +46,20 @@ fn emit(value: Value, code: i32) -> i32 {
     code
 }
 
-/// Intercept any update request containing `--check` before invocation seats,
-/// timers, validation receipts, or apply dispatch can be reached.
+/// Intercept before any invocation seats or apply dispatch can be reached.
 pub(crate) fn invoke_check(args: &[String]) -> Option<i32> {
     if args.first().map(String::as_str) != Some("update") || !args.iter().any(|a| a == "--check") {
         return None;
     }
     Some(match parse_check_args(&args[1..]) {
         Ok(()) => match observe() {
-            Ok((pending, software, proposals, roots, kernel_plan)) => {
-                let code = if pending { 0 } else { 7 };
-                emit(
-                    response(
-                        true,
-                        Some(pending),
-                        Some(software),
-                        Some(proposals),
-                        "none",
-                        &roots,
-                        &kernel_plan,
-                    ),
-                    code,
-                )
+            Ok(value) => {
+                let code = if value["pending"] == true { 0 } else { 7 };
+                emit(value, code)
             }
-            Err(signal) => emit(response(false, None, None, None, &signal, &[], &[]), 1),
+            Err(_) => emit(response_error("update-check-profile-unavailable"), 1),
         },
-        Err(signal) => emit(response(false, None, None, None, &signal, &[], &[]), 1),
+        Err(_) => emit(response_error("update-check-arguments-invalid"), 1),
     })
 }
 
@@ -71,234 +69,143 @@ fn parse_check_args(args: &[String]) -> Result<(), String> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--check" => {
-                check_count += 1;
-                i += 1;
-            }
-            "--apply" => {
-                apply = true;
-                i += 1;
-            }
-            "--receipt-dir" => {
-                if args.get(i + 1).is_none_or(|v| v.starts_with('-')) {
-                    return Err("update-check-receipt-dir-value-missing".into());
-                }
-                return Err("update-check-receipt-dir-unsupported-no-write-query".into());
-            }
-            flag => return Err(format!("update-check-argument-unsupported-{flag}")),
+            "--check" => { check_count += 1; i += 1; }
+            "--apply" => { apply = true; i += 1; }
+            "--receipt-dir" => return Err("update-check-receipt-dir-unsupported-no-write-query".into()),
+            _ => return Err("update-check-argument-unsupported".into()),
         }
     }
-    if check_count != 1 {
-        return Err("update-check-duplicate-or-missing-check-flag".into());
-    }
-    if apply {
-        return Err("update-check-apply-conflicts-with-check".into());
-    }
+    if check_count != 1 || apply { return Err("update-check-arguments-invalid".into()); }
     Ok(())
 }
 
-fn observe() -> Result<(bool, usize, usize, Vec<String>, Vec<String>), String> {
-    let (mut profile, profile_path) = crate::device_profile::resolve_certificate_profile()
-        .map_err(|e| format!("update-check-certificate-profile-unavailable:{e}"))?;
-    let policy = crate::read_device_module_policy()
-        .map_err(|e| format!("update-check-device-module-policy-unavailable:{e}"))?;
+fn interactables() -> Result<Option<Value>, String> {
+    let Some(connection) = crate::ledger::reader()? else { return Ok(None); };
+    let feed = crate::ledger::load_proposals_on(&connection)?;
+    let items: Vec<_> = feed.interactables.into_iter().filter(|item| item.kind != "engine-replacement").collect();
+    let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+    for item in &items { *kinds.entry(item.kind.clone()).or_default() += 1; }
+    Ok(Some(json!({"total":items.len(),"silenced":items.iter().filter(|item| item.silenced).count(),"by_kind":kinds})))
+}
+
+fn last_run() -> Option<Value> {
+    let bytes = std::fs::read("/var/lib/harmonia/receipts/update-latest/run.json").ok()?;
+    let run: Value = serde_json::from_slice(&bytes).ok()?;
+    Some(json!({"run_id":run.get("run_id"),
+        "finished_at":run.pointer("/final_receipt/stamps/0/at"),
+        "converged":run.pointer("/final_receipt/converged"),
+        "promoted":run.pointer("/final_receipt/promoted")}))
+}
+
+fn observe() -> Result<Value, String> {
+    let (mut profile, profile_path) = crate::device_profile::resolve_certificate_profile()?;
+    let policy = crate::read_device_module_policy()?;
     profile.syzygy_declaration = policy.syzygy_declaration.clone();
     let module_root = crate::default_module_root(&profile_path);
-    let projection =
-        crate::load_profile_projection(&profile, &module_root, &policy.disabled_modules)
-            .map_err(|e| format!("update-check-profile-projection-failed:{e}"))?;
-    if let Some((module, error)) = projection.errors.iter().next() {
-        return Err(format!(
-            "update-check-module-projection-failed-{module}:{error}"
-        ));
-    }
-
+    let projection = crate::load_profile_projection(&profile, &module_root, &policy.disabled_modules)?;
+    let mut modules = std::collections::BTreeMap::<String, ModuleObservation>::new();
+    let mut errors = Vec::new();
     let mut pending_steps = BTreeSet::new();
     let mut config_proposals = BTreeSet::new();
     let mut package_updates = Vec::new();
     let mut cached_roots = Vec::new();
     let mut kernel_plan = Vec::new();
-
+    let mut packages = BTreeSet::new();
+    for module in projection.errors.keys() {
+        fail_step(&mut modules, &mut errors, module, "", "update-check-module-projection-failed");
+    }
     for (module_id, projected) in &projection.modules {
+        modules.entry(module_id.clone()).or_default();
         let manifest = match &projected.loaded {
             LoadedModule::Sidecar(_) => {
-                return Err(format!(
-                    "update-check-sidecar-module-unsupported-{module_id}"
-                ))
+                fail_step(&mut modules, &mut errors, module_id, "", "update-check-sidecar-unobserved");
+                continue;
             }
             LoadedModule::Ladder(manifest) => manifest,
         };
         for step in &projected.steps {
-            if step.tool == "files" {
-                match step.permutation.as_str() {
-                    "converge" => {
-                        let (software_diff, config_diff) = observe_converge(step, manifest)?;
-                        if software_diff {
-                            pending_steps.insert(format!("{module_id}:{}", step.step_id));
+            modules.get_mut(module_id).unwrap().steps.insert(step.step_id.clone());
+            let mut step_proposals = BTreeSet::new();
+            if step.tool == "routine" {
+                if let Some(children) = projected.routines.get(&step.step_id) {
+                    for child in children {
+                        let child_step = ValidatedStep { step_id: format!("{}:{}", step.step_id, child.name), tool: child.tool.clone(), permutation: child.permutation.clone(), args: child.args.clone(), on_failure: child.on_failure };
+                        modules.get_mut(module_id).unwrap().steps.insert(child_step.step_id.clone());
+                        if observe_step(&child_step, manifest, module_id, &profile, &mut pending_steps, &mut step_proposals, &mut package_updates).is_err() {
+                            fail_step(&mut modules, &mut errors, module_id, &child_step.step_id, "update-check-step-unobserved");
                         }
-                        config_proposals.extend(config_diff);
                     }
-                    "managed-files" => {
-                        let (software_diff, config_diff) = observe_managed_files(step, manifest)?;
-                        if software_diff {
-                            pending_steps.insert(format!("{module_id}:{}", step.step_id));
-                        }
-                        config_proposals.extend(config_diff);
-                    }
-                    "metadata" => {
-                        let (software_diff, config_diff) = observe_metadata(step)?;
-                        if software_diff {
-                            pending_steps.insert(format!("{module_id}:{}", step.step_id));
-                        }
-                        config_proposals.extend(config_diff);
-                    }
-                    "validated-symlink" | "symlink-converge" | "validated-file-symlink" => {
-                        let (software_diff, config_diff) = observe_symlink(step, manifest)?;
-                        if software_diff {
-                            pending_steps.insert(format!("{module_id}:{}", step.step_id));
-                        }
-                        config_proposals.extend(config_diff);
-                    }
-                    "remove" | "source-shelf-sweep" => {
-                        let (software_diff, config_diff) = observe_remove(step)?;
-                        if software_diff {
-                            pending_steps.insert(format!("{module_id}:{}", step.step_id));
-                        }
-                        config_proposals.extend(config_diff);
-                    }
-                    "executable-present" | "probe" | "health" => {}
-                    other => {
-                        return Err(format!(
-                            "update-check-files-permutation-unsupported-{module_id}-{}-{other}",
-                            step.step_id
-                        ))
-                    }
+                } else {
+                    fail_step(&mut modules, &mut errors, module_id, &step.step_id, "update-check-routine-unobserved");
                 }
-            } else if matches!(step.tool.as_str(), "package" | "packages") {
-                if step.permutation == "check" {
-                    observe_package_check(step, &profile)?;
-                    continue;
-                }
-                if matches!(step.permutation.as_str(), "list" | "show") {
-                    return Err(format!(
-                        "update-check-package-observer-unsupported-{module_id}-{}-{}",
-                        step.step_id, step.permutation
-                    ));
-                }
-                if !matches!(step.permutation.as_str(), "update" | "upgrade") {
-                    return Err(format!(
-                        "update-check-package-permutation-unsupported-{module_id}-{}-{}",
-                        step.step_id, step.permutation
-                    ));
-                }
-                package_updates.push(collect_package_scope(step, manifest, module_id)?);
-            } else if matches!(step.tool.as_str(), "routine") {
-                let children = projected.routines.get(&step.step_id).ok_or_else(|| {
-                    format!(
-                        "update-check-routine-children-missing-{module_id}-{}",
-                        step.step_id
-                    )
-                })?;
-                for child in children {
-                    let child_step = ValidatedStep {
-                        step_id: format!("{}:{}", step.step_id, child.name),
-                        tool: child.tool.clone(),
-                        permutation: child.permutation.clone(),
-                        args: child.args.clone(),
-                        on_failure: child.on_failure,
-                    };
-                    observe_step(
-                        &child_step,
-                        manifest,
-                        module_id,
-                        &profile,
-                        &mut pending_steps,
-                        &mut config_proposals,
-                        &mut package_updates,
-                    )?;
-                }
-            } else if matches!(
-                step.tool.as_str(),
-                "check-health" | "health" | "probe" | "executable-present"
-            ) {
-                // A probe does not apply software and is intentionally not run
-                // merely to count update steps.
-            } else {
-                return Err(format!(
-                    "update-check-step-observer-unsupported-{module_id}-{}-{}",
-                    step.step_id, step.tool
-                ));
+            } else if observe_step(step, manifest, module_id, &profile, &mut pending_steps, &mut step_proposals, &mut package_updates).is_err() {
+                fail_step(&mut modules, &mut errors, module_id, &step.step_id, "update-check-step-unobserved");
             }
+            if !step_proposals.is_empty() { modules.get_mut(module_id).unwrap().config = true; }
+            config_proposals.extend(step_proposals);
         }
     }
     if !package_updates.is_empty() {
-        let backend = profile
-            .package_authority
-            .as_ref()
-            .ok_or_else(|| "update-check-package-authority-missing".to_string())?
-            .backend()
-            .map_err(|e| format!("update-check-{e}"))?;
-        if backend == PackageBackend::Apt
-            && package_updates.iter().any(|update| !update.pins.is_empty())
-        {
-            return Err("update-check-apt-package-pins-simulation-unsupported".into());
-        }
-        if backend == PackageBackend::Pacman
-            && package_updates
-                .iter()
-                .any(|update| !update.ceilings.is_empty())
-        {
-            return Err("update-check-package-ceiling-backend-unsupported-pacman".into());
-        }
-        cached_roots = ensure_cached_indexes(backend)?;
-        let (entries, ignored) = match backend {
-            PackageBackend::Pacman => (query_pacman()?, query_pacman_ignored()?),
-            PackageBackend::Apt => (query_apt()?, BTreeSet::new()),
-        };
-        if backend == PackageBackend::Apt && package_updates.iter().any(|update| update.kernel_purge) {
-            kernel_plan = query_kernel_purge()?;
-        }
+        let common = (|| -> Result<_, String> {
+            let backend = profile.package_authority.as_ref().ok_or("update-check-package-authority-missing")?.backend()?;
+            cached_roots = ensure_cached_indexes(backend)?;
+            let (entries, ignored) = match backend {
+                PackageBackend::Pacman => (query_pacman()?, query_pacman_ignored()?),
+                PackageBackend::Apt => (query_apt()?, BTreeSet::new()),
+            };
+            if backend == PackageBackend::Apt && package_updates.iter().any(|u| u.kernel_purge) { kernel_plan = query_kernel_purge()?; }
+            Ok((backend, entries, ignored))
+        })();
         for update in package_updates {
-            let mut step_pending = update.kernel_purge && !kernel_plan.is_empty();
-            for (name, current, candidate) in &entries {
-                let base_name = name.split_once(':').map_or(name.as_str(), |(base, _)| base);
-                if !update.scope.is_empty()
-                    && !update.scope.contains(name)
-                    && !update.scope.contains(base_name)
-                {
-                    continue;
-                }
-                if update.pins.contains(name)
-                    || update.pins.contains(base_name)
-                    || ignored.contains(name)
-                    || ignored.contains(base_name)
-                {
-                    continue;
-                }
-                if current.is_empty() || candidate == "<removed>" || current == candidate {
-                    continue;
-                }
-                if let Some(ceiling) = update
-                    .ceilings
-                    .get(name)
-                    .or_else(|| update.ceilings.get(base_name))
-                {
-                    if !apt_candidate_within_ceiling(candidate, ceiling)? {
-                        return Err(format!(
-                            "update-check-package-ceiling-exceeded-{}-{}",
-                            update.label, name
-                        ));
+            let (module, step) = update.label.split_once(':').unwrap_or((&update.label, ""));
+            let result = (|| -> Result<bool, String> {
+                let (backend, entries, ignored) = common.as_ref().map_err(|e| e.clone())?;
+                if *backend == PackageBackend::Apt && !update.pins.is_empty() { return Err("update-check-apt-package-pins-simulation-unsupported".into()); }
+                if *backend == PackageBackend::Pacman && !update.ceilings.is_empty() { return Err("update-check-package-ceiling-backend-unsupported-pacman".into()); }
+                let mut found = update.kernel_purge && !kernel_plan.is_empty();
+                let mut names = BTreeSet::new();
+                for (name, current, candidate) in entries {
+                    let base = name.split_once(':').map_or(name.as_str(), |(base, _)| base);
+                    if (!update.scope.is_empty() && !update.scope.contains(name) && !update.scope.contains(base)) || update.pins.contains(name) || update.pins.contains(base) || ignored.contains(name) || ignored.contains(base) || current.is_empty() || candidate == "<removed>" || current == candidate { continue; }
+                    if let Some(ceiling) = update.ceilings.get(name).or_else(|| update.ceilings.get(base)) {
+                        if !apt_candidate_within_ceiling(candidate, ceiling)? { return Err("update-check-package-ceiling-exceeded".into()); }
                     }
+                    found = true;
+                    names.insert(name.clone());
                 }
-                step_pending = true;
-            }
-            if step_pending {
-                pending_steps.insert(update.label);
+                packages.extend(names);
+                Ok(found)
+            })();
+            match result {
+                Ok(true) => { pending_steps.insert(update.label.clone()); }
+                Ok(false) => {}
+                Err(_) => fail_step(&mut modules, &mut errors, module, step, "update-check-package-unobserved"),
             }
         }
     }
-    let software = pending_steps.len();
-    Ok((software > 0, software, config_proposals.len(), cached_roots, kernel_plan))
+    for label in &pending_steps {
+        if let Some((module, _)) = label.split_once(':') {
+            if let Some(observation) = modules.get_mut(module) { observation.pending = true; }
+        }
+    }
+    let list: Vec<Value> = modules.iter().map(|(id, item)| {
+        let state = if item.pending { "pending" } else if item.signal.is_some() { "unobserved" } else if item.config { "config" } else { "current" };
+        json!({"id":id,"state":state,"steps":item.steps,"signal":item.signal})
+    }).collect();
+    let count = |state: &str| list.iter().filter(|row| row["state"] == state).count();
+    let (interactables, ledger_signal) = match interactables() {
+        Ok(Some(value)) => (Some(value), None),
+        Ok(None) => (None, Some("update-check-ledger-unavailable")),
+        Err(_) => (None, Some("update-check-ledger-unobserved")),
+    };
+    let signal = errors.first().and_then(|e| e["signal"].as_str()).or(ledger_signal).unwrap_or("none");
+    Ok(json!({"schema":"harmonia.update.check.v1","ok":true,"pending":!pending_steps.is_empty(),"first_missing_signal":signal,"checked_at":checked_at(),
+        "wearing":{"profile":profile.id,"harmonia_sha":option_env!("HARMONIA_BUILD_SHA"),"caduceus_sha":null,"set_digest":null},
+        "modules":{"total":list.len(),"current":count("current"),"pending":count("pending"),"config":count("config"),"unobserved":count("unobserved"),"list":list},
+        "software":{"pending_steps":pending_steps.len(),"packages_upgradable":packages.len(),"releases_newer":[],"kernel_purge_plan":kernel_plan},
+        "config":{"proposals":config_proposals.len()},"interactables":interactables,"interactables_signal":ledger_signal,"last_run":last_run(),"unobserved_steps":errors,
+        "index_refresh":"never","freshness":"relative-to-cached-package-indexes","cached_index_roots_consulted":cached_roots,
+        "coverage":"readable file and cached-package steps observed; unsupported or unreadable steps marked unobserved; release lookup deferred"}))
 }
 
 struct PackageUpdateScope {
