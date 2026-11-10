@@ -5,8 +5,8 @@ After=graphical-session.target
 Requisite=graphical-session.target
 
 [Service]
+ExecStartPre=-/usr/bin/pkill --exact --uid %U waybar
 ExecStart=/usr/bin/waybar -c /home/owner/.config/waybar/waybar.conf -s /home/owner/.config/waybar/style.css
-ExecReload=/usr/bin/pkill -SIGUSR2 waybar
 Restart=always
 RestartSec=1
 
