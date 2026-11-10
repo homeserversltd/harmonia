@@ -110,6 +110,7 @@ fn observe() -> Result<Value, String> {
     let mut cached_roots = Vec::new();
     let mut kernel_plan = Vec::new();
     let mut packages = BTreeSet::new();
+    let mut package_observers = BTreeSet::new();
     let mut index_refresh = "never";
     let mut freshness = "not-checked";
     for module in projection.errors.keys() {
@@ -132,6 +133,9 @@ fn observe() -> Result<Value, String> {
                     for child in children {
                         let child_step = ValidatedStep { step_id: format!("{}:{}", step.step_id, child.name), tool: child.tool.clone(), permutation: child.permutation.clone(), args: child.args.clone(), on_failure: child.on_failure };
                         modules.get_mut(module_id).unwrap().steps.insert(child_step.step_id.clone());
+                        if matches!(child_step.tool.as_str(), "package" | "packages") && !matches!(child_step.permutation.as_str(), "update" | "upgrade") {
+                            package_observers.insert((module_id.clone(), child_step.step_id.clone()));
+                        }
                         if observe_step(&child_step, manifest, module_id, &profile, &mut pending_steps, &mut step_proposals, &mut package_updates).is_err() {
                             fail_step(&mut modules, &mut errors, module_id, &child_step.step_id, "update-check-step-unobserved");
                         }
@@ -139,8 +143,13 @@ fn observe() -> Result<Value, String> {
                 } else {
                     fail_step(&mut modules, &mut errors, module_id, &step.step_id, "update-check-routine-unobserved");
                 }
-            } else if observe_step(step, manifest, module_id, &profile, &mut pending_steps, &mut step_proposals, &mut package_updates).is_err() {
-                fail_step(&mut modules, &mut errors, module_id, &step.step_id, "update-check-step-unobserved");
+            } else {
+                if matches!(step.tool.as_str(), "package" | "packages") && !matches!(step.permutation.as_str(), "update" | "upgrade") {
+                    package_observers.insert((module_id.clone(), step.step_id.clone()));
+                }
+                if observe_step(step, manifest, module_id, &profile, &mut pending_steps, &mut step_proposals, &mut package_updates).is_err() {
+                    fail_step(&mut modules, &mut errors, module_id, &step.step_id, "update-check-step-unobserved");
+                }
             }
             if !step_proposals.is_empty() { modules.get_mut(module_id).unwrap().config = true; }
             config_proposals.extend(step_proposals);
@@ -176,6 +185,12 @@ fn observe() -> Result<Value, String> {
             }
             result
         })();
+        if index_refresh == "failed" {
+            for (module, step) in &package_observers {
+                fail_step(&mut modules, &mut errors, module, step, "update-check-index-refresh-failed");
+                modules.get_mut(module).unwrap().signal = Some("update-check-index-refresh-failed");
+            }
+        }
         for update in package_updates {
             let (module, step) = update.label.split_once(':').unwrap_or((&update.label, ""));
             let result = (|| -> Result<bool, String> {
@@ -225,7 +240,7 @@ fn observe() -> Result<Value, String> {
         "software":{"pending_steps":pending_steps.len(),"packages_upgradable":packages.len(),"releases_newer":crate::atoms::ask::update_check_releases::take_newer(),"kernel_purge_plan":kernel_plan},
         "config":{"proposals":config_proposals.len()},"interactables":interactables,"interactables_signal":ledger_signal,"last_run":last_run(),"unobserved_steps":errors,
         "index_refresh":index_refresh,"freshness":freshness,"cached_index_roots_consulted":cached_roots,
-        "coverage":"readable file steps observed; releases and source checkouts compared against the house; package lists refreshed first; unsupported or unreadable steps marked unobserved"}))
+        "coverage":"readable file steps observed; package lists refreshed first; after stage 2b integration, releases and source checkouts are compared against the house; unsupported or unreadable steps marked unobserved"}))
 }
 
 struct PackageUpdateScope {
