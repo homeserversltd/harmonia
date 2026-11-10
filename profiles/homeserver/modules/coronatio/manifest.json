@@ -4,7 +4,7 @@
   "title": "Server dashboard",
   "summary": "Maintains the server's web dashboard and local settings.",
   "category": "known-good",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "HOMESERVER Coronatio configuration custody and native Forgejo Release runtime convergence.",
   "files_root": "files_root",
   "ladder": [

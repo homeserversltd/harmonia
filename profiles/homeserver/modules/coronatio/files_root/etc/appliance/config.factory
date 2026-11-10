@@ -3,10 +3,15 @@
       "wukong-staff": {
         "candidates": [
           {
+            "kind": "https",
+            "url": "https://git.home.arpa/HOMESERVERSLTD/wukong-staff"
+          },
+          {
             "url": "https://raw.githubusercontent.com/homeserversltd/mgla/main/wukong-staff/latest.mgla"
           }
         ],
         "key_line_candidates": [
+          "https://git.home.arpa/HOMESERVERSLTD/wukong-staff/raw/branch/main/keys/1141623189b165d8.txt",
           "https://raw.githubusercontent.com/homeserversltd/mgla/main/1141623189b165d8.txt"
         ]
       },
