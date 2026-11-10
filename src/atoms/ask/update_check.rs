@@ -242,7 +242,7 @@ fn observe() -> Result<Value, String> {
         "software":{"pending_steps":pending_steps.len(),"packages_upgradable":packages.len(),"releases_newer":crate::atoms::ask::update_check_releases::take_newer(),"kernel_purge_plan":kernel_plan},
         "config":{"proposals":config_proposals.len()},"interactables":interactables,"interactables_signal":ledger_signal,"last_run":last_run(),"unobserved_steps":errors,
         "index_refresh":index_refresh,"freshness":freshness,"cached_index_roots_consulted":cached_roots,
-        "coverage":"readable file steps observed; package lists refreshed first; after stage 2b integration, releases and source checkouts are compared against the house; unsupported or unreadable steps marked unobserved"}))
+        "coverage":"readable file steps observed; package lists refreshed first; our releases and source checkouts compared against the house; unsupported or unreadable steps marked unobserved"}))
 }
 
 struct PackageUpdateScope {
@@ -609,6 +609,7 @@ struct PacmanScratch(PathBuf);
 impl PacmanScratch {
     fn create() -> Result<Self, String> {
         use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::PermissionsExt;
         let conf = crate::atoms::package::pacman_conf_program();
         let result = crate::atoms::ask::read_only_command_with_timeout(&conf, &["DBPath".into()], CHECK_TIMEOUT);
         let db = Path::new(result.stdout.trim());
@@ -633,6 +634,8 @@ impl PacmanScratch {
         use std::os::unix::ffi::OsStringExt;
         bytes.pop();
         let scratch = Self(PathBuf::from(std::ffi::OsString::from_vec(bytes)));
+        std::fs::set_permissions(&scratch.0, std::fs::Permissions::from_mode(0o755))
+            .map_err(|_| "update-check-index-refresh-failed")?;
         std::os::unix::fs::symlink(db.join("local"), scratch.0.join("local"))
             .map_err(|_| "update-check-index-refresh-failed")?;
         Ok(scratch)
