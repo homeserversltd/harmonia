@@ -1,11 +1,10 @@
 [Unit]
 Description=Household time: choose chrony's upstream
-Before=chrony.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-RuntimeDirectory=chrony-household
+RuntimeDirectory=chrony-dhcp
 RuntimeDirectoryPreserve=yes
 StandardInput=data
 StandardInputText={"payload":{}}

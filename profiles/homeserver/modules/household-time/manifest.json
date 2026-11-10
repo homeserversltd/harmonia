@@ -4,7 +4,7 @@
   "title": "Accurate clock",
   "summary": "Keeps the household's time setting and device clock synchronized.",
   "category": "known-good",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "optional": false,
   "description": "Household time resolver and LAN NTP gateway: retain the household timezone fact, then serve synchronized NTP through chrony.",
   "caduceus_commands": [
