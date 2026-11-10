@@ -225,7 +225,7 @@ fn observe() -> Result<Value, String> {
         "software":{"pending_steps":pending_steps.len(),"packages_upgradable":packages.len(),"releases_newer":crate::atoms::ask::update_check_releases::take_newer(),"kernel_purge_plan":kernel_plan},
         "config":{"proposals":config_proposals.len()},"interactables":interactables,"interactables_signal":ledger_signal,"last_run":last_run(),"unobserved_steps":errors,
         "index_refresh":index_refresh,"freshness":freshness,"cached_index_roots_consulted":cached_roots,
-        "coverage":"readable file and package steps observed; unsupported or unreadable steps marked unobserved; release lookup deferred"}))
+        "coverage":"readable file steps observed; releases and source checkouts compared against the house; package lists refreshed first; unsupported or unreadable steps marked unobserved"}))
 }
 
 struct PackageUpdateScope {
