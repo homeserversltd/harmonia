@@ -41,7 +41,8 @@
       "sudoers",
       "synapse",
       "element",
-      "xenia"
+      "xenia",
+      "adblock"
     ]
   },
   "identity": "homeserver",
@@ -81,7 +82,8 @@
     "searx",
     "homeserver-update-runtime",
     "xenia",
-    "grub-branding"
+    "grub-branding",
+    "adblock"
   ],
   "scaffold_status": "public product profile; executable Coronatio, Caduceus, Forgejo, Jellyfin, Synapse and Element service modules, and the shared sudoers policy module; remaining homeserver ghosts stay README-only for later slices",
   "public_module_scaffold": [

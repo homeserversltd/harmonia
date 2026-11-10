@@ -1,0 +1,26 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "adblock",
+  "title": "Ad blocking",
+  "summary": "Keeps the HomeServer ad-blocking list current through the appliance staff.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "ladder": [
+    {
+      "step_id": "adblock-blocklist-current",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": ["/usr/local/sbin/agathodaimon/cli.py", "network", "dns", "blocklist", "converge"],
+        "timeout_secs": 300,
+        "observation": {
+          "program": "/usr/bin/python3",
+          "args": ["/usr/local/sbin/agathodaimon/cli.py", "network", "dns", "blocklist", "verify"],
+          "expected_exit_code": 0
+        }
+      },
+      "on_failure": "stop"
+    }
+  ]
+}
