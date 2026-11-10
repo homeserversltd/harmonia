@@ -1,5 +1,4 @@
-//! Trace-free observer for `harmonia update --check`.
-//! This deliberately returns its receipt to stdout and creates no local state.
+//! Update observer: only OS package indexes may be refreshed.
 use crate::bands::stage_profile::projection::LoadedModule;
 use crate::tools::ladder::{LadderManifest, ValidatedStep};
 use crate::PackageBackend;
@@ -111,6 +110,8 @@ fn observe() -> Result<Value, String> {
     let mut cached_roots = Vec::new();
     let mut kernel_plan = Vec::new();
     let mut packages = BTreeSet::new();
+    let mut index_refresh = "never";
+    let mut freshness = "not-checked";
     for module in projection.errors.keys() {
         fail_step(&mut modules, &mut errors, module, "", "update-check-module-projection-failed");
     }
@@ -148,13 +149,32 @@ fn observe() -> Result<Value, String> {
     if !package_updates.is_empty() {
         let common = (|| -> Result<_, String> {
             let backend = profile.package_authority.as_ref().ok_or("update-check-package-authority-missing")?.backend()?;
-            cached_roots = ensure_cached_indexes(backend)?;
-            let (entries, ignored) = match backend {
-                PackageBackend::Pacman => (query_pacman()?, query_pacman_ignored()?),
-                PackageBackend::Apt => (query_apt()?, BTreeSet::new()),
+            index_refresh = "failed";
+            freshness = "refresh-failed";
+            let mut scratch = match backend {
+                PackageBackend::Pacman => Some(PacmanScratch::create()?),
+                PackageBackend::Apt => None,
             };
-            if backend == PackageBackend::Apt && package_updates.iter().any(|u| u.kernel_purge) { kernel_plan = query_kernel_purge()?; }
-            Ok((backend, entries, ignored))
+            let result = (|| {
+                refresh_indexes(backend, scratch.as_ref().map(|s| s.0.as_path()))?;
+                index_refresh = match backend { PackageBackend::Apt => "apt-lists", PackageBackend::Pacman => "pacman-scratch-db" };
+                freshness = "refreshed-before-check";
+                cached_roots = ensure_cached_indexes(backend, scratch.as_ref().map(|s| s.0.as_path()))?;
+                let (entries, ignored) = match backend {
+                    PackageBackend::Pacman => (query_pacman(&scratch.as_ref().unwrap().0)?, query_pacman_ignored(&scratch.as_ref().unwrap().0)?),
+                    PackageBackend::Apt => (query_apt()?, BTreeSet::new()),
+                };
+                if backend == PackageBackend::Apt && package_updates.iter().any(|u| u.kernel_purge) { kernel_plan = query_kernel_purge()?; }
+                Ok((backend, entries, ignored))
+            })();
+            if let Some(scratch) = scratch.as_mut() {
+                if scratch.remove().is_err() {
+                    index_refresh = "failed";
+                    freshness = "refresh-failed";
+                    return Err("update-check-index-refresh-failed".into());
+                }
+            }
+            result
         })();
         for update in package_updates {
             let (module, step) = update.label.split_once(':').unwrap_or((&update.label, ""));
@@ -179,7 +199,7 @@ fn observe() -> Result<Value, String> {
             match result {
                 Ok(true) => { pending_steps.insert(update.label.clone()); }
                 Ok(false) => {}
-                Err(_) => fail_step(&mut modules, &mut errors, module, step, "update-check-package-unobserved"),
+                Err(_) => fail_step(&mut modules, &mut errors, module, step, if index_refresh == "failed" { "update-check-index-refresh-failed" } else { "update-check-package-unobserved" }),
             }
         }
     }
@@ -204,8 +224,8 @@ fn observe() -> Result<Value, String> {
         "modules":{"total":list.len(),"current":count("current"),"pending":count("pending"),"config":count("config"),"unobserved":count("unobserved"),"list":list},
         "software":{"pending_steps":pending_steps.len(),"packages_upgradable":packages.len(),"releases_newer":crate::atoms::ask::update_check_releases::take_newer(),"kernel_purge_plan":kernel_plan},
         "config":{"proposals":config_proposals.len()},"interactables":interactables,"interactables_signal":ledger_signal,"last_run":last_run(),"unobserved_steps":errors,
-        "index_refresh":"never","freshness":"relative-to-cached-package-indexes","cached_index_roots_consulted":cached_roots,
-        "coverage":"readable file and cached-package steps observed; unsupported or unreadable steps marked unobserved; release lookup deferred"}))
+        "index_refresh":index_refresh,"freshness":freshness,"cached_index_roots_consulted":cached_roots,
+        "coverage":"readable file and package steps observed; unsupported or unreadable steps marked unobserved; release lookup deferred"}))
 }
 
 struct PackageUpdateScope {
@@ -565,7 +585,95 @@ fn apt_config_shell_value(variable: &str, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("update-check-apt-config-output-malformed-{key}"))
 }
 
-fn ensure_cached_indexes(backend: PackageBackend) -> Result<Vec<String>, String> {
+// The scratch database never contains the system sync database.  Its sole
+// link points at the installed package database; remove_dir_all unlinks it.
+struct PacmanScratch(PathBuf);
+
+impl PacmanScratch {
+    fn create() -> Result<Self, String> {
+        use std::os::unix::ffi::OsStrExt;
+        let conf = crate::atoms::package::pacman_conf_program();
+        let result = crate::atoms::ask::read_only_command_with_timeout(&conf, &["DBPath".into()], CHECK_TIMEOUT);
+        let db = Path::new(result.stdout.trim());
+        if !result.ok || !db.is_absolute() || !db.join("local").is_dir() {
+            return Err("update-check-index-refresh-failed".into());
+        }
+        // An arbitrary TMPDIR can point inside a Harmonia state or profile root.
+        let candidate = std::fs::canonicalize(std::env::temp_dir()).map_err(|_| "update-check-index-refresh-failed")?;
+        let parent = if candidate == Path::new("/tmp") || candidate == Path::new("/var/tmp") { candidate } else { PathBuf::from("/tmp") };
+        let template = parent.join("harmonia-check-XXXXXX");
+        let mut bytes = CString::new(template.as_os_str().as_bytes()).map_err(|_| "update-check-index-refresh-failed")?.into_bytes_with_nul();
+        if unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null() {
+            return Err("update-check-index-refresh-failed".into());
+        }
+        use std::os::unix::ffi::OsStringExt;
+        bytes.pop();
+        let scratch = Self(PathBuf::from(std::ffi::OsString::from_vec(bytes)));
+        std::os::unix::fs::symlink(db.join("local"), scratch.0.join("local"))
+            .map_err(|_| "update-check-index-refresh-failed")?;
+        Ok(scratch)
+    }
+
+    fn remove(&mut self) -> std::io::Result<()> {
+        std::fs::remove_dir_all(&self.0)?;
+        self.0.clear();
+        Ok(())
+    }
+}
+
+impl Drop for PacmanScratch {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+}
+
+fn refresh_indexes(backend: PackageBackend, scratch: Option<&Path>) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let failure = || "update-check-index-refresh-failed".to_string();
+    let mut command = match backend {
+        PackageBackend::Apt => {
+            let lists = apt_config_shell_value("HARMONIA_LISTS", "Dir::State::lists/d").map_err(|_| failure())?;
+            if !matches!(lists.as_str(), "/var/lib/apt/lists" | "/var/lib/apt/lists/") { return Err(failure()); }
+            let mut command = Command::new("/usr/bin/apt-get");
+            command.args(["-c", "/dev/stdin", "-o", "APT::Update::Error-Mode=any", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "-o", "Dir::Log::History=/dev/null", "-o", "Dir::Log::Terminal=/dev/null", "-o", "Dir::Log::Planner=", "update"]);
+            command.stdin(Stdio::piped());
+            command
+        }
+        PackageBackend::Pacman => {
+            let mut command = Command::new(crate::atoms::package::pacman_program());
+            command.arg("-Sy").arg("--dbpath").arg(scratch.ok_or_else(failure)?).args(["--logfile", "/dev/null"]);
+            command.stdin(Stdio::null());
+            command
+        }
+    };
+    command.stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+    let mut child = command.spawn().map_err(|_| failure())?;
+    if let Some(mut input) = child.stdin.take() {
+        // Hooks may write outside the OS lists; clear them after system config
+        // has been loaded without writing a configuration file of our own.
+        if input.write_all(b"#clear APT::Update::Pre-Invoke;\n#clear APT::Update::Post-Invoke;\n#clear APT::Update::Post-Invoke-Success;\n").is_err() {
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+            let _ = child.wait();
+            return Err(failure());
+        }
+    }
+    let deadline = std::time::Instant::now() + CHECK_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return if status.success() { Ok(()) } else { Err(failure()) },
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+                let _ = child.wait();
+                return Err(failure());
+            }
+        }
+    }
+}
+
+fn ensure_cached_indexes(backend: PackageBackend, scratch: Option<&Path>) -> Result<Vec<String>, String> {
     match backend {
         PackageBackend::Apt => {
             let lists_config = apt_config_shell_value("HARMONIA_LISTS", "Dir::State::lists/d")?;
@@ -627,22 +735,8 @@ fn ensure_cached_indexes(backend: PackageBackend) -> Result<Vec<String>, String>
         }
         PackageBackend::Pacman => {
             let conf = crate::atoms::package::pacman_conf_program();
-            let result = crate::atoms::ask::read_only_command_with_timeout(
-                &conf,
-                &["DBPath".into()],
-                CHECK_TIMEOUT,
-            );
-            if !result.ok {
-                return Err(format!(
-                    "update-check-pacman-dbpath-query-failed:{}",
-                    result.stderr.trim()
-                ));
-            }
-            let db = result.stdout.trim();
-            if db.is_empty() || !Path::new(db).is_absolute() {
-                return Err("update-check-pacman-dbpath-invalid".into());
-            }
-            let sync = Path::new(db).join("sync");
+            let db = scratch.ok_or("update-check-pacman-scratch-missing")?;
+            let sync = db.join("sync");
             let repo_list = crate::atoms::ask::read_only_command_with_timeout_and_limit(
                 &conf,
                 &["--repo-list".into()],
@@ -687,7 +781,7 @@ fn ensure_cached_indexes(backend: PackageBackend) -> Result<Vec<String>, String>
                     ));
                 }
             }
-            let local = Path::new(db).join("local");
+            let local = db.join("local");
             let entries = std::fs::read_dir(&local).map_err(|e| {
                 format!(
                     "update-check-pacman-installed-state-unavailable-{}:{e}",
@@ -708,11 +802,9 @@ fn ensure_cached_indexes(backend: PackageBackend) -> Result<Vec<String>, String>
     }
 }
 
-fn query_pacman() -> Result<Vec<(String, String, String)>, String> {
+fn query_pacman(db: &Path) -> Result<Vec<(String, String, String)>, String> {
     let program = crate::atoms::package::pacman_program();
-    let args = vec!["-Qu".into(), "--logfile".into(), "/dev/null".into()];
-    // Query the installed database against already-cached sync indexes only;
-    // never use pacman -Sy from a trace-free check.
+    let args = vec!["-Qu".into(), "--dbpath".into(), db.to_string_lossy().into_owned(), "--logfile".into(), "/dev/null".into()];
     let result = crate::atoms::ask::read_only_command_with_timeout_and_limit(
         &program,
         &args,
@@ -750,7 +842,7 @@ fn query_pacman() -> Result<Vec<(String, String, String)>, String> {
     Ok(parsed)
 }
 
-fn query_pacman_ignored() -> Result<BTreeSet<String>, String> {
+fn query_pacman_ignored(db: &Path) -> Result<BTreeSet<String>, String> {
     let conf = crate::atoms::package::pacman_conf_program();
     let mut ignored = BTreeSet::new();
     for key in ["IgnorePkg", "IgnoreGroup"] {
@@ -775,6 +867,8 @@ fn query_pacman_ignored() -> Result<BTreeSet<String>, String> {
                 let program = crate::atoms::package::pacman_program();
                 let args = vec![
                     "-Sgq".into(),
+                    "--dbpath".into(),
+                    db.to_string_lossy().into_owned(),
                     "--logfile".into(),
                     "/dev/null".into(),
                     entry.to_string(),
