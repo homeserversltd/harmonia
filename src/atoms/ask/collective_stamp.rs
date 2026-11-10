@@ -362,6 +362,9 @@ fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObserva
             receipt["release_pages_read"] = json!(count);
         }
         observation.attempts.push(receipt);
+        if observation.verdict.as_deref() == Some("VALID") {
+            break;
+        }
     }
 
     if verified_candidates.is_empty() {
