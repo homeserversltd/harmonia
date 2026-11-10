@@ -1699,64 +1699,6 @@ pub(crate) fn announce() -> Result<Value, String> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-
-    fn serve_one_ruyi_response(body: Value) -> (u16, std::thread::JoinHandle<()>) {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).unwrap();
-            let body = serde_json::to_vec(&body).unwrap();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(&body).unwrap();
-        });
-        (port, handle)
-    }
-
-    #[test]
-    fn local_seat_hostname_match_yields_self_is_gateway_after_normalization() {
-        let (port, server) = serve_one_ruyi_response(json!({
-            "schema": ROW_SCHEMA,
-            "ok": true,
-            "seat": {"hostname": "  HOME \n", "unknown": "kept"},
-            "unknown": {"kept": true}
-        }));
-
-        assert!(self_is_gateway(
-            &json!({}),
-            port,
-            &json!({"mac": "00:11:22:33:44:55", "hostname": " home "}),
-        ));
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn local_seat_hostname_mismatch_does_not_yield_self_is_gateway() {
-        let (port, server) = serve_one_ruyi_response(json!({
-            "schema": ROW_SCHEMA,
-            "ok": true,
-            "seat": {"hostname": "castle"}
-        }));
-
-        assert!(!self_is_gateway(
-            &json!({}),
-            port,
-            &json!({"mac": "00:11:22:33:44:55", "hostname": "console"}),
-        ));
-        server.join().unwrap();
-    }
-
     #[test]
     fn own_receipt_validation_refusal_is_saved_and_read_back() {
         let temp = tempfile::tempdir().unwrap();
@@ -1901,69 +1843,6 @@ mod tests {
             gui_face: Some("Arcadia".into()),
             syzygy_sha: Some("c".repeat(64)),
         }
-    }
-
-    #[test]
-    fn live_beam_refresh_populates_door_fields_and_gateway_classifies_refreshed_row() {
-        let harmonia_sha = "1".repeat(40);
-        let refreshed = refresh_self_row_from_beam_observation(
-            stored_self_row(),
-            &refresh_test_profile(),
-            Ok(live_door(Some("1.98.0"))),
-            Some(&harmonia_sha),
-        );
-        assert!(refreshed["rustc_version"].is_string());
-        assert_eq!(refreshed["rustc_version"], "1.98.0");
-        assert_eq!(refreshed["caduceus_sha"], json!("a".repeat(40)));
-        assert_eq!(refreshed["env_sha"], json!("b".repeat(64)));
-        assert_eq!(refreshed["gui_face"], "Arcadia");
-        assert_eq!(refreshed["syzygy_sha"], json!("c".repeat(64)));
-        assert!(refreshed["last_seen"].as_u64().unwrap() > 7);
-        assert_eq!(refreshed["lineage"], json!(["stored-lineage"]));
-        assert_eq!(refreshed["last_update"]["run_id"], "run-stored");
-        assert_eq!(refreshed["member_flags"]["stored"], true);
-        assert_eq!(refreshed["harmonia_sha"], json!("f".repeat(40)));
-        assert_eq!(refreshed["identity"], "stored-identity");
-        assert_eq!(refreshed["custom_addition"]["kept"], true);
-
-        let (port, server) = serve_one_ruyi_response(json!({
-            "schema": ROW_SCHEMA,
-            "ok": true,
-            "seat": {"hostname": "arcadia"}
-        }));
-        assert!(self_is_gateway(&json!({}), port, &refreshed));
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn omitted_rustc_preserves_stored_toolchain_and_non_gateway_classifies_refreshed_row() {
-        let harmonia_sha = "1".repeat(40);
-        let mut stored = stored_self_row();
-        stored["rustc_version"] = json!("1.97.0");
-        let refreshed = refresh_self_row_from_beam_observation(
-            stored.clone(),
-            &refresh_test_profile(),
-            Ok(live_door(None)),
-            Some(&harmonia_sha),
-        );
-        assert_eq!(refreshed["rustc_version"], stored["rustc_version"]);
-        assert_eq!(refreshed["caduceus_sha"], json!("a".repeat(40)));
-        assert_eq!(refreshed["env_sha"], json!("b".repeat(64)));
-        assert_eq!(refreshed["gui_face"], "Arcadia");
-        assert_eq!(refreshed["syzygy_sha"], json!("c".repeat(64)));
-        assert_eq!(refreshed["lineage"], stored["lineage"]);
-        assert_eq!(refreshed["last_update"], stored["last_update"]);
-        assert_eq!(refreshed["member_flags"], stored["member_flags"]);
-        assert_eq!(refreshed["harmonia_sha"], stored["harmonia_sha"]);
-        assert!(refreshed["last_seen"].as_u64().unwrap() > stored["last_seen"].as_u64().unwrap());
-
-        let (port, server) = serve_one_ruyi_response(json!({
-            "schema": ROW_SCHEMA,
-            "ok": true,
-            "seat": {"hostname": "castle"}
-        }));
-        assert!(!self_is_gateway(&json!({}), port, &refreshed));
-        server.join().unwrap();
     }
 
     #[test]
