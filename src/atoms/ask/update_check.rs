@@ -600,7 +600,14 @@ impl PacmanScratch {
         }
         // An arbitrary TMPDIR can point inside a Harmonia state or profile root.
         let candidate = std::fs::canonicalize(std::env::temp_dir()).map_err(|_| "update-check-index-refresh-failed")?;
-        let parent = if candidate == Path::new("/tmp") || candidate == Path::new("/var/tmp") { candidate } else { PathBuf::from("/tmp") };
+        let parent = if candidate == Path::new("/tmp") || candidate == Path::new("/var/tmp") {
+            candidate
+        } else {
+            std::fs::canonicalize("/tmp").map_err(|_| "update-check-index-refresh-failed")?
+        };
+        if parent != Path::new("/tmp") && parent != Path::new("/var/tmp") {
+            return Err("update-check-index-refresh-failed".into());
+        }
         let template = parent.join("harmonia-check-XXXXXX");
         let mut bytes = CString::new(template.as_os_str().as_bytes()).map_err(|_| "update-check-index-refresh-failed")?.into_bytes_with_nul();
         if unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null() {
