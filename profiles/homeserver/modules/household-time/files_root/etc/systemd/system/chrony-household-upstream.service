@@ -1,0 +1,15 @@
+[Unit]
+Description=Household time: choose chrony's upstream
+Before=chrony.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=chrony-household
+RuntimeDirectoryPreserve=yes
+StandardInput=data
+StandardInputText={"payload":{}}
+ExecStart=/usr/local/sbin/agathodaimon/cli.py network/time-upstream
+
+[Install]
+WantedBy=multi-user.target

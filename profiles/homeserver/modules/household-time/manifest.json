@@ -4,7 +4,7 @@
   "title": "Accurate clock",
   "summary": "Keeps the household's time setting and device clock synchronized.",
   "category": "known-good",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "optional": false,
   "description": "Household time resolver and LAN NTP gateway: retain the household timezone fact, then serve synchronized NTP through chrony.",
   "caduceus_commands": [
@@ -12,6 +12,15 @@
     "time state"
   ],
   "ladder": [
+    {
+      "step_id": "household-time-upstream-unit-present",
+      "tool": "ask",
+      "permutation": "path-exists",
+      "args": {
+        "path": "/etc/systemd/system/chrony-household-upstream.service"
+      },
+      "on_failure": "stop"
+    },
     {
       "step_id": "household-time-chrony-lan-policy",
       "tool": "files",
