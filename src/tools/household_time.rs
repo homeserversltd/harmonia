@@ -34,17 +34,16 @@ pub(crate) fn fresh_timezone(text: &str) -> Option<String> {
     let value: Value = serde_json::from_str(text).ok()?;
     let state = value.get("state").unwrap_or(&value);
     let timezone = state.get("timezone")?.as_str()?;
-    let valid_until = state.get("valid_until")?.as_str()?;
     validate_timezone(timezone).ok()?;
-    (parse_utc(valid_until)? > unix_now()).then(|| timezone.to_string())
+    Some(timezone.to_string())
 }
 
 pub(crate) fn preserved(reason: &str, source: CmdResult) -> CmdResult {
     CmdResult {
-        ok: false,
-        code: source.code,
+        ok: true,
+        code: 0,
         stdout: format!(
-            "{{\"schema\":\"harmonia.household-time.receipt.v1\",\"changed\":false,\"preserved\":true,\"probe\":\"remote-state\",\"first_missing_signal\":\"{reason}\"}}"
+            "{{\"schema\":\"harmonia.household-time.receipt.v1\",\"ok\":true,\"changed\":false,\"preserved\":true,\"first_missing_signal\":\"{reason}\"}}"
         ),
         stderr: if source.stderr.is_empty() {
             reason.to_string()

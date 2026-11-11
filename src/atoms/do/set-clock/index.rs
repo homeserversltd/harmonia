@@ -21,6 +21,13 @@ pub(crate) fn run(
     if !apply {
         return Ok(crate::tools::household_time::planned(request.operation));
     }
+    if request.operation == "watch-and-set" {
+        if let Err(reason) = crate::interactables::household_zone::require_follow_mode() {
+            return Ok(crate::tools::household_time::preserved(&reason, CmdResult {
+                ok: false, code: -1, stdout: String::new(), stderr: String::new(),
+            }));
+        }
+    }
     let observation = crate::atoms::ask::set_clock::clock(request);
     let desired_timezone = request.timezone.map(str::to_owned).or_else(|| {
         observation
@@ -55,22 +62,11 @@ pub(crate) fn run(
                     })
                 });
                 match request.operation {
-                    "resolve" => {
-                        if current
-                            .remote_state
-                            .as_ref()
-                            .and_then(|value| {
-                                crate::tools::household_time::fresh_timezone(&value.stdout)
-                            })
-                            .is_none()
-                        {
-                            DiffDecision::Different
-                        } else {
-                            DiffDecision::Empty
-                        }
-                    }
+                    "resolve" => DiffDecision::Different,
                     "set-timezone" | "watch-and-set" => {
-                        if desired
+                        if (request.operation == "watch-and-set" && (desired.is_none()
+                            || current.remote_state.as_ref().is_none_or(|remote| !remote.ok)))
+                            || desired
                             .as_deref()
                             .is_some_and(|zone| current.timezone.as_deref() != Some(zone))
                             || !current.timesync
@@ -85,6 +81,17 @@ pub(crate) fn run(
             },
             |authorization, current| {
                 let authorization = &authorization;
+                if request.operation == "watch-and-set" {
+                    if let Err(reason) = crate::interactables::household_zone::require_follow_mode() {
+                        return Ok(crate::tools::household_time::preserved(&reason, CmdResult {
+                            ok: false, code: -1, stdout: String::new(), stderr: String::new(),
+                        }));
+                    }
+                    let remote = current.remote_state.as_ref().expect("watch state");
+                    if !remote.ok || crate::tools::household_time::fresh_timezone(&remote.stdout).is_none() {
+                        return Ok(crate::tools::household_time::preserved("household-time-peer-state-unavailable", remote.clone()));
+                    }
+                }
                 let invocation =
                     invocation.ok_or_else(|| "set-clock-invocation-key-missing".to_string())?;
                 let desired = request.timezone.map(str::to_owned).or_else(|| {
@@ -107,6 +114,10 @@ pub(crate) fn run(
             .unwrap_or_else(|| crate::atoms::ask::set_clock::current_receipt(&observation)),
         crate::tools::comparison::ComparisonRun::Moved { movement, .. } => movement,
     };
+    if request.operation == "resolve" && (!result.ok || serde_json::from_str::<serde_json::Value>(&result.stdout)
+        .ok().and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool)) == Some(false)) {
+        return Ok(crate::tools::household_time::preserved("household-time-resolve-failed", result));
+    }
     Ok(result)
 }
 

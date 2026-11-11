@@ -65,20 +65,13 @@ fn observe() -> Result<Fact, String> {
     }
     let object = state.as_object().ok_or("household-zone-state-invalid")?;
     let zone = object.get("timezone").filter(|v| !v.is_null());
-    let valid = object.get("valid_until").filter(|v| !v.is_null());
-    if zone.is_none() && valid.is_none() {
+
+    if zone.is_none() {
         return Ok(Fact::Stale { zone: Value::Null, observed_at: Value::Null, valid_until: Value::Null });
     }
     let zone = zone.and_then(Value::as_str).ok_or("household-zone-timezone-invalid")?;
     crate::tools::household_time::validate_timezone(zone)?;
-    let valid = valid.and_then(Value::as_str).ok_or("household-zone-valid-until-invalid")?;
-    let until = valid_utc(valid).ok_or("household-zone-valid-until-invalid")?;
-    if until > crate::tools::household_time::unix_now() {
-        return Ok(Fact::Fresh);
-    }
-    Ok(Fact::Stale {
-        zone: json!(zone), observed_at: object.get("observed_at").cloned().unwrap_or(Value::Null), valid_until: json!(valid),
-    })
+    Ok(Fact::Fresh)
 }
 
 pub(crate) fn is_generated_proposal(item: &Interactable) -> bool {
@@ -167,11 +160,11 @@ fn face_authority(profile: &Profile) -> Result<(), String> {
 struct FaceFact {
     zone: String,
     observed_at: Value,
-    valid_until: String,
+    valid_until: Value,
     face_zone: String,
 }
 
-fn require_follow_mode() -> Result<(), String> {
+pub(crate) fn require_follow_mode() -> Result<(), String> {
     let config: Value = serde_json::from_slice(&std::fs::read("/etc/appliance/config.json")
         .map_err(|_| "household-zone-mode-unreadable")?)
         .map_err(|_| "household-zone-mode-invalid")?;
@@ -230,10 +223,7 @@ fn observe_face() -> Result<FaceFact, String> {
     }
     let value: Value = serde_json::from_str(&remote.stdout).map_err(|_| "household-zone-peer-invalid")?;
     let state = value.get("state").unwrap_or(&value);
-    let until = state.get("valid_until").and_then(Value::as_str).ok_or("household-zone-peer-invalid")?;
-    if valid_utc(until).filter(|until| *until > crate::tools::household_time::unix_now()).is_none() {
-        return Err("household-zone-peer-stale".into());
-    }
+    let until = state.get("valid_until").cloned().unwrap_or(Value::Null);
     if !observation.local_state.ok || observation.local_state.code != Some(0) {
         return Err("household-zone-face-clock-unreadable".into());
     }
@@ -242,7 +232,7 @@ fn observe_face() -> Result<FaceFact, String> {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))))
         .ok_or("household-zone-face-clock-invalid")?;
     Ok(FaceFact { zone, observed_at: state.get("observed_at").cloned().unwrap_or(Value::Null),
-        valid_until: until.into(), face_zone })
+        valid_until: until, face_zone })
 }
 
 pub(crate) fn is_generated_set_proposal(item: &Interactable) -> bool {
@@ -309,10 +299,7 @@ pub(crate) fn run_set(_path: &Path, item: &Interactable, invocation: Option<&cra
         reconcile_set(None)?;
         return Err(reason);
     }
-    if valid_utc(&before.valid_until).filter(|until| *until > crate::tools::household_time::unix_now()).is_none() {
-        reconcile_set(None)?;
-        return Err("household-zone-peer-stale".into());
-    }
+
     let request = crate::atoms::r#do::set_clock::Request {
         backend: "caduceus", operation: "set-timezone", timezone: Some(&before.zone), state_url: None,
         state_path: None, timeout_secs: 15,

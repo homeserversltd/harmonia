@@ -737,6 +737,8 @@ pub(crate) fn execute_validated_step_with_source(
                 | ("command", "act")
                 | ("release-binary", "install")
                 | ("hermes-maintenance", "converge")
+                | ("household-time", "resolve")
+                | ("household-time", "watch-and-set")
 
                 | ("xenia-runtime", "refusal")
         );

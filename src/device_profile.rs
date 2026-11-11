@@ -630,6 +630,7 @@ pub(crate) fn update_from_certificate(
         mode,
         context,
     );
+    crate::interactables::household_zone::reconcile_for_update(&profile);
     result
 }
 
