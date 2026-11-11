@@ -4,7 +4,7 @@
   "title": "Website access",
   "summary": "Keeps the server's website routing and secure connections configured.",
   "category": "interactable",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration.",
   "constants": {
     "sites": [
@@ -54,6 +54,9 @@
           "etc/nginx/sites-available/homeserver-vaultwarden",
           "etc/nginx/sites-available/homeserver-woodpecker",
           "etc/nginx/sites-available/homeserver-yarr",
+          "etc/nginx/conf.d/agathodaimon-docs-home-arpa.conf",
+          "etc/nginx/conf.d/agathodaimon-home-arpa.conf",
+          "etc/nginx/hestia/notes/upload-stream.conf",
           "etc/systemd/system/nginx.service"
         ],
         "backup_existing": true,

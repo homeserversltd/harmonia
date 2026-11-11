@@ -4,7 +4,7 @@
   "title": "Household CI",
   "summary": "Keeps the household's build service configured.",
   "category": "interactable",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Maintain the birth-provided Woodpecker service units; the instance's credentials and runtime data remain birth-owned.",
   "files_root": "files_root",
   "ladder": [
@@ -15,7 +15,7 @@
       "args": {
         "source_root": "files_root",
         "target_root": "/",
-        "files": ["etc/systemd/system/woodpecker-server.service", "etc/systemd/system/woodpecker-agent.service"],
+        "files": ["etc/systemd/system/woodpecker-server.service", "etc/systemd/system/woodpecker-agent.service", "etc/nginx/conf.d/agathodaimon-ci-home-arpa.conf"],
         "backup_existing": true,
         "owner": "root",
         "group": "root",

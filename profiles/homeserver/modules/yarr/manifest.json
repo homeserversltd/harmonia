@@ -4,7 +4,7 @@
   "title": "Reading list",
   "summary": "Keeps the household's saved news feeds available in one place.",
   "category": "interactable",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Keep the birth-provided Yarr binary current from a verified upstream release and maintain its product-owned service unit.",
   "files_root": "files_root",
   "ladder": [
@@ -30,7 +30,8 @@
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "etc/systemd/system/yarr.service"
+          "etc/systemd/system/yarr.service",
+          "etc/nginx/conf.d/agathodaimon-rss-home-arpa.conf"
         ],
         "backup_existing": true,
         "owner": "root",

@@ -4,7 +4,7 @@
   "title": "E-book library",
   "summary": "Keeps the household e-book library available for browsing.",
   "category": "interactable",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Quarry-lifted HOMESERVER Calibre-Web service configuration: assert birth-provided application and watcher executables, converge product-owned units with backups, validate both units.",
   "constants": {},
   "files_root": "files_root",
@@ -18,7 +18,8 @@
         "target_root": "/",
         "files": [
           "etc/systemd/system/calibre-web.service",
-          "etc/systemd/system/calibre-simple-watch.service"
+          "etc/systemd/system/calibre-simple-watch.service",
+          "etc/nginx/conf.d/agathodaimon-books-home-arpa.conf"
         ],
         "backup_existing": true,
         "owner": "root",

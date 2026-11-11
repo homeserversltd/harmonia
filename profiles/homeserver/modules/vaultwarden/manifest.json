@@ -4,7 +4,7 @@
   "title": "Password vault",
   "summary": "Keeps the household password vault available while preserving its private settings.",
   "category": "interactable",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Quarry-lifted HOMESERVER Vaultwarden configuration: assert the birth-provided runtime, preserve the user-editable secret-bearing environment file, converge the product-owned unit with backup, validate it.",
   "files_root": "files_root",
   "ladder": [
@@ -16,7 +16,8 @@
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "etc/systemd/system/vaultwarden.service"
+          "etc/systemd/system/vaultwarden.service",
+          "etc/nginx/conf.d/agathodaimon-vault-home-arpa.conf"
         ],
         "backup_existing": true,
         "owner": "root",

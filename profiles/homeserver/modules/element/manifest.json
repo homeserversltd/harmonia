@@ -4,7 +4,7 @@
   "title": "Messaging website",
   "summary": "Provides the household's web-based messaging screen.",
   "category": "interactable",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "HOMESERVER Element Web client and portal surface. Element follows Synapse because its configuration targets and validates the Synapse endpoint.",
   "constants": {
     "element_domain": "agora.home.arpa",
@@ -13,6 +13,7 @@
   },
   "files_root": "files_root",
   "ladder": [
-    {"step_id": "element-managed-files", "tool": "files", "permutation": "managed-files", "args": {}}
+    {"step_id": "element-managed-files", "tool": "files", "permutation": "managed-files", "args": {}},
+    {"step_id": "element-hestia-config", "tool": "files", "permutation": "converge", "args": {"source_root": "hestia_root", "target_root": "/", "files": ["etc/nginx/conf.d/agathodaimon-agora-home-arpa.conf"], "backup_existing": true, "owner": "root", "group": "root", "receipt_name": "element-hestia-config"}, "on_failure": "stop"}
   ]
 }

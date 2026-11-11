@@ -4,7 +4,7 @@
   "title": "Household search",
   "summary": "Offers local metasearch through the household search page.",
   "category": "interactable",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Maintains the SearXNG service configuration and asserts its birth-provided runtime floor without installing or starting services.",
   "constants": {
     "service": "searxng.service",
@@ -26,6 +26,7 @@
       },
       "on_failure": "stop"
     },
+    {"step_id": "searx-hestia-config", "tool": "files", "permutation": "converge", "args": {"source_root": "hestia_root", "target_root": "/", "files": ["etc/nginx/conf.d/agathodaimon-search-home-arpa.conf"], "backup_existing": true, "owner": "root", "group": "root", "receipt_name": "searx-hestia-config"}, "on_failure": "stop"},
     {
       "step_id": "searx-systemd-reload",
       "tool": "systemd",

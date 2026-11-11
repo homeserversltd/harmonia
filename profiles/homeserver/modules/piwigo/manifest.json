@@ -4,7 +4,7 @@
   "title": "Photo gallery",
   "summary": "Keeps the household photo gallery available while preserving its database.",
   "category": "interactable",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Quarry-lifted HOMESERVER Piwigo configuration: assert birth-provided PHP-FPM and application material, preserve the birth-filled database configuration, converge product-owned PHP-FPM configuration and unit bytes with backups, validate them.",
   "constants": {},
   "files_root": "files_root",
@@ -19,7 +19,8 @@
         "files": [
           "opt/homeserver/php-fpm/current/fpm/pool.d/piwigo.conf",
           "opt/homeserver/php-fpm/current/mods-available/piwigo.ini",
-          "etc/systemd/system/php-fpm.service"
+          "etc/systemd/system/php-fpm.service",
+          "etc/nginx/conf.d/agathodaimon-photos-home-arpa.conf"
         ],
         "backup_existing": true,
         "owner": "root",
