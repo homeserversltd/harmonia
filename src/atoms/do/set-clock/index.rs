@@ -50,12 +50,8 @@ pub(crate) fn run(
             ));
         }
     }
-    let run =
-        crate::tools::declaration::execute(
-            "set-clock",
-            "set-clock",
-            || Ok::<_, String>(crate::atoms::ask::set_clock::clock(request)),
-            |current| {
+    let observe = || Ok::<_, String>(crate::atoms::ask::set_clock::clock(request));
+    let compare = |current: &crate::atoms::ask::set_clock::ClockObservation| {
                 let desired = request.timezone.map(str::to_owned).or_else(|| {
                     current.remote_state.as_ref().and_then(|result| {
                         crate::tools::household_time::fresh_timezone(&result.stdout)
@@ -78,8 +74,8 @@ pub(crate) fn run(
                     }
                     _ => DiffDecision::Different,
                 }
-            },
-            |authorization, current| {
+            };
+    let act = |authorization: crate::atoms::comparison::ActionAuthorization, current: &crate::atoms::ask::set_clock::ClockObservation| {
                 let authorization = &authorization;
                 if request.operation == "watch-and-set" {
                     if let Err(reason) = crate::interactables::household_zone::require_follow_mode() {
@@ -105,8 +101,12 @@ pub(crate) fn run(
                     request,
                     desired.as_deref(),
                 )
-            },
-        )?;
+            };
+    let run = if matches!(request.operation, "resolve" | "watch-and-set") {
+        crate::tools::declaration::execute_once("set-clock", "set-clock", observe, compare, act)
+    } else {
+        crate::tools::declaration::execute("set-clock", "set-clock", observe, compare, act)
+    }?;
     let result = match run {
         crate::tools::comparison::ComparisonRun::Current { observation, .. } => observation
             .remote_state
@@ -117,6 +117,18 @@ pub(crate) fn run(
     if request.operation == "resolve" && (!result.ok || serde_json::from_str::<serde_json::Value>(&result.stdout)
         .ok().and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool)) == Some(false)) {
         return Ok(crate::tools::household_time::preserved("household-time-resolve-failed", result));
+    }
+    if request.operation == "watch-and-set" && (!result.ok || serde_json::from_str::<serde_json::Value>(&result.stdout)
+        .ok().and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool)) == Some(false)) {
+        let after = crate::atoms::ask::set_clock::clock(request);
+        let changed = if observation.local_state.ok && after.local_state.ok {
+            Some(observation.timezone != after.timezone || observation.timesync != after.timesync)
+        } else { None };
+        return Ok(CmdResult { ok: true, code: 0,
+            stdout: serde_json::json!({"schema":"harmonia.household-time.receipt.v1", "ok":true,
+                "changed":changed, "preserved":changed.map(|value| !value), "converged":false,
+                "first_missing_signal":"household-time-watch-and-set-failed"}).to_string(),
+            stderr: result.stderr });
     }
     Ok(result)
 }

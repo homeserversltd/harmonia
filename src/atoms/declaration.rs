@@ -452,6 +452,26 @@ where
     comparison::execute(operation, observe, compare, act)
 }
 
+pub(crate) fn execute_once<Observed, Movement, Error>(
+    declaration: &str,
+    operation: &str,
+    observe: impl FnMut() -> Result<Observed, Error>,
+    compare: impl FnMut(&Observed) -> DiffDecision,
+    act: impl FnOnce(ActionAuthorization, &Observed) -> Result<Movement, Error>,
+) -> Result<ComparisonRun<Observed, Movement>, Error>
+where
+    Error: From<String>,
+{
+    let declaration = get(declaration)?.ok_or_else(|| format!("unknown-declaration-{declaration}"))?;
+    let permutation = declaration.permutations.first()
+        .ok_or_else(|| format!("missing-declaration-permutation-{}", declaration.tool))?;
+    validate(permutation).map_err(Error::from)?;
+    if permutation.attest == AttestProjection::AskAndAttest {
+        return Err("ask-and-attest-declaration-has-no-act-path".to_string().into());
+    }
+    comparison::execute_once(operation, observe, compare, act)
+}
+
 pub(crate) fn execute_with_failure_receipt<Observed, Movement, Error>(
     declaration: &str,
     operation: &str,
