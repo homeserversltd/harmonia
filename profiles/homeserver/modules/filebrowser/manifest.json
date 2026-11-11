@@ -4,7 +4,7 @@
   "title": "File access",
   "summary": "Keeps the browser-based household file service configured while preserving its data.",
   "category": "interactable",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Quarry-lifted HOMESERVER File Browser service configuration: assert the birth-provided binary, converge the product-owned unit with backup, preserve the instance database.",
   "files_root": "files_root",
   "ladder": [
@@ -16,7 +16,8 @@
         "source_root": "files_root",
         "target_root": "/",
         "files": [
-          "etc/systemd/system/filebrowser.service"
+          "etc/systemd/system/filebrowser.service",
+          "etc/nginx/conf.d/agathodaimon-files-home-arpa.conf"
         ],
         "backup_existing": true,
         "owner": "root",
