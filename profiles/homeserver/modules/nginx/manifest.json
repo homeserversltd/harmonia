@@ -4,7 +4,7 @@
   "title": "Website access",
   "summary": "Keeps the server's website routing and secure connections configured.",
   "category": "interactable",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Quarry-lifted HOMESERVER nginx configuration: assert the birth-provided binary, converge product-owned config with backups, enable declared sites through validated links, validate the whole configuration.",
   "constants": {
     "sites": [
@@ -34,6 +34,11 @@
         "files": [
           "etc/nginx/nginx.conf",
           "etc/nginx/ssl_params.conf",
+          "etc/nginx/hestia/templates/static.conf",
+          "etc/nginx/hestia/templates/php.conf",
+          "etc/nginx/hestia/notes/cors-open.conf",
+          "etc/nginx/hestia/notes/cors-echo.conf",
+          "etc/nginx/hestia/notes/cache-static.conf",
           "etc/nginx/sites-available/homeserver-calibre-web",
           "etc/nginx/sites-available/homeserver-filebrowser",
           "etc/nginx/sites-available/homeserver-forgejo",
