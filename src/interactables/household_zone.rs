@@ -148,7 +148,7 @@ pub(crate) fn reconcile_for_update(profile: &Profile) {
 }
 
 fn face_authority(profile: &Profile) -> Result<(), String> {
-    if !matches!(crate::device_profile::certificate_product()?.as_str(), "tv" | "homesi" | "homeconsole")
+    if !matches!(crate::device_profile::certificate_product()?.as_str(), "hometv" | "homesi" | "homeconsole")
         || !profile.modules.iter().any(|module| module == MODULE_ID)
     {
         return Err("household-zone-face-authority-required".into());

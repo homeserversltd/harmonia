@@ -33,7 +33,7 @@ fn profile_segment(value: &str, field: &str) -> Result<String, String> {
     {
         return Err(format!("profile-input-{field}-invalid"));
     }
-    Ok(segment.to_owned())
+    Ok(crate::device_profile::normalize_profile_id(segment).to_owned())
 }
 
 fn worn_profile_id() -> Result<String, String> {

@@ -949,7 +949,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 }
             };
             let fallback_stem = match profile.id.as_str() {
-                "tv" => "tv-update",
+                "hometv" => "hometv-update",
                 "homeconsole" => "homeconsole-update",
                 "homeserver" => "homeserver-update",
                 _ => "run-profile",
@@ -988,8 +988,8 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 homeserver_update(&profile, &module_root, &receipt_dir, mode)
             } else if profile.id == "homeconsole" && profile.identity == "homeconsole" {
                 homeconsole_update(&profile, &module_root, &receipt_dir, mode)
-            } else if is_tv_update_profile(&profile) {
-                tv_update(&profile, &module_root, &receipt_dir, mode)
+            } else if is_hometv_update_profile(&profile) {
+                hometv_update(&profile, &module_root, &receipt_dir, mode)
             } else {
                 run_profile_engine(&profile, &module_root, &receipt_dir, mode)
             }
@@ -1096,20 +1096,24 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
             crate::interactables::household_zone::reconcile_for_update(&profile);
             homeconsole_update(&profile, &module_root, &receipt_dir, mode)
         }
-        Some("tv-update") => {
+        Some("tv-update" | "hometv-update") => {
+            if args.get(1).is_some_and(|arg| arg == "--help") {
+                println!("usage: harmonia hometv-update <profiles/hometv/index.json> [--apply] [--receipt-dir <path>]");
+                return Ok(());
+            }
             let path = args
                 .get(1)
-                .ok_or("tv-update requires <profile-index-json>")?;
-            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(tv_update_receipt_latest);
+                .ok_or("hometv-update requires <profile-index-json>")?;
+            let receipt_dir = receipt_dir_arg(&args).unwrap_or_else(hometv_update_receipt_latest);
             let mode = UpdateMode::from_apply_flag_with_invocation(
                 args.iter().any(|arg| arg == "--apply"),
                 invocation.key(),
             );
-            verify_asserted_profile("tv")?;
+            verify_asserted_profile("hometv")?;
             let profile = load_profile(Path::new(path)).map_err(|e| e.to_string())?;
             let module_root = default_module_root(Path::new(path));
             crate::interactables::household_zone::reconcile_for_update(&profile);
-            tv_update(&profile, &module_root, &receipt_dir, mode)
+            hometv_update(&profile, &module_root, &receipt_dir, mode)
         }
         Some("update-module") => update_module_command(&args, invocation.key()),
         Some("homeconsole-local-ai-update") => {
@@ -1415,7 +1419,7 @@ pub(crate) fn explain() -> Result<(), String> {
     println!("covenant=Rust update manager and appliance-profile execution engine");
     println!("shell=bootstrap-only");
     println!("python_helper_lane=false");
-    println!("profiles=homeserver,homesi,tv");
+    println!("profiles=homeserver,homesi,hometv");
     println!("homeconsole_identity=homeconsole");
     Ok(())
 }
@@ -1530,7 +1534,7 @@ pub(crate) fn usage() -> Result<(), String> {
     println!("  harmonia pinned-artifacts bless <profiles/<id>/index.json> --lock <path> --artifact <name> --candidate <path> --version <version> --sha256 <sha256> [--install-path <path>] [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeserver-update <profiles/homeserver/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
-    println!("  harmonia tv-update <profiles/tv/index.json> [--apply] [--receipt-dir <path>]");
+    println!("  harmonia hometv-update <profiles/hometv/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-local-ai-update <profiles/homeconsole/index.json> [--apply] [--receipt-dir <path>]");
     println!("  harmonia update-module <profiles/<id>/index.json> --module <id> [--apply] [--receipt-dir <path>]");
     println!("  harmonia homeconsole-sync <profiles/homeconsole/index.json> --module <path> [--apply] [--receipt-dir <path>]");

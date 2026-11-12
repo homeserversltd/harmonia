@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const ENGINE_RUN_LOCK_PATH: &str = "/var/lib/harmonia/engine-run.lock";
 pub(crate) const HOME_CONSOLE_UPDATE_LOCK_PATH: &str = "/run/harmonia/homeconsole-update.lock";
 pub(crate) const HOME_SERVER_UPDATE_LOCK_PATH: &str = "/run/harmonia/homeserver-update.lock";
-pub(crate) const TV_UPDATE_LOCK_PATH: &str = "/run/harmonia/tv-update.lock";
+pub(crate) const HOMETV_UPDATE_LOCK_PATH: &str = "/run/harmonia/hometv-update.lock";
 
 pub(crate) fn engine_run_lock_path() -> PathBuf {
     PathBuf::from(ENGINE_RUN_LOCK_PATH)
@@ -188,12 +188,18 @@ pub(crate) fn homeserver_update_lock_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(HOME_SERVER_UPDATE_LOCK_PATH))
 }
-pub(crate) fn tv_update_lock_path() -> PathBuf {
-    std::env::var("HARMONIA_TV_UPDATE_LOCK")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(TV_UPDATE_LOCK_PATH))
+pub(crate) fn hometv_update_lock_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("HARMONIA_HOMETV_UPDATE_LOCK") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = std::env::var_os("HARMONIA_TV_UPDATE_LOCK") {
+        return PathBuf::from(path);
+    }
+    let current = PathBuf::from(HOMETV_UPDATE_LOCK_PATH);
+    let legacy = PathBuf::from("/run/harmonia/tv-update.lock");
+    if !current.exists() && legacy.exists() { legacy } else { current }
 }
-pub(crate) fn try_acquire_tv_update_lock(
+pub(crate) fn try_acquire_hometv_update_lock(
     lock_path: &Path,
 ) -> Result<ConvergenceLockGuard, ConvergenceLockBusy> {
     try_acquire_homeconsole_update_lock(lock_path)

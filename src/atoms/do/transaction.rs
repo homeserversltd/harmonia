@@ -1306,7 +1306,7 @@ pub(crate) fn rolling_update_from_certificate_with_context(
     let materialize = match profile.id.as_str() {
         "homeserver" => materialize_homeserver_receipt_dir,
         "homeconsole" => materialize_homeconsole_receipt_dir,
-        _ => materialize_tv_receipt_dir,
+        _ => materialize_hometv_receipt_dir,
     };
     rolling_update_run(
         profile,

@@ -283,6 +283,8 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
             format!("profile-parse-failed {}: {err}", path.display()),
         )
     })?;
+    profile.id = crate::device_profile::normalize_profile_id(&profile.id).to_owned();
+    profile.identity = crate::device_profile::normalize_profile_id(&profile.identity).to_owned();
     // Profiles evolve independently from the installed engine. Keep parsing
     // backward-compatible; consumers that execute package work require
     // package_authority at that operation boundary.
@@ -312,6 +314,7 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
             )
         })?,
     };
+    let base_id = crate::device_profile::normalize_profile_id(base_id);
     validate_profile_id(base_id).map_err(|reason| io::Error::new(io::ErrorKind::InvalidData, reason))?;
     let profiles_root = path.parent().and_then(Path::parent).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-root-missing overlay={}", profile.id))
@@ -350,6 +353,8 @@ pub(crate) fn load_profile(path: &Path) -> io::Result<Profile> {
             .backend()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     }
+    base.id = crate::device_profile::normalize_profile_id(&base.id).to_owned();
+    base.identity = crate::device_profile::normalize_profile_id(&base.identity).to_owned();
     if base.id != base_id {
         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("profile-extends-base-id-mismatch overlay={} base={} index={}", profile.id, base_id, base.id)));
     }

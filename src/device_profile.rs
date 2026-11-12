@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 const DEVICE_PROFILE_CERTIFICATE: &str = "/etc/appliance/profile.json";
 const DEVICE_PROFILE_SCHEMA: &str = "homeserver.device-profile.v1";
 const HARMONIA_MODULE_ROOT: &str = "/etc/harmonia";
+const SOLD_PROFILES: [&str; 3] = ["homeserver", "homesi", "hometv"];
+
+/// The sole compatibility seat for a profile identifier read from older media.
+pub(crate) fn normalize_profile_id(id: &str) -> &str {
+    if id.eq_ignore_ascii_case("tv") { "hometv" } else { id }
+}
 
 thread_local! {
     static RUN_IDENTITY_SOURCE: Cell<&'static str> = const { Cell::new("asserted-verb") };
@@ -229,7 +235,7 @@ pub(crate) fn certificate_profile() -> Result<String, String> {
             "device-profile-certificate-profile-invalid profile={profile}"
         ));
     }
-    Ok(profile.to_string())
+    Ok(normalize_profile_id(profile).to_string())
 }
 
 /// Read the product independently from the kernel's active profile selector.
@@ -247,17 +253,16 @@ pub(crate) fn certificate_product() -> Result<String, String> {
     let product = value.get("profile").and_then(serde_json::Value::as_str)
         .map(str::trim).filter(|product| !product.is_empty())
         .ok_or("device-profile-certificate-product-missing")?;
-    Ok(product.to_string())
+    Ok(normalize_profile_id(product).to_string())
 }
 
 /// Resolve the sold profile whose seal this process wears. This is optional
 /// evidence: a certificate/profile read failure never gates an update press.
 pub(crate) fn own_sold_profile() -> Option<String> {
-    const SOLD_PROFILES: [&str; 3] = ["homeserver", "homesi", "tv"];
     const MAX_PROFILE_LINEAGE: usize = 16;
 
     let certificate = load_certificate().ok()?;
-    let selected_id = certificate.kernel.profile.trim();
+    let selected_id = normalize_profile_id(certificate.kernel.profile.trim());
     if selected_id.is_empty()
         || selected_id.contains('/')
         || selected_id.contains('\\')
@@ -298,14 +303,14 @@ pub(crate) fn own_sold_profile() -> Option<String> {
         let profile_path = profiles_root.join(&profile_id).join("index.json");
         let bytes = fs::read(profile_path).ok()?;
         let selected: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-        if selected.get("id").and_then(serde_json::Value::as_str) != Some(profile_id.as_str()) {
+        if selected.get("id").and_then(serde_json::Value::as_str).map(normalize_profile_id) != Some(profile_id.as_str()) {
             return None;
         }
         let base = selected
             .get("extends")
             .and_then(serde_json::Value::as_str)
             .or_else(|| selected.get("source_extends").and_then(serde_json::Value::as_str))?;
-        profile_id = base.to_owned();
+        profile_id = normalize_profile_id(base).to_owned();
     }
     None
 }
@@ -324,7 +329,7 @@ pub(crate) fn verify_asserted_profile(asserted_profile: &str) -> Result<(), Stri
 
 pub(crate) fn resolve_certificate_profile() -> Result<(Profile, PathBuf), String> {
     let certificate = load_certificate()?;
-    let profile_id = certificate.kernel.profile.trim().to_string();
+    let profile_id = normalize_profile_id(certificate.kernel.profile.trim()).to_string();
     if profile_id.is_empty()
         || profile_id.contains('/')
         || profile_id.contains('\\')
@@ -723,19 +728,22 @@ pub(crate) fn homeserver_update(
     )
 }
 
-pub(crate) fn is_tv_update_profile(profile: &Profile) -> bool {
-    profile.id == "tv" && profile.identity == "tv"
+pub(crate) fn is_hometv_update_profile(profile: &Profile) -> bool {
+    normalize_profile_id(&profile.id) == "hometv" && normalize_profile_id(&profile.identity) == "hometv"
 }
 
-pub(crate) fn tv_update(
+#[cfg(test)]
+pub(crate) use is_hometv_update_profile as is_tv_update_profile;
+
+pub(crate) fn hometv_update(
     profile: &Profile,
     module_root: &Path,
     receipt_dir: &Path,
     mode: UpdateMode<'_>,
 ) -> Result<(), String> {
-    if !is_tv_update_profile(profile) {
+    if !is_hometv_update_profile(profile) {
         let reason = format!(
-            "tv-update requires tv/tv profile, got {}/{}",
+            "hometv-update requires hometv/hometv profile, got {}/{}",
             profile.id, profile.identity
         );
         write_profile_update_refusal(receipt_dir, profile, mode.is_software_apply(), &reason)?;
@@ -755,8 +763,8 @@ pub(crate) fn tv_update(
         mode,
         None,
         suite_debt,
-        tv_update_lock_path(),
-        materialize_tv_receipt_dir,
-        try_acquire_tv_update_lock,
+        hometv_update_lock_path(),
+        materialize_hometv_receipt_dir,
+        try_acquire_hometv_update_lock,
     )
 }

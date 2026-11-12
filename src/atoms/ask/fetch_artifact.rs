@@ -1229,6 +1229,7 @@ pub(crate) fn read_profile_source(path: &Path) -> Result<String, String> {
 
 pub(crate) fn resolved_profile_segment(profile: &str) -> Result<String, String> {
     validate_segment(profile, "profile")?;
+    let profile = crate::device_profile::normalize_profile_id(profile);
     Ok(
         if CADUCEUS_RELEASE_PROFILES
             .iter()
@@ -2155,7 +2156,7 @@ pub(crate) fn download_pinned_release(
     .ok_or_else(|| "fetch-artifact-pinned-release-missing".into())
 }
 
-const CADUCEUS_RELEASE_PROFILES: [&str; 5] = ["homeserver", "homeconsole", "tv", "homesi", "specula"];
+const CADUCEUS_RELEASE_PROFILES: [&str; 5] = ["homeserver", "homeconsole", "hometv", "homesi", "specula"];
 
 fn fetch_exact_pinned_asset_set(
     request: &ReleaseRequest,

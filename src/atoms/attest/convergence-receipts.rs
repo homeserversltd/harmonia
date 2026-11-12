@@ -6,7 +6,7 @@ pub(crate) const HOME_CONSOLE_UPDATE_RECEIPT_LATEST: &str =
     "/var/lib/harmonia/receipts/homeconsole-update-latest";
 pub(crate) const HOME_SERVER_UPDATE_RECEIPT_LATEST: &str =
     "/var/lib/harmonia/receipts/homeserver-update-latest";
-pub(crate) const TV_UPDATE_RECEIPT_LATEST: &str = "/var/lib/harmonia/receipts/tv-update-latest";
+pub(crate) const HOMETV_UPDATE_RECEIPT_LATEST: &str = "/var/lib/harmonia/receipts/hometv-update-latest";
 
 pub(crate) fn homeconsole_update_receipt_latest() -> PathBuf {
     PathBuf::from(HOME_CONSOLE_UPDATE_RECEIPT_LATEST)
@@ -14,8 +14,8 @@ pub(crate) fn homeconsole_update_receipt_latest() -> PathBuf {
 pub(crate) fn homeserver_update_receipt_latest() -> PathBuf {
     PathBuf::from(HOME_SERVER_UPDATE_RECEIPT_LATEST)
 }
-pub(crate) fn tv_update_receipt_latest() -> PathBuf {
-    PathBuf::from(TV_UPDATE_RECEIPT_LATEST)
+pub(crate) fn hometv_update_receipt_latest() -> PathBuf {
+    PathBuf::from(HOMETV_UPDATE_RECEIPT_LATEST)
 }
 
 pub(crate) fn latest_receipt_stem(path: &Path, fallback_stem: &str) -> Option<String> {
@@ -276,11 +276,11 @@ pub(crate) fn validate_receipt_directory_root(root: &Path) -> Result<PathBuf, St
     validated_receipt_root(root, "receipt-directory").map(|(root, _)| root)
 }
 
-pub(crate) fn materialize_tv_receipt_dir(
+pub(crate) fn materialize_hometv_receipt_dir(
     receipt_dir: &Path,
     run_id: &str,
 ) -> Result<PathBuf, String> {
-    materialize_latest_receipt_dir(receipt_dir, run_id, "tv-update", "tv-update-latest")
+    materialize_latest_receipt_dir(receipt_dir, run_id, "hometv-update", "hometv-update-latest")
 }
 pub(crate) fn materialize_homeconsole_receipt_dir(
     receipt_dir: &Path,

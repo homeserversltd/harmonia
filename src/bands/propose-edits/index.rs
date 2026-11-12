@@ -758,7 +758,7 @@ fn prune_stale_interactables_with_observations(
             } else if interactables::household_zone::is_generated_proposal(&entry) {
                 crate::device_profile::certificate_product().as_deref() != Ok("homeserver")
             } else if interactables::household_zone::is_generated_set_proposal(&entry) {
-                !matches!(crate::device_profile::certificate_product().as_deref(), Ok("tv" | "homesi" | "homeconsole"))
+                !matches!(crate::device_profile::certificate_product().as_deref(), Ok("hometv" | "homesi" | "homeconsole"))
             } else if row_backed && observed_modules.contains(&entry.module_id) && !recognized.contains(&entry.id) {
                 true
             } else {
