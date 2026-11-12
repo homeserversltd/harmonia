@@ -1249,6 +1249,7 @@ pub(crate) fn profile_release_names(
     sidecar_name: Option<&str>,
 ) -> Result<(String, String), String> {
     validate_segment(profile, "profile")?;
+    let profile = crate::device_profile::normalize_profile_id(profile);
     profile_release_names_for_segment(artifact_name, profile, asset_name, sidecar_name)
 }
 
