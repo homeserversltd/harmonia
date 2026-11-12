@@ -5,7 +5,7 @@
   "summary": "Keeps this device's installed software current.",
   "category": "known-good",
   "version": "1.0.0",
-  "description": "tv system package upgrade ladder using the package tool.",
+  "description": "hometv system package upgrade ladder using the package tool.",
   "optional": false,
   "constants": {},
   "ladder": [

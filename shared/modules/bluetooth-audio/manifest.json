@@ -12,7 +12,7 @@
       "bluetooth.service"
     ],
 
-    "receipt_schema": "harmonia.tv.bluetooth_audio.v1",
+    "receipt_schema": "harmonia.hometv.bluetooth_audio.v1",
     "meaning": "TV Bluetooth audio service declaration"
   },
   "files_root": "files_root",

@@ -17,7 +17,7 @@
       ".local/share/applications/org.kde.kate.desktop"
     ],
 
-    "receipt_schema": "harmonia.tv.xdg_user_settings.v1",
+    "receipt_schema": "harmonia.hometv.xdg_user_settings.v1",
     "meaning": "TV KDE/application associations and portal configuration are converged from this module into the owner home."
   },
   "files_root": "files_root",
@@ -38,7 +38,7 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-xdg-user-settings-kde"
+        "receipt_name": "hometv-xdg-user-settings-kde"
       }
     },
     {
@@ -54,7 +54,7 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-xdg-user-settings-portal"
+        "receipt_name": "hometv-xdg-user-settings-portal"
       }
     },
     {
@@ -70,7 +70,7 @@
         "backup_existing": true,
         "owner": "root",
         "group": "root",
-        "receipt_name": "tv-xdg-user-settings-kde-root-menu"
+        "receipt_name": "hometv-xdg-user-settings-kde-root-menu"
       }
     }
   ]

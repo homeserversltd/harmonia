@@ -13,7 +13,7 @@
       "omp.json"
     ],
 
-    "receipt_schema": "harmonia.tv.desktop_config_payload.v1",
+    "receipt_schema": "harmonia.hometv.desktop_config_payload.v1",
     "meaning": "HomeTV residual prompt preferences are offered as configuration interactables."
   },
   "files_root": "files_root",
@@ -31,7 +31,7 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-desktop-config-prompt"
+        "receipt_name": "hometv-desktop-config-prompt"
       }
     }
   ]

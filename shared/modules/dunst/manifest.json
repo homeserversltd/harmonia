@@ -18,7 +18,7 @@
       "hs-dunst.service"
     ],
 
-    "receipt_schema": "harmonia.tv.dunst.v1",
+    "receipt_schema": "harmonia.hometv.dunst.v1",
     "meaning": "TV Dunst notification service owns its configuration and user service"
   },
   "ladder": [
@@ -36,12 +36,12 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-dunst-files",
+        "receipt_name": "hometv-dunst-files",
         "summary_receipt": {
-          "name": "tv-dunst-files-summary",
-          "schema": "harmonia.tv.desktop_config_install.v1",
+          "name": "hometv-dunst-files-summary",
+          "schema": "harmonia.hometv.desktop_config_install.v1",
           "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-desktop-config-files-incomplete"
+          "first_missing_signal": "hometv-desktop-config-files-incomplete"
         }
       }
     },

@@ -24,7 +24,7 @@
       "hs-blueman-applet.service"
     ],
 
-    "receipt_schema": "harmonia.tv.waybar.v1",
+    "receipt_schema": "harmonia.hometv.waybar.v1",
     "meaning": "TV Waybar status service owns its configuration and user service"
   },
   "ladder": [
@@ -45,12 +45,12 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-waybar-files",
+        "receipt_name": "hometv-waybar-files",
         "summary_receipt": {
-          "name": "tv-waybar-files-summary",
-          "schema": "harmonia.tv.desktop_config_install.v1",
+          "name": "hometv-waybar-files-summary",
+          "schema": "harmonia.hometv.desktop_config_install.v1",
           "authority": "harmonia-profile-module-owned-files",
-          "first_missing_signal": "tv-desktop-config-files-incomplete"
+          "first_missing_signal": "hometv-desktop-config-files-incomplete"
         }
       }
     },

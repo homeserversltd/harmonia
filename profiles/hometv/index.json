@@ -1,12 +1,12 @@
 {
   "schema": "harmonia.profile.v1",
   "categories_required": true,
-  "id": "tv",
+  "id": "hometv",
   "package_authority": {
     "os_family": "debian",
     "package_manager": "apt"
   },
-  "dotfile_pool": "tv",
+  "dotfile_pool": "hometv",
   "aliases": [
     "tv"
   ],
@@ -35,6 +35,6 @@
     "root-profile",
     "dot-files"
   ],
-  "identity": "tv",
-  "module_spine_entered": "profiles/tv/modules"
+  "identity": "hometv",
+  "module_spine_entered": "profiles/hometv/modules"
 }

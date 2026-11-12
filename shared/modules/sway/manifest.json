@@ -25,7 +25,7 @@
       ".config/systemd/user/graphical-session.target.d/10-hometv-sway-environment.conf"
     ],
 
-    "receipt_schema": "harmonia.tv.sway.v1",
+    "receipt_schema": "harmonia.hometv.sway.v1",
     "meaning": "TV Sway configuration is converged from this module into the owner home.",
     "unmanaged_operator_seed": ".config/sway/input-overrides.conf"
   },
@@ -54,7 +54,7 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-sway-files"
+        "receipt_name": "hometv-sway-files"
       }
     },
     {

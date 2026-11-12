@@ -14,7 +14,7 @@
       ".config/kitty/theme.conf"
     ],
 
-    "receipt_schema": "harmonia.tv.kitty.v1",
+    "receipt_schema": "harmonia.hometv.kitty.v1",
     "meaning": "TV Kitty configuration is converged from this module into the owner home."
   },
   "files_root": "files_root",
@@ -33,7 +33,7 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-kitty-files"
+        "receipt_name": "hometv-kitty-files"
       }
     }
   ]

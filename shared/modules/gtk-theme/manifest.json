@@ -14,7 +14,7 @@
       ".config/gtk-4.0/settings.ini"
     ],
 
-    "receipt_schema": "harmonia.tv.gtk_theme.v1",
+    "receipt_schema": "harmonia.hometv.gtk_theme.v1",
     "meaning": "TV GTK theme settings are converged from this module into the owner home."
   },
   "files_root": "files_root",
@@ -33,7 +33,7 @@
         "backup_existing": true,
         "owner": "owner",
         "group": "owner",
-        "receipt_name": "tv-gtk-theme-files"
+        "receipt_name": "hometv-gtk-theme-files"
       }
     }
   ]
