@@ -1,6 +1,7 @@
 {
   "schema": "harmonia.module.ladder.v1",
   "id": "hermes-agent",
+  "mode": "developer",
   "version": "1.0.0",
   "description": "Keep the Hermes agent current.",
   "optional": false,

@@ -110,6 +110,24 @@ pub(crate) fn proof_battery(
         )?;
         operations += 1;
         if !validate.ok {
+            // A Hermes-local ladder refusal is reported by the module walk;
+            // it is not an engine failure in developer mode. Only waive a
+            // matching typed step defect, never a failed command or global
+            // declaration/manifest failure whose provenance is not known.
+            let outside_hermes_step = manifest.parent()
+                .and_then(std::path::Path::file_name)
+                .and_then(|name| name.to_str()) == Some("hermes-agent")
+                && crate::tools::ladder::load_ladder_manifest(manifest)
+                    .ok()
+                    .filter(|m| m.id == "hermes-agent"
+                        && m.mode.as_ref().and_then(serde_json::Value::as_str) != Some("safe"))
+                    .and_then(|m| crate::tools::ladder::validate_ladder(&m).err())
+                    .is_some_and(|error| error.step_id != "manifest"
+                        && error.step_id != "declaration-validation"
+                        && validate.stdout.lines().any(|line| line == format!("first_missing_signal={}", error.first_missing_signal())));
+            if outside_hermes_step {
+                continue;
+            }
             return Ok((
                 false,
                 Some("engine-proof-validate-ladder-failed".into()),

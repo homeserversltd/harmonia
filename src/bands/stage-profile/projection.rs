@@ -22,11 +22,16 @@ pub(crate) struct ProjectedModule {
 pub(crate) struct ProfileProjection {
     pub(crate) modules: BTreeMap<String, ProjectedModule>,
     pub(crate) errors: BTreeMap<String, String>,
+    pub(crate) hermes_outside_set: bool,
     pub(crate) authority_excluded: BTreeSet<String>,
     pub(crate) beam_finalization: Option<crate::atoms::ask::beam::PendingBeamFinalization>,
 }
 
 impl ProfileProjection {
+    pub(crate) fn outside_set(&self, module_id: &str, apply: bool) -> bool {
+        apply && module_id == "hermes-agent" && self.hermes_outside_set
+    }
+
     pub(crate) fn derive_update_plan(
         &self,
         profile: &Profile,
@@ -133,6 +138,7 @@ pub(crate) fn load_profile_projection(
 ) -> Result<ProfileProjection, String> {
     let mut modules = BTreeMap::new();
     let mut errors = BTreeMap::new();
+    let mut hermes_outside_set = false;
     let mut authority_excluded = BTreeSet::new();
     for id in &profile.modules {
         if disabled.contains(id) {
@@ -183,6 +189,21 @@ pub(crate) fn load_profile_projection(
                 continue;
             }
         };
+        if id == "hermes-agent" {
+            let mode = match &loaded {
+                LoadedModule::Ladder(manifest) => manifest.mode.as_ref().and_then(Value::as_str),
+                LoadedModule::Sidecar(_) => None,
+            };
+            match mode {
+                Some("developer") => hermes_outside_set = true,
+                Some("safe") => {}
+                _ => {
+                    hermes_outside_set = true;
+                    errors.insert(id.clone(), "hermes-agent-mode-missing-or-invalid".into());
+                    continue;
+                }
+            }
+        }
         let (steps, routines) = match &loaded {
             LoadedModule::Ladder(m) => {
                 let steps = match crate::tools::ladder::validate_ladder(m) {
@@ -291,6 +312,7 @@ pub(crate) fn load_profile_projection(
     Ok(ProfileProjection {
         modules,
         errors,
+        hermes_outside_set,
         authority_excluded,
         beam_finalization: None,
     })
@@ -386,6 +408,7 @@ fn projection_derive_plan_inner(
     let projected: Vec<(&String, &ProjectedModule)> = profile
         .modules
         .iter()
+        .filter(|id| !self_.outside_set(id, true))
         .filter_map(|id| self_.modules.get_key_value(id))
         .collect();
     let runtime_faces: Vec<String> = projected

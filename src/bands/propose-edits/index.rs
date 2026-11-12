@@ -1636,7 +1636,7 @@ pub(crate) fn execute_manifest_modules(
             state.ok = false;
             state.first_missing_signal.get_or_insert(err.clone());
             halted.insert(module_id.clone());
-            *ok = false;
+            if !projection.outside_set(module_id, mode_apply) { *ok = false; }
             if *first_missing_signal == "none" {
                 *first_missing_signal = err.clone();
             }
@@ -1686,7 +1686,7 @@ pub(crate) fn execute_manifest_modules(
                         .first_missing_signal
                         .take()
                         .or(part.first_missing_signal);
-                    *ok = false;
+                    if !projection.outside_set(module_id, mode_apply) { *ok = false; }
                     if !per_step_isolation {
                         halted.insert(module_id.clone());
                     }
@@ -1713,7 +1713,7 @@ pub(crate) fn execute_manifest_modules(
                 if !per_step_isolation {
                     halted.insert(module_id.clone());
                 }
-                *ok = false;
+                if !projection.outside_set(module_id, mode_apply) { *ok = false; }
                 if *first_missing_signal == "none" {
                     *first_missing_signal = err.clone();
                 }

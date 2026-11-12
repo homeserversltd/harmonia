@@ -95,6 +95,11 @@ fn plan_ladder_module(
     module_id: &str,
     manifest: &LadderManifest,
 ) -> Result<LadderModulePlan, String> {
+    if module_id == "hermes-agent"
+        && !matches!(manifest.mode.as_ref().and_then(serde_json::Value::as_str), Some("developer" | "safe"))
+    {
+        return Err("hermes-agent-mode-missing-or-invalid".into());
+    }
     crate::tools::ladder::validate_package_pin_module(
         module_id,
         &manifest.id,

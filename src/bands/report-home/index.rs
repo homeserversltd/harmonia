@@ -655,7 +655,7 @@ pub(crate) fn settle(
     if let Some(carrier) = carrier {
         carrier.borrow_mut().terminal_deed_emitted = true;
     }
-    println!("ok={}", state.ok);
+    println!("ok={run_ok}");
     if degraded {
         println!("degraded=true");
         println!("overall_ok={overall_ok}");
@@ -680,6 +680,9 @@ pub(crate) fn settle(
     println!("operation_count={}", state.operation_count);
     println!("first_missing_signal={first_missing_signal}");
     println!("receipt_dir={}", receipt_dir.display());
+    if state.apply && !run_ok {
+        return Err(first_missing_signal);
+    }
     match settlement {
         SettlementOutcome::Success | SettlementOutcome::ReportOnlyFailure => Ok(()),
         SettlementOutcome::ApplyFailure(signal) => Err(signal),

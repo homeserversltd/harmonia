@@ -996,6 +996,8 @@ pub(crate) fn rolling_update_run(
             )?;
             return Err("stage-profile-terminal-summary-missing".to_string());
         };
+        // The set can commit while an outside Hermes module remains honestly red.
+        let outside_failure = (!summary.ok).then(|| summary.first_missing_signal.clone());
         let deed = match crate::bands::report_home::finalize_deferred_terminal(
             summary,
             profile,
@@ -1054,7 +1056,10 @@ pub(crate) fn rolling_update_run(
         }
         crate::bands::report_home::emit_run_profile_deed(deed);
         carrier.borrow_mut().terminal_deed_emitted = true;
-        Ok(())
+        match outside_failure {
+            Some(signal) => Err(signal),
+            None => Ok(()),
+        }
     };
     let mut run_result = run();
     let mut lifecycle_receipt_ready =

@@ -15,6 +15,8 @@ pub(crate) const SCHEMA: &str = "harmonia.module.ladder.v1";
 pub(crate) struct LadderManifest {
     pub schema: String,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Value>,
     pub version: String,
     #[serde(default)]
     pub description: String,
