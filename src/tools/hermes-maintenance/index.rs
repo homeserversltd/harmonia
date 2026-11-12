@@ -316,6 +316,7 @@ pub(crate) struct Observation {
     pub(crate) launcher_sha256: String,
     pub(crate) branch: Option<String>,
     native_stamp_fields: Option<InstallStampFields>,
+    byte_equal_paths_set_aside: usize,
     pub(crate) changed: bool,
     pub(crate) reasons: Vec<String>,
 }
@@ -449,6 +450,7 @@ struct RunReceipt {
     updater_stderr_tail: String,
     restored_launchers: Vec<RestoredLauncher>,
     stash_names_created: Vec<String>,
+    byte_equal_paths_set_aside: usize,
     stash_restore_sha: Option<String>,
     stash_restore_outcome: Option<String>,
     preserved_refs_created: Vec<String>,
@@ -988,7 +990,8 @@ pub(crate) fn observe(
     validate_launcher_binding(&root, &launcher, &owner, &launcher_bytes)?;
     static_runnable_probe(&launcher, &launcher_bytes)?;
     let native_state = inspect_native_install_state(&root, &launcher, &owner, &pre_sha)?;
-    let dirty = !source_status_is_clean(&status.stdout, native_state.stamp_coherent);
+    let (local_status, byte_equal_paths_set_aside) = local_work_status(&root, &status.stdout)?;
+    let dirty = !source_status_is_clean(&local_status, native_state.stamp_coherent);
     let mut reasons = native_state.reasons.clone();
     if origin_before != selection.candidate.url {
         reasons.push("origin-differs-from-declared-source".into());
@@ -1019,6 +1022,7 @@ pub(crate) fn observe(
         launcher_sha256: digest(&launcher_bytes),
         branch,
         native_stamp_fields: native_state.stamp_fields.clone(),
+        byte_equal_paths_set_aside,
         changed: !reasons.is_empty(),
         reasons,
     };
@@ -1147,7 +1151,7 @@ pub(crate) fn apply(
         if !status.status.success() {
             return Err("source-status-before-stash-failed".into());
         }
-        if !status.stdout.is_empty() {
+        if !local_work_status(&observed.source_root, &status.stdout)?.0.is_empty() {
             match snapshot_local_worktree(&observed.source_root) {
                 Ok(snapshot) => pre_update_work_snapshot = Some(snapshot),
                 Err(error) => pre_update_work_snapshot_error = Some(error),
@@ -1185,7 +1189,7 @@ pub(crate) fn apply(
                 &observed.source_root,
                 &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
             )?;
-            if !after_stash.status.success() || !after_stash.stdout.is_empty() {
+            if !after_stash.status.success() || !local_work_status(&observed.source_root, &after_stash.stdout)?.0.is_empty() {
                 return Err("local-work-stash-incomplete".into());
             }
             pre_update_stash_sha = Some(stash_sha.clone());
@@ -1296,7 +1300,8 @@ pub(crate) fn apply(
                 native_state.reasons.join(",")
             ));
         }
-        if !source_status_is_clean(&source_status.stdout, native_state.stamp_coherent) {
+        let (local_status, _) = local_work_status(&observed.source_root, &source_status.stdout)?;
+        if !source_status_is_clean(&local_status, native_state.stamp_coherent) {
             return Err("post-update-source-not-clean".into());
         }
         prove_launch_isolated(&observed.launcher, &observed.source_root)?;
@@ -1797,7 +1802,7 @@ fn preserve_post_update_worktree(
     if !status.status.success() {
         return Err("rollback-post-update-status-failed".into());
     }
-    if status.stdout.is_empty() {
+    if local_work_status(root, &status.stdout)?.0.is_empty() {
         return Ok(());
     }
     let stash_message = unique_name("hermes-maintenance-post-update-preserved");
@@ -1827,7 +1832,7 @@ fn preserve_post_update_worktree(
         root,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )?;
-    if !after_stash.status.success() || !after_stash.stdout.is_empty() {
+    if !after_stash.status.success() || !local_work_status(root, &after_stash.stdout)?.0.is_empty() {
         return Err("rollback-post-update-work-stash-incomplete".into());
     }
     movement
@@ -2117,6 +2122,7 @@ pub(crate) fn receipt(
             updater_stderr_tail: movement.updater_stderr_tail.clone(),
             restored_launchers: movement.restored_launchers.clone(),
             stash_names_created: movement.stash_names_created.clone(),
+            byte_equal_paths_set_aside: observation.byte_equal_paths_set_aside,
             stash_restore_sha: movement.stash_restore_sha.clone(),
             stash_restore_outcome: movement.stash_restore_outcome.clone(),
             preserved_refs_created: movement.preserved_refs_created.clone(),
@@ -2160,6 +2166,7 @@ pub(crate) fn receipt(
             updater_stderr_tail: String::new(),
             restored_launchers: Vec::new(),
             stash_names_created: Vec::new(),
+            byte_equal_paths_set_aside: observation.byte_equal_paths_set_aside,
             stash_restore_sha: None,
             stash_restore_outcome: None,
             preserved_refs_created: Vec::new(),
@@ -2193,6 +2200,7 @@ pub(crate) fn failure(
         apply,
         changed: false,
         status: "failed".into(),
+        byte_equal_paths_set_aside: observation.map_or(0, |value| value.byte_equal_paths_set_aside),
         owner: owner.name,
         uid: owner.uid,
         home: owner.home.to_string_lossy().into_owned(),
@@ -2685,6 +2693,60 @@ fn inspect_native_install_state(
         stamp_coherent,
         reasons,
     })
+}
+
+// Only an unstaged ordinary file modification can be phantom dirt. Compare
+// raw blob ids without attributes or filters; an unprovable entry stays dirty.
+fn raw_file_matches_head(root: &Path, raw_path: &[u8]) -> Result<bool, String> {
+    let Ok(path) = std::str::from_utf8(raw_path) else { return Ok(false) };
+    let relative = Path::new(path);
+    if relative.is_absolute() || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Ok(false);
+    }
+    let metadata = match fs::symlink_metadata(root.join(relative)) {
+        Ok(value) if value.is_file() && !value.file_type().is_symlink() => value,
+        _ => return Ok(false),
+    };
+    let tree = git_output_raw(root, &["--literal-pathspecs", "ls-tree", "-z", "--full-tree", "HEAD", "--", path])?;
+    if !tree.status.success() { return Ok(false) }
+    let Some(row) = tree.stdout.strip_suffix(b"\0") else { return Ok(false) };
+    let Some(tab) = row.iter().position(|b| *b == b'\t') else { return Ok(false) };
+    let (header, found_path) = (&row[..tab], &row[tab + 1..]);
+    if found_path != raw_path { return Ok(false) }
+    let mut fields = header.split(|b| *b == b' ');
+    let (Some(mode), Some(kind), Some(oid), None) = (fields.next(), fields.next(), fields.next(), fields.next()) else { return Ok(false) };
+    if kind != b"blob" || !matches!(mode, b"100644" | b"100755") || (mode == b"100755") != (metadata.permissions().mode() & 0o111 != 0) {
+        return Ok(false);
+    }
+    let hash = git_output_raw(root, &["hash-object", "--no-filters", "--", path])?;
+    Ok(hash.status.success() && hash.stdout.strip_suffix(b"\n") == Some(oid))
+}
+
+fn local_work_status(root: &Path, status: &[u8]) -> Result<(Vec<u8>, usize), String> {
+    let mut remaining = status;
+    let mut local = Vec::new();
+    let mut count = 0;
+    while !remaining.is_empty() {
+        let end = remaining.iter().position(|b| *b == 0).ok_or("source-status-malformed")?;
+        let entry = &remaining[..end];
+        remaining = &remaining[end + 1..];
+        if entry.len() < 4 || entry[2] != b' ' { return Err("source-status-malformed".into()) }
+        let rename = matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C');
+        let original = if rename {
+            let end = remaining.iter().position(|b| *b == 0).ok_or("source-status-malformed")?;
+            let path = &remaining[..end];
+            remaining = &remaining[end + 1..];
+            Some(path)
+        } else { None };
+        if &entry[..3] == b" M " && raw_file_matches_head(root, &entry[3..])? {
+            count += 1;
+        } else {
+            local.extend_from_slice(entry);
+            local.push(0);
+            if let Some(path) = original { local.extend_from_slice(path); local.push(0); }
+        }
+    }
+    Ok((local, count))
 }
 
 /// `--porcelain=v1 -z` may expose this generated untracked stamp when upstream
