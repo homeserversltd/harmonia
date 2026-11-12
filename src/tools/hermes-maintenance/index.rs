@@ -662,7 +662,7 @@ pub(crate) fn execute_step_with_outputs(
                     message: "hermes-maintenance-current".into(),
                     command: None,
                 },
-                BTreeMap::new(),
+                BTreeMap::from([("byte_equal_paths_set_aside".into(), Value::from(observation.byte_equal_paths_set_aside as u64))]),
             ))
         }
         Ok(crate::atoms::comparison::ComparisonRun::Moved { movement, .. }) => {
@@ -2697,17 +2697,34 @@ fn inspect_native_install_state(
 
 // Only an unstaged ordinary file modification can be phantom dirt. Compare
 // raw blob ids without attributes or filters; an unprovable entry stays dirty.
+fn git_path_output(root: &Path, args: &[&str], path: &[u8]) -> Result<CapturedOutput, String> {
+    if let Ok(path) = std::str::from_utf8(path) {
+        let mut argv = args.to_vec();
+        argv.extend(["--", path]);
+        return git_output(root, &argv);
+    }
+    // The command API accepts UTF-8 argv. Encode non-UTF-8 path bytes as
+    // shell printf octals, then pass them as one quoted Git argument.
+    let encoded: String = path.iter().map(|byte| format!("\\0{byte:03o}")).collect();
+    let script = "p=$(printf '%bX' \"$1\"); p=${p%X}; shift; exec git \"$@\" -- \"$p\"";
+    let mut argv = vec!["-c", script, "git-path", encoded.as_str()];
+    argv.extend_from_slice(args);
+    run_owner_command("sh", &argv, Some(root), BTreeMap::from([
+        ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+    ]), UPDATER_TIMEOUT_SECS)
+}
+
 fn raw_file_matches_head(root: &Path, raw_path: &[u8]) -> Result<bool, String> {
-    let Ok(path) = std::str::from_utf8(raw_path) else { return Ok(false) };
-    let relative = Path::new(path);
+    let relative = Path::new(OsStr::from_bytes(raw_path));
     if relative.is_absolute() || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
         return Ok(false);
     }
-    let metadata = match fs::symlink_metadata(root.join(relative)) {
-        Ok(value) if value.is_file() && !value.file_type().is_symlink() => value,
+    match fs::symlink_metadata(root.join(relative)) {
+        Ok(value) if value.is_file() && !value.file_type().is_symlink() => {},
         _ => return Ok(false),
-    };
-    let tree = git_output_raw(root, &["--literal-pathspecs", "ls-tree", "-z", "--full-tree", "HEAD", "--", path])?;
+    }
+    let tree = git_path_output(root, &["--literal-pathspecs", "ls-tree", "-z", "--full-tree", "HEAD"], raw_path)?;
     if !tree.status.success() { return Ok(false) }
     let Some(row) = tree.stdout.strip_suffix(b"\0") else { return Ok(false) };
     let Some(tab) = row.iter().position(|b| *b == b'\t') else { return Ok(false) };
@@ -2715,10 +2732,10 @@ fn raw_file_matches_head(root: &Path, raw_path: &[u8]) -> Result<bool, String> {
     if found_path != raw_path { return Ok(false) }
     let mut fields = header.split(|b| *b == b' ');
     let (Some(mode), Some(kind), Some(oid), None) = (fields.next(), fields.next(), fields.next(), fields.next()) else { return Ok(false) };
-    if kind != b"blob" || !matches!(mode, b"100644" | b"100755") || (mode == b"100755") != (metadata.permissions().mode() & 0o111 != 0) {
+    if kind != b"blob" || !matches!(mode, b"100644" | b"100755") {
         return Ok(false);
     }
-    let hash = git_output_raw(root, &["hash-object", "--no-filters", "--", path])?;
+    let hash = git_path_output(root, &["hash-object", "--no-filters"], raw_path)?;
     Ok(hash.status.success() && hash.stdout.strip_suffix(b"\n") == Some(oid))
 }
 
