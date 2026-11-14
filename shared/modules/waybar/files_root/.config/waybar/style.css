@@ -17,8 +17,6 @@ window#waybar {
 #taskbar,
 #workspaces,
 #custom-cpu,
-#temperature,
-#custom-temperature,
 #custom-gpu,
 #custom-memory,
 #custom-disk,
@@ -71,7 +69,6 @@ window#waybar {
 }
 
 #custom-cpu,
-#custom-temperature,
 #custom-gpu,
 #custom-memory,
 #custom-disk {
@@ -82,7 +79,6 @@ window#waybar {
 }
 
 #custom-cpu.low,
-#custom-temperature.low,
 #custom-gpu.low,
 #custom-memory.low,
 #custom-disk.low {
@@ -90,7 +86,6 @@ window#waybar {
 }
 
 #custom-cpu.medium,
-#custom-temperature.medium,
 #custom-gpu.medium,
 #custom-memory.medium,
 #custom-disk.medium {
@@ -98,7 +93,6 @@ window#waybar {
 }
 
 #custom-cpu.high,
-#custom-temperature.high,
 #custom-gpu.high,
 #custom-memory.high,
 #custom-disk.high {
@@ -106,7 +100,6 @@ window#waybar {
 }
 
 #custom-cpu.unknown,
-#custom-temperature.unknown,
 #custom-gpu.unknown,
 #custom-memory.unknown,
 #custom-disk.unknown {
