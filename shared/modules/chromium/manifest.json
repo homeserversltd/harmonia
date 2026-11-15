@@ -2,10 +2,10 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "chromium",
   "title": "Web browsing",
-  "summary": "Sets browser preferences, extensions (Bitwarden, Enhancer for YouTube, uBlock Origin Lite), and bookmarks, and restores the session after updates.",
+  "summary": "Sets browser preferences, extensions (Bitwarden, Enhancer for YouTube, uBlock Origin Lite), and bookmarks.",
   "category": "known-good",
-  "version": "2.3.1",
-  "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; profiles without the chromium module remain non-tenants; it does not install browsers; after a package upgrade replaces Chromium under a running desktop browser, it restarts that browser with its session restored.",
+  "version": "2.4.0",
+  "description": "Single shared browser/Chromium configuration seat; selection is explicit opt-in by profile module listing; profiles without the chromium module remain non-tenants; it does not install browsers.",
   "optional": false,
   "constants": {
     "retired_mandatory_policy_paths": [
@@ -59,29 +59,6 @@
         "target_root": "/",
         "paths": "$constants.retired_mandatory_policy_paths"
       }
-    },
-    {
-      "step_id": "restart-stale-browser",
-      "tool": "command",
-      "permutation": "act",
-      "args": {
-        "program": "/usr/bin/python3",
-        "args": [
-          "${module_dir}/chromium-running-current.py",
-          "restart"
-        ],
-        "timeout_secs": 90,
-        "observation": {
-          "program": "/usr/bin/python3",
-          "args": [
-            "${module_dir}/chromium-running-current.py",
-            "check"
-          ],
-          "expected_exit_code": 0,
-          "expected_stdout": "current"
-        }
-      },
-      "on_failure": "stop"
     }
   ]
 }
