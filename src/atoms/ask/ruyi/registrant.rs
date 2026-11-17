@@ -1215,18 +1215,20 @@ fn observe_household_trust(
             return observation;
         };
         observation.receipt["gateway_fingerprint"] = json!(served_fingerprint);
-        if served_fingerprint == recorded_fingerprint {
+        if served_fingerprint != recorded_fingerprint {
+            observation.receipt["state"] = json!("ring-changed");
+            observation.receipt["signal"] = json!("household-trust-ring-changed");
+            observation.renewal = Some(household_trust_renewal_evidence(
+                json!(recorded_fingerprint),
+                json!(served_fingerprint),
+                gateway_seat,
+                event,
+            ));
             return observation;
         }
-        observation.receipt["state"] = json!("ring-changed");
-        observation.receipt["signal"] = json!("household-trust-ring-changed");
-        observation.renewal = Some(household_trust_renewal_evidence(
-            json!(recorded_fingerprint),
-            json!(served_fingerprint),
-            gateway_seat,
-            event,
-        ));
-        return observation;
+        if status.get("browser_trust").and_then(Value::as_bool) != Some(false) {
+            return observation;
+        }
     }
     observation.receipt["attempted"] = json!(true);
     let server = format!("{gateway_ip}:{gateway_port}");
