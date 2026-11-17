@@ -16,6 +16,21 @@ fn package_expression(expression: &str, name: Option<&str>) -> Result<bool, Stri
         || expression.as_bytes()[..expression.len()-1].iter().rev().take_while(|c| **c == b'\\').count() % 2 != 0 {
         return Err("upgraded-package-pattern-unanchored".into());
     }
+    // An alternation at the outer level escapes one or both anchors.
+    // Alternations inside a group remain enclosed by the outer anchors.
+    let (mut depth, mut in_class, mut escaped) = (0usize, false, false);
+    for c in expression.chars() {
+        if escaped { escaped = false; continue; }
+        if c == '\\' { escaped = true; continue; }
+        if in_class { if c == ']' { in_class = false; } continue; }
+        match c {
+            '[' => in_class = true,
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => return Err("upgraded-package-pattern-unanchored".into()),
+            _ => {}
+        }
+    }
     let pattern = std::ffi::CString::new(expression).map_err(|_| "upgraded-package-pattern-invalid")?;
     let mut regex = std::mem::MaybeUninit::<libc::regex_t>::uninit();
     // regfree is called only after a successful regcomp.
