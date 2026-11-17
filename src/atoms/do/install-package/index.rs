@@ -878,16 +878,32 @@ fn parse_upgraded(b: PackageBackend, xs: &[String]) -> Vec<UpgradedPackage> {
                 }
                 PackageBackend::Apt => {
                     if let Some(r) = l.trim().strip_prefix("Upgrade: ") {
-                        for i in r.split(", ") {
-                            if let Some((n, v)) = i.rsplit_once(" (") {
-                                if let Some((old, new)) = v.trim_end_matches(')').split_once(", ") {
-                                    o.push(UpgradedPackage {
-                                        name: n.trim().into(),
-                                        old: old.trim().into(),
-                                        new: new.trim().into(),
-                                    });
-                                }
+                        for i in r.split_inclusive("), ") {
+                            let Some(i) = i.strip_suffix("), ").or_else(|| i.strip_suffix(')')) else {
+                                continue;
+                            };
+                            let Some((n, v)) = i.split_once(" (") else {
+                                continue;
+                            };
+                            let Some((old, new)) = v.split_once(", ") else {
+                                continue;
+                            };
+                            let name = n.split_once(':').map_or(n, |(name, _)| name);
+                            if name.is_empty()
+                                || n.chars().any(|c| c.is_whitespace() || "(),".contains(c))
+                                || old.is_empty()
+                                || new.is_empty()
+                                || old.chars().chain(new.chars()).any(|c| {
+                                    c.is_whitespace() || "(),".contains(c)
+                                })
+                            {
+                                continue;
                             }
+                            o.push(UpgradedPackage {
+                                name: name.into(),
+                                old: old.into(),
+                                new: new.into(),
+                            });
                         }
                     }
                 }
