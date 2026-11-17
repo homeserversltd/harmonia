@@ -16,20 +16,34 @@ fn package_expression(expression: &str, name: Option<&str>) -> Result<bool, Stri
         || expression.as_bytes()[..expression.len()-1].iter().rev().take_while(|c| **c == b'\\').count() % 2 != 0 {
         return Err("upgraded-package-pattern-unanchored".into());
     }
-    // An alternation at the outer level escapes one or both anchors.
-    // Alternations inside a group remain enclosed by the outer anchors.
-    let (mut depth, mut in_class, mut escaped) = (0usize, false, false);
-    for c in expression.chars() {
-        if escaped { escaped = false; continue; }
-        if c == '\\' { escaped = true; continue; }
-        if in_class { if c == ']' { in_class = false; } continue; }
-        match c {
-            '[' => in_class = true,
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            '|' if depth == 0 => return Err("upgraded-package-pattern-unanchored".into()),
+    // Reject any unescaped alternation outside a parenthesized group. Inside
+    // a POSIX bracket expression backslash is literal; a leading ] is also
+    // literal, including after ^. Character classes/collating symbols have
+    // their own closing pair and cannot close the outer bracket expression.
+    let bytes = expression.as_bytes();
+    let (mut depth, mut index) = (0usize, 0usize);
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => { index += 2; continue; }
+            b'[' => {
+                index += 1;
+                if bytes.get(index) == Some(&b'^') { index += 1; }
+                if bytes.get(index) == Some(&b']') { index += 1; }
+                while index < bytes.len() && bytes[index] != b']' {
+                    if bytes[index] == b'[' && matches!(bytes.get(index + 1), Some(b':' | b'.' | b'=')) {
+                        let delimiter = bytes[index + 1];
+                        index += 2;
+                        while index + 1 < bytes.len() && !(bytes[index] == delimiter && bytes[index + 1] == b']') { index += 1; }
+                        index += 2;
+                    } else { index += 1; }
+                }
+            }
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b'|' if depth == 0 => return Err("upgraded-package-pattern-unanchored".into()),
             _ => {}
         }
+        index += 1;
     }
     let pattern = std::ffi::CString::new(expression).map_err(|_| "upgraded-package-pattern-invalid")?;
     let mut regex = std::mem::MaybeUninit::<libc::regex_t>::uninit();
@@ -71,9 +85,10 @@ pub(crate) fn matching_upgrades(step: &crate::tools::ladder::ValidatedStep, modu
     Some(receipt.get("upgraded").and_then(serde_json::Value::as_array).into_iter().flatten()
         .filter(|p| p.get("old").and_then(serde_json::Value::as_str).is_some()
             && p.get("new").and_then(serde_json::Value::as_str).is_some()
-            && p.get("name").and_then(serde_json::Value::as_str).is_some_and(|name|
+            && p.get("name").and_then(serde_json::Value::as_str).is_some_and(|name| {
+                let name = name.rsplit_once(':').map_or(name, |(base, _)| base);
                 expressions.iter().filter_map(serde_json::Value::as_str)
-                    .any(|expression| package_expression(expression, Some(name)).unwrap_or(false))))
+                    .any(|expression| package_expression(expression, Some(name)).unwrap_or(false))}))
         .cloned().collect())
 }
 

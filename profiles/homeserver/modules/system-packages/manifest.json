@@ -22,6 +22,7 @@
       "permutation": "restart",
       "args": {
         "service": "postgresql.service",
+        "timeout_secs": 120,
         "upgrade_step": "system-packages-upgrade",
         "upgraded_packages": ["^postgresql-[0-9]+$"]
       },

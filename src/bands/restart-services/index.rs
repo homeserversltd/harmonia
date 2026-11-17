@@ -567,7 +567,9 @@ fn execute_manifest_band_with_prior(
             }
         }
         result.operation_count += 1;
-        let upgraded = crate::atoms::systemd::matching_upgrades(step, module_dir, prior);
+        let upgraded = if step.tool == "systemd" && step.permutation == "restart" {
+            crate::atoms::systemd::matching_upgrades(step, module_dir, prior)
+        } else { None };
         let material = upgraded.as_ref().map_or(module_changed_before_band, |items| !items.is_empty());
         let outcome = if step.tool == "routine" {
             crate::tools::routine::execute_routine(

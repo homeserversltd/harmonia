@@ -702,6 +702,12 @@ pub(crate) fn validate_ladder(
     let mut seen = BTreeSet::new();
     let mut validated = Vec::new();
     for step in &manifest.ladder {
+        if (step.tool != "systemd" || step.permutation != "restart")
+            && (step.args.contains_key("upgrade_step") || step.args.contains_key("upgraded_packages")) {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(), defect: "upgrade-gate-requires-ladder-systemd-restart".into(),
+            });
+        }
         if !seen.insert(step.step_id.clone()) {
             return Err(LadderValidationError {
                 step_id: step.step_id.clone(),
@@ -803,6 +809,12 @@ fn validate_routine(
     }
     let mut names = BTreeSet::new();
     for child in &step.steps {
+        if child.args.contains_key("upgrade_step") || child.args.contains_key("upgraded_packages") {
+            return Err(LadderValidationError {
+                step_id: step.step_id.clone(),
+                defect: "upgrade-gate-requires-ladder-systemd-restart".into(),
+            });
+        }
         if child.name.trim().is_empty() {
             return Err(LadderValidationError {
                 step_id: step.step_id.clone(),
