@@ -2,10 +2,10 @@
   "schema": "harmonia.module.ladder.v1",
   "id": "web-front",
   "title": "Website access",
-  "summary": "Keeps this box's website and its own manual available.",
+  "summary": "Keeps this box's website, manual, and Hermes dashboard at /dashboard/ available.",
   "category": "interactable",
-  "version": "1.0.0",
-  "description": "Maintain HomeSI's nginx web front for noesis at / and this box's own MkDocs manual at /manual/, using the birth-provided nginx service.",
+  "version": "1.1.0",
+  "description": "Maintain HomeSI's nginx web front for noesis at /, this box's own MkDocs manual at /manual/, and the Hermes dashboard at /dashboard/, using the birth-provided nginx service.",
   "optional": false,
   "files_root": "files_root",
   "ladder": [
