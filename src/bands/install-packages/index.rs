@@ -201,6 +201,7 @@ pub(crate) fn execute_manifest_band(
     projected_steps: &[ValidatedStep],
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
     halted_steps: &mut crate::bands::HaltedSteps,
+    error_placement: &mut Option<Value>,
 ) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
@@ -284,7 +285,19 @@ pub(crate) fn execute_manifest_band(
                     .unwrap_or(&[]),
             )?
         } else {
-            execute_step(step, manifest, module_dir, auth, pa, key)?
+            match execute_step(step, manifest, module_dir, auth, pa, key) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    // This error is returned only after the upgrade act and its
+                    // receipt were written. Other errors do not prove that the
+                    // upgrade ran and must never revive an old receipt.
+                    if auth.is_some() && step.tool == "package" && step.permutation == "upgrade"
+                        && error == "package-act-did-not-converge" {
+                        *error_placement = Some(serde_json::json!({"step_id":step.step_id,"tool":step.tool,"permutation":step.permutation,"band":"InstallPackages","status":"error","skipped":false,"module":manifest.id}));
+                    }
+                    return Err(error);
+                }
+            }
         };
         if step.tool == "routine" {
             let routine = routine_states
@@ -388,6 +401,7 @@ pub(crate) fn execute_manifest_modules(
             LoadedModule::Ladder(manifest) if manifest.isolation.as_deref() == Some("per-step")
         );
         *module_count = profile.modules.len();
+        let mut error_placement = None;
         let result = match &projected.loaded {
             LoadedModule::Ladder(manifest) => execute_manifest_band(
                 manifest,
@@ -400,6 +414,7 @@ pub(crate) fn execute_manifest_modules(
                 &projected.steps,
                 &projected.routines,
                 halted_steps,
+                &mut error_placement,
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };
@@ -445,6 +460,7 @@ pub(crate) fn execute_manifest_modules(
                 )?;
             }
             Err(err) => {
+                state.placements.extend(error_placement);
                 state.ok = false;
                 state.first_missing_signal.get_or_insert(err.clone());
                 if !per_step_isolation {

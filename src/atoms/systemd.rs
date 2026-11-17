@@ -71,14 +71,12 @@ pub(crate) fn matching_upgrades(step: &crate::tools::ladder::ValidatedStep, modu
         && p.get("tool").and_then(serde_json::Value::as_str) == Some("package")
         && p.get("permutation").and_then(serde_json::Value::as_str) == Some("upgrade")
         && p.get("band").and_then(serde_json::Value::as_str) == Some("InstallPackages")
-        && p.get("status").and_then(serde_json::Value::as_str) == Some("completed")
         && p.get("skipped").and_then(serde_json::Value::as_bool) == Some(false));
     if !ran { return Some(Vec::new()); }
     let receipt = std::fs::read(module_dir.join(format!("{id}.json"))).ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
     let Some(receipt) = receipt else { return Some(Vec::new()); };
-    if receipt.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
-        || receipt.get("name").and_then(serde_json::Value::as_str) != Some(id)
+    if receipt.get("name").and_then(serde_json::Value::as_str) != Some(id)
         || receipt.get("permutation").and_then(serde_json::Value::as_str) != Some("upgrade") {
         return Some(Vec::new());
     }
