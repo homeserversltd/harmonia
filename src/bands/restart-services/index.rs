@@ -489,6 +489,19 @@ pub(crate) fn execute_manifest_band(
     projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
     halted_steps: &mut crate::bands::HaltedSteps,
 ) -> Result<ModuleExecution, String> {
+    execute_manifest_band_with_prior(manifest, module_dir, auth, pa, key, mode_apply, beam_finalization,
+        module_changed_before_band, routine_states, projected_steps, projected_routines, halted_steps, &[])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_manifest_band_with_prior(
+    manifest: &LadderManifest, module_dir: &Path, auth: Option<&SoftwareApplyAuthorization>,
+    pa: Option<&PackageAuthority>, key: Option<&crate::tools::files::InvocationKey>, mode_apply: bool,
+    beam_finalization: Option<&crate::atoms::ask::beam::PendingBeamFinalization>,
+    module_changed_before_band: bool, routine_states: &mut BTreeMap<String, crate::ModuleWalkState>,
+    projected_steps: &[ValidatedStep], projected_routines: &BTreeMap<String, Vec<ProjectedRoutineChild>>,
+    halted_steps: &mut crate::bands::HaltedSteps, prior: &[Value],
+) -> Result<ModuleExecution, String> {
     crate::atoms::attest::prepare_receipt_parent(module_dir)?;
     let mut result = ModuleExecution {
         ok: true,
@@ -554,6 +567,8 @@ pub(crate) fn execute_manifest_band(
             }
         }
         result.operation_count += 1;
+        let upgraded = crate::atoms::systemd::matching_upgrades(step, module_dir, prior);
+        let material = upgraded.as_ref().map_or(module_changed_before_band, |items| !items.is_empty());
         let outcome = if step.tool == "routine" {
             crate::tools::routine::execute_routine(
                 step,
@@ -578,11 +593,15 @@ pub(crate) fn execute_manifest_band(
                 &manifest.base_dir,
                 auth,
                 pa,
-                module_changed_before_band,
+                material,
                 key,
                 None,
             )?
         };
+        if let Some(items) = upgraded {
+            crate::atoms::attest::change_unit::augment_comparison_receipt(module_dir, &step.step_id,
+                serde_json::json!({"upgrade_step":step.args.get("upgrade_step"),"matching_upgraded_packages":items}))?;
+        }
         if step.tool == "routine"
             && outcome.ok
             && projected_routines
@@ -737,7 +756,7 @@ pub(crate) fn execute_manifest_modules(
         *module_count = profile.modules.len();
         let module_changed_before_band = states.get(module_id).is_some_and(|state| state.changed);
         let result = match &projected.loaded {
-            LoadedModule::Ladder(manifest) => execute_manifest_band(
+            LoadedModule::Ladder(manifest) => execute_manifest_band_with_prior(
                 manifest,
                 &receipt_dir.join("modules").join(module_id),
                 mode.software_authorization(),
@@ -750,6 +769,7 @@ pub(crate) fn execute_manifest_modules(
                 &projected.steps,
                 &projected.routines,
                 halted_steps,
+                states.get(module_id).map(|state| state.placements.as_slice()).unwrap_or(&[]),
             ),
             LoadedModule::Sidecar(_) => Err("module-sidecar-not-band-executable".to_string()),
         };

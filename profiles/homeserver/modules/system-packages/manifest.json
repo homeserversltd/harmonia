@@ -4,7 +4,7 @@
   "title": "Software updates",
   "summary": "Keeps this device's installed software current.",
   "category": "known-good",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "homeserver system package upgrade ladder using the package tool.",
   "optional": false,
   "constants": {},
@@ -14,6 +14,17 @@
       "tool": "package",
       "permutation": "upgrade",
       "args": {},
+      "on_failure": "stop"
+    },
+    {
+      "step_id": "system-packages-restart-postgresql",
+      "tool": "systemd",
+      "permutation": "restart",
+      "args": {
+        "service": "postgresql.service",
+        "upgrade_step": "system-packages-upgrade",
+        "upgraded_packages": ["^postgresql-[0-9]+$"]
+      },
       "on_failure": "stop"
     }
   ]

@@ -6,6 +6,78 @@ use serde_json::json;
 use std::cell::Cell;
 use std::path::Path;
 
+// Package expressions are exact Debian/Arch names or anchored POSIX EREs.
+fn package_expression(expression: &str, name: Option<&str>) -> Result<bool, String> {
+    if !expression.is_empty() && expression.bytes().all(|c| c.is_ascii_lowercase()
+        || c.is_ascii_digit() || matches!(c, b'+' | b'-' | b'.')) {
+        return Ok(name == Some(expression));
+    }
+    if !expression.starts_with('^') || !expression.ends_with('$')
+        || expression.as_bytes()[..expression.len()-1].iter().rev().take_while(|c| **c == b'\\').count() % 2 != 0 {
+        return Err("upgraded-package-pattern-unanchored".into());
+    }
+    let pattern = std::ffi::CString::new(expression).map_err(|_| "upgraded-package-pattern-invalid")?;
+    let mut regex = std::mem::MaybeUninit::<libc::regex_t>::uninit();
+    // regfree is called only after a successful regcomp.
+    unsafe {
+        if libc::regcomp(regex.as_mut_ptr(), pattern.as_ptr(), libc::REG_EXTENDED) != 0 {
+            return Err("upgraded-package-pattern-invalid".into());
+        }
+        let mut regex = regex.assume_init();
+        let matched = name.and_then(|n| std::ffi::CString::new(n).ok())
+            .is_some_and(|n| {
+                let mut m = libc::regmatch_t { rm_so: 0, rm_eo: 0 };
+                libc::regexec(&regex, n.as_ptr(), 1, &mut m, 0) == 0
+                    && m.rm_so == 0 && m.rm_eo as usize == n.as_bytes().len()
+            });
+        libc::regfree(&mut regex);
+        Ok(matched)
+    }
+}
+
+pub(crate) fn matching_upgrades(step: &crate::tools::ladder::ValidatedStep, module_dir: &Path, placements: &[serde_json::Value]) -> Option<Vec<serde_json::Value>> {
+    let id = step.args.get("upgrade_step")?.as_str()?;
+    let expressions = step.args.get("upgraded_packages")?.as_array()?;
+    let ran = placements.iter().any(|p| p.get("step_id").and_then(serde_json::Value::as_str) == Some(id)
+        && p.get("tool").and_then(serde_json::Value::as_str) == Some("package")
+        && p.get("permutation").and_then(serde_json::Value::as_str) == Some("upgrade")
+        && p.get("band").and_then(serde_json::Value::as_str) == Some("InstallPackages")
+        && p.get("status").and_then(serde_json::Value::as_str) == Some("completed")
+        && p.get("skipped").and_then(serde_json::Value::as_bool) == Some(false));
+    if !ran { return Some(Vec::new()); }
+    let receipt = std::fs::read(module_dir.join(format!("{id}.json"))).ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let Some(receipt) = receipt else { return Some(Vec::new()); };
+    if receipt.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+        || receipt.get("name").and_then(serde_json::Value::as_str) != Some(id)
+        || receipt.get("permutation").and_then(serde_json::Value::as_str) != Some("upgrade") {
+        return Some(Vec::new());
+    }
+    Some(receipt.get("upgraded").and_then(serde_json::Value::as_array).into_iter().flatten()
+        .filter(|p| p.get("old").and_then(serde_json::Value::as_str).is_some()
+            && p.get("new").and_then(serde_json::Value::as_str).is_some()
+            && p.get("name").and_then(serde_json::Value::as_str).is_some_and(|name|
+                expressions.iter().filter_map(serde_json::Value::as_str)
+                    .any(|expression| package_expression(expression, Some(name)).unwrap_or(false))))
+        .cloned().collect())
+}
+
+pub(crate) fn validate_upgrade_gate(args: &std::collections::BTreeMap<String, serde_json::Value>) -> Result<(), String> {
+    match (args.get("upgrade_step"), args.get("upgraded_packages")) {
+        (None, None) => Ok(()),
+        (Some(_), Some(packages)) => {
+            let packages = packages.as_array().ok_or("upgraded-packages-invalid")?;
+            if packages.is_empty() { return Err("upgraded-packages-empty".into()); }
+            for package in packages {
+                let expression = package.as_str().ok_or("upgraded-package-invalid")?;
+                package_expression(expression, None)?;
+            }
+            Ok(())
+        }
+        _ => Err("upgrade-step-and-packages-required-together".into()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RestartDecision {
     pub(crate) execute: bool,

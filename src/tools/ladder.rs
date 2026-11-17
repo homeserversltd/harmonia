@@ -760,6 +760,20 @@ pub(crate) fn validate_ladder(
         validate_args(&step.step_id, permutation, &resolved)?;
         validate_tool_semantics(&step.step_id, &step.tool, &step.permutation, &resolved)?;
         validate_command_precondition(&step.step_id, &step.tool, &step.permutation, &resolved)?;
+        if step.tool == "systemd" && step.permutation == "restart" {
+            crate::atoms::systemd::validate_upgrade_gate(&resolved).map_err(|defect| LadderValidationError {
+                step_id: step.step_id.clone(), defect,
+            })?;
+            if let Some(id) = resolved.get("upgrade_step").and_then(Value::as_str) {
+                if !validated.iter().any(|previous: &ValidatedStep| previous.step_id == id
+                    && previous.tool == "package" && previous.permutation == "upgrade") {
+                    return Err(LadderValidationError {
+                        step_id: step.step_id.clone(),
+                        defect: "upgrade-step-not-earlier-package-upgrade".into(),
+                    });
+                }
+            }
+        }
         validated.push(ValidatedStep {
             step_id: step.step_id.clone(),
             tool: step.tool.clone(),
