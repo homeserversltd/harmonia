@@ -2656,6 +2656,9 @@ fn run_toolchain_ratchet(
             .env("RUSTUP_HOME", "/opt/rustup")
             .env("CARGO_HOME", "/opt/cargo")
             .env("HARMONIA_TOOLCHAIN_RATCHET_HANDOFF", "1");
+        if crate::hyalos::debug_enabled() {
+            command.arg(crate::DEBUG_FLAG);
+        }
         let output = match command.output() {
             Ok(output) => output,
             Err(error) => {

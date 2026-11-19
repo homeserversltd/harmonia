@@ -1,11 +1,33 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const HYALOS_PATH: &str = "/api/v1/hyalos/reflect";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const MAX_FORWARD_PAYLOAD_BYTES: usize = 1023;
+
+static DEBUG_DEEDS: AtomicBool = AtomicBool::new(false);
+
+/// The CLI invocation's mark is visible to every sender in the process.
+pub(crate) struct DebugGuard(bool);
+
+impl DebugGuard {
+    pub(crate) fn enter(debug: bool) -> Self {
+        Self(DEBUG_DEEDS.swap(debug, Ordering::Relaxed))
+    }
+}
+
+impl Drop for DebugGuard {
+    fn drop(&mut self) {
+        DEBUG_DEEDS.store(self.0, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn debug_enabled() -> bool {
+    DEBUG_DEEDS.load(Ordering::Relaxed)
+}
 
 thread_local! {
     static READ_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -29,7 +51,7 @@ impl Drop for ReadGuard {
 fn receipt_payload(
     kind: &str,
     message: &str,
-    attributes_redacted: Option<Value>,
+    mut attributes_redacted: Option<Value>,
     ok: Option<bool>,
     correlation_id: Option<&str>,
 ) -> Value {
@@ -38,8 +60,24 @@ fn receipt_payload(
         "kind": kind,
         "message": message,
     });
+    if attributes_redacted
+        .as_ref()
+        .and_then(|attributes| attributes.get("run_id"))
+        .is_none_or(Value::is_null)
+    {
+        if let Some(run_id) = crate::receipts::active_run_id() {
+            if let Some(Value::Object(attributes)) = &mut attributes_redacted {
+                attributes.insert("run_id".into(), Value::String(run_id));
+            } else {
+                attributes_redacted = Some(json!({ "run_id": run_id }));
+            }
+        }
+    }
     if let Some(attributes) = attributes_redacted {
         payload["attributes_redacted"] = attributes;
+    }
+    if debug_enabled() {
+        payload["debug"] = Value::Bool(true);
     }
     if let Some(value) = ok {
         payload["ok"] = json!(value);
@@ -123,6 +161,18 @@ const FORWARD_METADATA_FIELDS: &[&str] = &[
     "module_artifact_debt_first_missing_signal",
 ];
 
+fn bounded_scalar(field: &str, value: &Value, string_budget: usize) -> Option<Value> {
+    match value {
+        // A run id is a join key, not text that can be shortened.
+        Value::String(text) if field != "run_id" => {
+            Some(Value::String(bounded_json_string(text, string_budget)))
+        }
+        Value::String(_) | Value::Bool(_) | Value::Number(_) | Value::Null => Some(value.clone()),
+        // Forward only the callers' named scalar projections, never detail bodies.
+        _ => None,
+    }
+}
+
 fn bounded_metadata_attributes(
     attributes: Option<&Value>,
     string_budget: usize,
@@ -131,17 +181,10 @@ fn bounded_metadata_attributes(
     let mut compact = serde_json::Map::new();
     if let Some(fields) = attributes.and_then(Value::as_object) {
         for field in FORWARD_METADATA_FIELDS {
-            if let Some(value) = fields.get(*field) {
-                let value = match value {
-                    Value::String(text) => {
-                        Value::String(bounded_json_string(text, string_budget))
-                    }
-                    value if value.is_boolean() || value.is_number() || value.is_null() => {
-                        value.clone()
-                    }
-                    // Forward only the callers' named scalar projections, never detail bodies.
-                    _ => continue,
-                };
+            if let Some(value) = fields
+                .get(*field)
+                .and_then(|value| bounded_scalar(field, value, string_budget))
+            {
                 compact.insert((*field).to_string(), value);
             }
         }
@@ -163,23 +206,18 @@ fn bounded_compacted_attributes(attributes: Option<&Value>, ok: Option<bool>) ->
     let mut compact = serde_json::Map::new();
     if let Some(fields) = attributes.and_then(Value::as_object) {
         for field in [
+            "run_id",
             "child",
             "state",
             "outcome",
             "changed",
             "first_missing_signal",
         ] {
-            if let Some(value) = fields.get(field) {
-                let value = match value {
-                    Value::String(text) => {
-                        let budget = if field == "first_missing_signal" { 192 } else { 64 };
-                        Value::String(bounded_json_string(text, budget))
-                    }
-                    value if value.is_boolean() || value.is_number() || value.is_null() => {
-                        value.clone()
-                    }
-                    _ => continue,
-                };
+            let budget = if field == "first_missing_signal" { 192 } else { 64 };
+            if let Some(value) = fields
+                .get(field)
+                .and_then(|value| bounded_scalar(field, value, budget))
+            {
                 compact.insert(field.to_string(), value);
             }
         }

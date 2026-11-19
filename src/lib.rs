@@ -330,12 +330,21 @@ mod invocation_face {
     }
 }
 
-pub fn invoke_with_exit_code(args: Vec<String>) -> i32 {
+pub(crate) const DEBUG_FLAG: &str = "--debug";
+
+fn take_debug_flag(args: &mut Vec<String>) -> hyalos::DebugGuard {
+    let count = args.len();
+    args.retain(|arg| arg != DEBUG_FLAG);
+    hyalos::DebugGuard::enter(args.len() != count)
+}
+
+pub fn invoke_with_exit_code(mut args: Vec<String>) -> i32 {
+    let _debug = take_debug_flag(&mut args);
     if let Some(code) = crate::atoms::ask::update_check::invoke_check(&args) {
         return code;
     }
 
-    match invoke(args) {
+    match invoke_command(args) {
         Ok(()) => 0,
         Err(err) => {
             eprintln!("harmonia_error={err}");
@@ -344,11 +353,15 @@ pub fn invoke_with_exit_code(args: Vec<String>) -> i32 {
     }
 }
 
-pub fn invoke(args: Vec<String>) -> Result<(), String> {
+pub fn invoke(mut args: Vec<String>) -> Result<(), String> {
+    let _debug = take_debug_flag(&mut args);
     if let Some(code) = crate::atoms::ask::update_check::invoke_check(&args) {
         return if matches!(code, 0 | 7) { Ok(()) } else { Err("update-check-failed".into()) };
     }
+    invoke_command(args)
+}
 
+fn invoke_command(args: Vec<String>) -> Result<(), String> {
     // Each actual consumer loads its seat lazily. Quiet commands ask no doors.
     let invocation = invocation_face::mint(&args);
     run(args, invocation)
@@ -1505,6 +1518,7 @@ fn beam_command(args: &[String]) -> Result<(), String> {
 pub(crate) fn usage() -> Result<(), String> {
     println!("harmonia {}", VERSION);
     println!("usage:");
+    println!("  --debug (any position): mark this invocation's Hyalos deeds for full logging");
     println!("  harmonia demo [<name>|list]");
     println!("  harmonia explain");
     println!("  harmonia inspect-profile <profiles/<id>/index.json>");

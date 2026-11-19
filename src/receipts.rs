@@ -61,8 +61,13 @@ pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), S
     crate::atoms::attest::write_json_atomic(path, value)
 }
 
+/// Observe the current run without minting a new one.
+pub(crate) fn active_run_id() -> Option<String> {
+    ACTIVE_RUN_ID.with(|active| active.borrow().clone())
+}
+
 pub(crate) fn run_id_from_stamp() -> String {
-    if let Some(run_id) = ACTIVE_RUN_ID.with(|active| active.borrow().clone()) {
+    if let Some(run_id) = active_run_id() {
         return run_id;
     }
     let nanos = SystemTime::now()
@@ -100,7 +105,7 @@ pub(crate) fn receipt_run_id(path: &Path) -> Option<String> {
     let in_receipts = path.starts_with("/var/lib/harmonia/receipts")
         || ACTIVE_RECEIPT_DIRECTORY.with(|active| active.borrow().as_ref().is_some_and(|root| path.starts_with(root)));
     if !in_receipts { return None; }
-    ACTIVE_RUN_ID.with(|active| active.borrow().clone())
+    active_run_id()
 }
 
 pub(crate) fn is_current_run_receipt(receipt: &serde_json::Value) -> bool {
