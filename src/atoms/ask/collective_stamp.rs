@@ -169,7 +169,7 @@ impl StampObservation {
 struct CachedSourceObservation {
     stamp: StampObservation,
     own_profile: Option<String>,
-    verified_candidates: Vec<FetchedStamp>,
+    selected_candidate: Option<FetchedStamp>,
     fire_seal: OnceLock<FireSealObservation>,
 }
 
@@ -178,12 +178,12 @@ static OBSERVATION: OnceLock<CachedSourceObservation> = OnceLock::new();
 fn source_observation() -> &'static CachedSourceObservation {
     OBSERVATION.get_or_init(|| {
         let own_profile = crate::device_profile::own_sold_profile();
-        let mut verified_candidates = Vec::new();
-        let stamp = observe_uncached(&mut verified_candidates);
+        let mut selected_candidate = None;
+        let stamp = observe_uncached(&mut selected_candidate);
         CachedSourceObservation {
             stamp,
             own_profile,
-            verified_candidates,
+            selected_candidate,
             fire_seal: OnceLock::new(),
         }
     })
@@ -194,7 +194,7 @@ pub(crate) fn current() -> StampObservation {
     current_with_fire_seal()
 }
 
-/// Resolve the optional fire seal lazily, sharing the already-read stamp candidates.
+/// Resolve the optional fire seal lazily from the selected stamp's source only.
 pub(crate) fn current_with_fire_seal() -> StampObservation {
     let cached = source_observation();
     let mut observation = cached.stamp.clone();
@@ -202,12 +202,9 @@ pub(crate) fn current_with_fire_seal() -> StampObservation {
         observation.fire_seal = Some(
             cached
                 .fire_seal
-                .get_or_init(|| {
-                    observe_fire_seal_for_profile(
-                        profile,
-                        cached.stamp.stamp_source.as_deref(),
-                        &cached.verified_candidates,
-                    )
+                .get_or_init(|| match cached.selected_candidate.as_ref() {
+                    Some(candidate) => observe_fire_seal(candidate, profile),
+                    None => unavailable_fire_seal(profile, "wukong-fire-stamp-unavailable", None),
                 })
                 .clone(),
         );
@@ -230,7 +227,7 @@ pub(crate) fn write_receipt(receipt_dir: &std::path::Path) -> Result<(), String>
     )
 }
 
-fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObservation {
+fn observe_uncached(selected_candidate: &mut Option<FetchedStamp>) -> StampObservation {
     let config_path = crate::bands::pull_source::appliance_config_path();
     let config_bytes = match std::fs::read(&config_path) {
         Ok(bytes) => bytes,
@@ -278,9 +275,30 @@ fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObserva
         declared_members: members,
         ..StampObservation::default()
     };
-    let mut best_failure: Option<CandidateFailure> = None;
-
-    for (index, candidate) in candidates.iter().enumerate() {
+    let mut selected: Option<(usize, FetchedStamp)> = None;
+    let mut best_failure = None;
+    let mut record_failure = |index, failure: CandidateFailure| {
+        // Priority and ties match the old walk in declaration order.
+        let rank = (candidate_failure_rank(&failure), std::cmp::Reverse(index));
+        if best_failure.as_ref().is_none_or(|(current, _)| rank > *current) {
+            best_failure = Some((rank, failure));
+        }
+    };
+    let mut attempts = vec![None; candidates.len()];
+    let mut walk = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let house = configured_locator(candidate).is_some_and(is_house_locator);
+            (index, candidate, house)
+        })
+        .collect::<Vec<_>>();
+    // Stable within each tier; keep original indices for receipts and failure ties.
+    walk.sort_by_key(|&(_, _, house)| !house);
+    for (index, candidate, house) in walk {
+        if !house && selected.is_some() {
+            break;
+        }
         let locator = candidate_locator(candidate);
         let mut receipt = json!({
             "candidate_index": index + 1,
@@ -310,12 +328,8 @@ fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObserva
                 "verdict":failure.verdict,
                 "signal":failure.signal,
             });
-            if best_failure.as_ref().is_none_or(|current| {
-                candidate_failure_rank(&failure) > candidate_failure_rank(current)
-            }) {
-                best_failure = Some(failure);
-            }
-            observation.attempts.push(receipt);
+            record_failure(index, failure);
+            attempts[index] = Some(receipt);
             continue;
         };
 
@@ -325,22 +339,20 @@ fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObserva
                 let parsed = &fetched.parsed;
                 receipt["key_attempts"] = json!(fetched.key_attempts);
                 receipt["final_state"] = json!({
-                    "disposition":"selected",
+                    "disposition":"verified",
                     "verdict":"VALID",
                     "stamp_sha":parsed.stamp_sha,
                     "selected_release":fetched.selected_release,
                     "stamp_source":safe_source_label(&fetched.stamp_source),
                     "key_id":parsed.key_id,
                 });
-                if observation.verdict.as_deref() != Some("VALID") {
-                    observation.signal = "none".into();
-                    observation.verdict = Some("VALID".into());
-                    observation.stamp_sha = Some(parsed.stamp_sha.clone());
-                    observation.key_id = Some(parsed.key_id.clone());
-                    observation.terms = parsed.terms.clone();
-                    observation.stamp_source = Some(fetched.stamp_source.clone());
+                // A legacy verified line with an unparseable time remains a floor,
+                // not a reason to prefer it over a dated line or to go outside.
+                if selected.as_ref().is_none_or(|(_, current)| {
+                    issued_order_key(&parsed.issued) > issued_order_key(&current.parsed.issued)
+                }) {
+                    selected = Some((index, fetched));
                 }
-                verified_candidates.push(fetched);
             }
             Err(failure) => {
                 let disposition = failure.verdict.to_ascii_lowercase();
@@ -351,31 +363,31 @@ fn observe_uncached(verified_candidates: &mut Vec<FetchedStamp>) -> StampObserva
                     "selected_release":failure.selected_release,
                     "http_status":failure.http_status,
                 });
-                if best_failure.as_ref().is_none_or(|current| {
-                    candidate_failure_rank(&failure) > candidate_failure_rank(current)
-                }) {
-                    best_failure = Some(failure);
-                }
+                record_failure(index, failure);
             }
         }
         if let Some(count) = release_pages_read {
             receipt["release_pages_read"] = json!(count);
         }
-        observation.attempts.push(receipt);
-        if observation.verdict.as_deref() == Some("VALID") {
-            break;
-        }
+        attempts[index] = Some(receipt);
     }
 
-    if verified_candidates.is_empty() {
-        if let Some(failure) = best_failure {
-            observation.signal = failure.signal;
-            observation.verdict = Some(failure.verdict);
+    if let Some((index, fetched)) = selected {
+        observation.signal = "none".into();
+        observation.verdict = Some("VALID".into());
+        observation.stamp_sha = Some(fetched.parsed.stamp_sha.clone());
+        observation.key_id = Some(fetched.parsed.key_id.clone());
+        observation.terms = fetched.parsed.terms.clone();
+        observation.stamp_source = Some(fetched.stamp_source.clone());
+        if let Some(receipt) = &mut attempts[index] {
+            receipt["final_state"]["disposition"] = json!("selected");
         }
-        if observation.attempts.is_empty() && !candidates.is_empty() {
-            observation.signal = "wukong-staff-stamp-unreachable".into();
-        }
+        *selected_candidate = Some(fetched);
+    } else if let Some((_, failure)) = best_failure {
+        observation.signal = failure.signal;
+        observation.verdict = Some(failure.verdict);
     }
+    observation.attempts = attempts.into_iter().flatten().collect();
     observation
 }
 
@@ -427,12 +439,22 @@ fn expand_candidates(value: &Value, output: &mut Vec<Value>) {
     }
 }
 
-fn candidate_locator(candidate: &Value) -> Option<String> {
-    let url = candidate.as_str().or_else(|| {
+fn configured_locator(candidate: &Value) -> Option<&str> {
+    candidate.as_str().or_else(|| {
         ["url", "base_url", "release_url", "file_url", "locator"]
             .iter()
             .find_map(|name| candidate.get(*name).and_then(Value::as_str))
-    })?;
+    })
+}
+
+fn is_house_locator(locator: &str) -> bool {
+    locator.trim().starts_with("file://")
+        || crate::atoms::forge_credential::url_host(locator)
+            .is_some_and(|host| host == "home.arpa" || host.ends_with(".home.arpa"))
+}
+
+fn candidate_locator(candidate: &Value) -> Option<String> {
+    let url = configured_locator(candidate)?;
     #[cfg(all(feature = "test-facade", unix))]
     if fixture_stamp_file_path(url).is_some() {
         return Some(url.to_owned());
@@ -896,14 +918,6 @@ fn candidate_failure_rank(failure: &CandidateFailure) -> u8 {
     }
 }
 
-fn fire_failure_rank(seal: &FireSealObservation) -> u8 {
-    match seal.status.as_str() {
-        "INVALID" => 4,
-        "UNKNOWN" => 3,
-        _ => 1,
-    }
-}
-
 impl FetchedStamp {
     fn mirror_key_url(&self, key_id: &str) -> Option<String> {
         if !lower_hex(key_id, 16) {
@@ -959,65 +973,7 @@ fn unavailable_fire_seal(
     }
 }
 
-fn observe_fire_seal_for_profile(
-    profile: &str,
-    stamp_source: Option<&str>,
-    verified_candidates: &[FetchedStamp],
-) -> FireSealObservation {
-    if verified_candidates.is_empty() {
-        return unavailable_fire_seal(
-            profile,
-            "wukong-fire-stamp-unavailable",
-            stamp_source.map(str::to_owned),
-        );
-    }
-    let readable_bands = verified_candidates
-        .iter()
-        .map(|candidate| candidate.parsed.stamp_sha.clone())
-        .collect::<Vec<_>>();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut best_seal: Option<FireSealObservation> = None;
-    for candidate in verified_candidates {
-        let Some(locator) = candidate.fire_seal_locator(profile) else {
-            let absent = unavailable_fire_seal(
-                profile,
-                "wukong-fire-seal-absent",
-                Some(candidate.stamp_source.clone()),
-            );
-            if best_seal.as_ref().is_none_or(|current| {
-                fire_failure_rank(&absent) > fire_failure_rank(current)
-            }) {
-                best_seal = Some(absent);
-            }
-            continue;
-        };
-        if !seen.insert(locator) {
-            continue;
-        }
-        let seal = observe_fire_seal(candidate, profile, &readable_bands);
-        if seal.status == "VALID" {
-            return seal;
-        }
-        if best_seal.as_ref().is_none_or(|current| {
-            fire_failure_rank(&seal) > fire_failure_rank(current)
-        }) {
-            best_seal = Some(seal);
-        }
-    }
-    best_seal.unwrap_or_else(|| {
-        unavailable_fire_seal(
-            profile,
-            "wukong-fire-seal-absent",
-            stamp_source.map(str::to_owned),
-        )
-    })
-}
-
-fn observe_fire_seal(
-    fetched: &FetchedStamp,
-    profile: &str,
-    readable_stamp_bands: &[String],
-) -> FireSealObservation {
+fn observe_fire_seal(fetched: &FetchedStamp, profile: &str) -> FireSealObservation {
     let Some(locator) = fetched.fire_seal_locator(profile) else {
         return unavailable_fire_seal(
             profile,
@@ -1127,7 +1083,7 @@ fn observe_fire_seal(
         match read_key_candidate(&key_candidate) {
             Ok(key_line) => match verify_collective_stamp(&parsed, &key_line) {
                 Ok((_, _, _)) => {
-                    if !readable_stamp_bands.iter().any(|band| band == &parsed.stamp_sha) {
+                    if parsed.stamp_sha != fetched.parsed.stamp_sha {
                         return FireSealObservation {
                             profile: profile.to_owned(),
                             status: "INVALID".into(),
@@ -1790,6 +1746,67 @@ struct ParsedStamp {
     licensee: String,
     issued: String,
     product: String,
+}
+
+/// Compare RFC 3339 instants as UTC minutes, seconds, and exact fractions.
+/// Keeping seconds separate orders :60 after :59 but before the next minute.
+fn issued_order_key(value: &str) -> Option<(i64, i64, &str)> {
+    if !matches!(
+        value.as_bytes().get(..19)?,
+        [_, _, _, _, b'-', _, _, b'-', _, _, b'T' | b't', _, _, b':', _, _, b':', _, _]
+    ) {
+        return None;
+    }
+    fn digits(value: &str) -> Option<i64> {
+        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        value.parse().ok()
+    }
+    let year = digits(value.get(..4)?)?;
+    let month = digits(value.get(5..7)?)?;
+    let day = digits(value.get(8..10)?)?;
+    let hour = digits(value.get(11..13)?)?;
+    let minute = digits(value.get(14..16)?)?;
+    let second = digits(value.get(17..19)?)?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = [31, 28 + i64::from(leap), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_index = usize::try_from(month - 1).ok()?;
+    if !(1..=*month_days.get(month_index)?).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let tail = value.get(19..)?;
+    let (fraction, zone) = if let Some(rest) = tail.strip_prefix('.') {
+        let end = rest.find(|ch: char| !ch.is_ascii_digit())?;
+        if end == 0 {
+            return None;
+        }
+        let (fraction, zone) = rest.split_at(end);
+        (fraction.trim_end_matches('0'), zone)
+    } else {
+        ("", tail)
+    };
+    let offset_minutes = match zone.as_bytes() {
+        [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
+            let hours = digits(zone.get(1..3)?)?;
+            let minutes = digits(zone.get(4..6)?)?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            (if *sign == b'+' { 1 } else { -1 }) * (hours * 60 + minutes)
+        }
+        _ => return None,
+    };
+    // Count Gregorian days since year zero, including leap years before this one.
+    let days_before_year = 365 * year + (year + 3) / 4 - (year + 99) / 100 + (year + 399) / 400;
+    let days = days_before_year + month_days[..month_index].iter().sum::<i64>() + day - 1;
+    let utc_minutes = days * 1440 + hour * 60 + minute - offset_minutes;
+    Some((utc_minutes, second, fraction))
 }
 
 fn parse_mgla(bytes: &[u8]) -> Result<ParsedStamp, (String, String)> {
