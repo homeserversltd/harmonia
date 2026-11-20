@@ -5,6 +5,7 @@ This module carries fixed HOMESERVER systemd bytes for the native Transmission V
 ## Boot and mount ordering
 
 `transmissionVPN.service` is wanted by both `vault.mount` and `mnt-nas.mount`, so a systemd start of either mount requests the enabled service. A mount made outside systemd (for example a direct `mount` of `/vault`) runs no start job and pulls in nothing; that path relies on the service being started by its other trigger. Both units order after `vault.mount` and `mnt-nas.mount` and check that `/vault` and `/mnt/nas` are mount points. These directives order and guard service starts but do not pull in either mount. `network-online.target` is wanted and ordered before both units.
+If the stack is tripped (the marker is present in `/run`), a NAS remount skips starting both units until Start clears the marker or the body reboots.
 
 The owner enables the singleton through portal service control; the resulting links are owned by that control and this module does not create them.
 

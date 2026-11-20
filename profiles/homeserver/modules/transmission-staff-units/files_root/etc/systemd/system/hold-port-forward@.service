@@ -5,6 +5,7 @@ After=network-online.target vault.mount mnt-nas.mount transmissionPIA.service tr
 Conflicts=transmissionPIA.service transmission-daemon.service
 ConditionPathIsMountPoint=/vault
 ConditionPathIsMountPoint=/mnt/nas
+ConditionPathExists=!/run/agathodaimon/transmission/tripped
 StartLimitIntervalSec=0
 
 [Service]

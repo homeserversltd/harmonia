@@ -7,6 +7,7 @@ After=network-online.target hold-port-forward@pia.service transmissionPIA.servic
 Conflicts=transmissionPIA.service transmission-daemon.service
 ConditionPathIsMountPoint=/vault
 ConditionPathIsMountPoint=/mnt/nas
+ConditionPathExists=!/run/agathodaimon/transmission/tripped
 PropagatesStopTo=hold-port-forward@pia.service
 StartLimitIntervalSec=0
 
