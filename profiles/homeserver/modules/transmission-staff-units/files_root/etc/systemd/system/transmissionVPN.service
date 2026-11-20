@@ -2,6 +2,7 @@
 Description=Transmission VPN singleton native service
 Wants=network-online.target
 Requires=hold-port-forward@pia.service
+BindsTo=hold-port-forward@pia.service
 After=network-online.target hold-port-forward@pia.service transmissionPIA.service transmission-daemon.service vault.mount mnt-nas.mount
 Conflicts=transmissionPIA.service transmission-daemon.service
 ConditionPathIsMountPoint=/vault

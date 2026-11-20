@@ -5,7 +5,6 @@ After=network-online.target vault.mount mnt-nas.mount transmissionPIA.service tr
 Conflicts=transmissionPIA.service transmission-daemon.service
 ConditionPathIsMountPoint=/vault
 ConditionPathIsMountPoint=/mnt/nas
-Upholds=transmissionVPN.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -16,6 +15,5 @@ StandardInput=data
 StandardInputText={"provider":"%i"}
 ExecStartPre=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/namespace
 ExecStart=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/hold
-Restart=on-failure
-RestartSec=30
+Restart=no
 TimeoutStartSec=180
