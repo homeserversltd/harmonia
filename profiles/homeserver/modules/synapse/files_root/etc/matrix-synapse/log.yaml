@@ -6,16 +6,11 @@ filters:
   context:
     (): synapse.logging.context.LoggingContextFilter
 handlers:
-  file:
-    class: logging.handlers.WatchedFileHandler
-    formatter: precise
-    filters: [context]
-    filename: /var/log/matrix-synapse/homeserver.log
   console:
     class: logging.StreamHandler
     formatter: precise
     filters: [context]
 root:
   level: WARNING
-  handlers: [file, console]
+  handlers: [console]
 disable_existing_loggers: false
