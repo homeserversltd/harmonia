@@ -7,4 +7,4 @@ service:
   grpc_port: 6334
   enable_tls: false
 telemetry_disabled: true
-log_level: INFO
+log_level: WARN
