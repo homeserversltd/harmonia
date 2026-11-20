@@ -1042,7 +1042,7 @@ pub(crate) fn systemctl(
     target_user: Option<&str>,
     timeout_secs: u64,
 ) -> CmdResult {
-    let mut args: Vec<String> = systemctl_scope_args(user, target_user);
+    let mut args = Vec::new();
     match action {
         "unit-present" => {
             args.extend([
@@ -1101,8 +1101,9 @@ pub(crate) fn systemctl(
             }
         }
     }
+    let (program, args) = super::systemctl_read_command(user, target_user, args);
     let result = super::read_only_command_with_timeout(
-        &super::systemctl_program(),
+        &program,
         &args,
         std::time::Duration::from_secs(timeout_secs),
     );
@@ -1133,17 +1134,6 @@ pub(crate) fn unit_file_path(service: &str) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from("/etc/systemd/system").join(path))
-}
-
-fn systemctl_scope_args(user: bool, target_user: Option<&str>) -> Vec<String> {
-    if !user {
-        return Vec::new();
-    }
-    let mut args = vec!["--user".to_string()];
-    if let Some(target_user) = target_user.filter(|value| !value.trim().is_empty()) {
-        args.push(format!("--machine={target_user}@.host"));
-    }
-    args
 }
 
 pub(crate) fn state(

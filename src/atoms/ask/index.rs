@@ -341,6 +341,37 @@ pub(crate) fn account_systemd_state_query(kind: &str, unit: &str, user: &str, ti
     }
 }
 
+fn systemctl_scope_args(user: bool, target_user: Option<&str>) -> Vec<String> {
+    if !user {
+        return Vec::new();
+    }
+    let mut args = vec!["--user".to_string()];
+    if let Some(target_user) = target_user.filter(|value| !value.trim().is_empty()) {
+        args.push(format!("--machine={target_user}@.host"));
+    }
+    args
+}
+
+fn systemctl_read_command(
+    user: bool,
+    target_user: Option<&str>,
+    arguments: Vec<String>,
+) -> (String, Vec<String>) {
+    // Only bypass the login path when an existing account manager can answer.
+    if user && unsafe { libc::geteuid() } == 0 {
+        if let Some(args) = target_user
+            .filter(|target| !target.trim().is_empty())
+            .and_then(|target| account_systemctl_args(target, &arguments).ok())
+        {
+            return ("/usr/bin/setpriv".into(), args);
+        }
+    }
+
+    let mut args = systemctl_scope_args(user, target_user);
+    args.extend(arguments);
+    (systemctl_program(), args)
+}
+
 pub(crate) fn systemd_state_query(
     kind: &str,
     unit: &str,
@@ -349,12 +380,6 @@ pub(crate) fn systemd_state_query(
     timeout_secs: u64,
 ) -> CommandObservation {
     let mut args = Vec::new();
-    if user {
-        args.push("--user".into());
-        if let Some(target) = target_user.filter(|v| !v.trim().is_empty()) {
-            args.push(format!("--machine={target}@.host"));
-        }
-    }
     match kind {
         "is-enabled" | "is-active" => args.extend([kind.into(), unit.into()]),
         "load-state" | "unit-file-state" | "needs-reload" | "main-pid" => {
@@ -374,7 +399,7 @@ pub(crate) fn systemd_state_query(
         _ => {
             return CommandObservation {
                 program: systemctl_program(),
-                args,
+                args: systemctl_scope_args(user, target_user),
                 ok: false,
                 code: None,
                 stdout: String::new(),
@@ -382,12 +407,8 @@ pub(crate) fn systemd_state_query(
             }
         }
     }
-    let result = read_only_command_with_timeout(
-        &systemctl_program(),
-        &args,
-        Duration::from_secs(timeout_secs),
-    );
-    result
+    let (program, args) = systemctl_read_command(user, target_user, args);
+    read_only_command_with_timeout(&program, &args, Duration::from_secs(timeout_secs))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
