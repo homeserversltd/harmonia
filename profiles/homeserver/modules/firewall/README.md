@@ -8,7 +8,7 @@ The ladder:
 - requires the four user-editable host/site files to exist but never overwrites them;
 - converges six product-owned policy files with backups of replaced files;
 - validates nftables, Unbound, Kea, and the nftables unit;
-- sets Kea to restart after process failure with a 10-second delay; it does not wait for network-online, and a Kea process that remains alive but cannot serve DHCP is not restarted by this policy;
+- orders Kea after `systemd-networkd-wait-online.service` and waits up to 60 seconds for `lan0` to come online before starting Kea; it keeps the 10-second restart delay on failure and does not restart a running Kea process that cannot serve DHCP;
 - reloads systemd after file convergence;
 - proves those services and systemd-networkd are active.
 
