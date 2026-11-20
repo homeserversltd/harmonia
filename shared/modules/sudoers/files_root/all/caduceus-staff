@@ -1,5 +1,7 @@
 # The actuator's whole grant. One anchored line for the staff front door; the front door is the enforcer.
 caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/cli.py ^[a-z0-9][a-z0-9/_.-]*( [a-z0-9][a-z0-9/_.-]*)?$
+# An allowed staff crossing writes no journal line and opens no PAM session; the deed is the staff's own hyalos row.
+Defaults!/usr/local/sbin/agathodaimon/cli.py !log_allowed, !pam_session
 caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^seat [a-z0-9][a-z0-9-]{0\,62}$
 caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^census [a-z0-9][a-z0-9-]{0\,62}$
 caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^install [a-z0-9][a-z0-9-]{0\,62}$
