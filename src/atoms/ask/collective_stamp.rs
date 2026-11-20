@@ -1749,7 +1749,8 @@ struct ParsedStamp {
 }
 
 /// Compare RFC 3339 instants as UTC minutes, seconds, and exact fractions.
-/// Keeping seconds separate orders :60 after :59 but before the next minute.
+/// Staff minting uses UTC datetime, which never emits a leap second. Do not
+/// give a signed :60 an order without a leap-second calendar.
 fn issued_order_key(value: &str) -> Option<(i64, i64, &str)> {
     if !matches!(
         value.as_bytes().get(..19)?,
@@ -1775,7 +1776,7 @@ fn issued_order_key(value: &str) -> Option<(i64, i64, &str)> {
     if !(1..=*month_days.get(month_index)?).contains(&day)
         || hour > 23
         || minute > 59
-        || second > 60
+        || second > 59
     {
         return None;
     }
