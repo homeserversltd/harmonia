@@ -16,6 +16,6 @@ handlers:
     formatter: precise
     filters: [context]
 root:
-  level: INFO
+  level: WARNING
   handlers: [file, console]
 disable_existing_loggers: false
