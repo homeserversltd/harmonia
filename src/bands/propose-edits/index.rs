@@ -135,6 +135,28 @@ fn history_command(root: &Path) -> std::process::Command {
     command
 }
 
+fn config_reference_changed_at(
+    manifest: &LadderManifest,
+    source: &Path,
+    target: &Path,
+    reference: &[u8],
+) -> Option<String> {
+    let (root, relative) = config_history_path(manifest, source, target, reference)?;
+    let output = history_command(&root)
+        .args(["log", "-1", "--format=%cI", "--"])
+        .arg(relative)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut lines = std::str::from_utf8(&output.stdout).ok()?.lines();
+    let date = lines.next()?.trim();
+    (!date.is_empty() && !date.contains('\r') && lines.next().is_none()).then(|| date.to_owned())
+}
+
 fn history_git(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     use std::io::Write;
     use std::process::Stdio;
@@ -1109,6 +1131,10 @@ fn refresh_interactables_at_path_with_policy_and_step(
             refreshed.has_run = prior.has_run;
             refreshed.evidence = prior.evidence.clone();
             refreshed.extra = prior.extra.clone();
+        } else if let Some(date) =
+            config_reference_changed_at(manifest, &entry.source, &entry.target, &reference_bytes)
+        {
+            refreshed.extra.insert("reference_changed_at".into(), Value::String(date));
         }
         refreshed.extra.remove("ancestor_sha");
         refreshed.extra.remove("slice");
