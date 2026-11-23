@@ -105,12 +105,17 @@ enum ConfigAncestor {
     Named { oid: String, bytes: Vec<u8> },
 }
 
-fn config_history_path(manifest: &LadderManifest, source: &Path, target: &Path, reference: &[u8]) -> Option<(PathBuf, PathBuf)> {
+fn config_history_module(manifest: &LadderManifest) -> Option<(PathBuf, PathBuf)> {
     let profile_index = manifest.selected_profile_index.as_ref()?;
     let profile = profile_index.parent()?.file_name()?.to_str()?;
     let root = crate::bands::renew_self::engine_source_root().canonicalize().ok()?;
     let module = crate::bands::stage_profile::source_module_path(&root, profile, &manifest.id).ok()?.canonicalize().ok()?;
     if !module.starts_with(&root) { return None; }
+    Some((root, module))
+}
+
+fn config_history_path(manifest: &LadderManifest, source: &Path, target: &Path, reference: &[u8]) -> Option<(PathBuf, PathBuf)> {
+    let (root, module) = config_history_module(manifest)?;
     let path = if let Ok(relative) = source.strip_prefix(&manifest.base_dir) {
         crate::atoms::files::validate_relative_path(relative).ok()?;
         module.join(relative)
@@ -141,7 +146,13 @@ fn config_reference_changed_at(
     target: &Path,
     reference: &[u8],
 ) -> Option<String> {
-    let (root, relative) = config_history_path(manifest, source, target, reference)?;
+    let (root, relative) = config_history_path(manifest, source, target, reference).or_else(|| {
+        let (root, module) = config_history_module(manifest)?;
+        if !module.is_dir() { return None; }
+        let relative = module.strip_prefix(&root).ok()?.to_path_buf();
+        crate::atoms::files::validate_relative_path(&relative).ok()?;
+        Some((root, relative))
+    })?;
     let output = history_command(&root)
         .args(["log", "-1", "--format=%cI", "--"])
         .arg(relative)
