@@ -46,7 +46,6 @@
     "hermes-sway-config",
     "hermes-wayvnc-config",
     "hermes-sway-seat",
-    "hermes-cua-driver-service",
     "hermes-gateway-service",
     "hermes-dashboard-service",
     "qdrant",
