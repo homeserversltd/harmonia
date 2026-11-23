@@ -41,7 +41,6 @@
     "xdg-user-settings",
     "desktop-config-payload",
     "screen-supervisor",
-    "cua-driver",
     "hermes-seat",
     "hermes-agent",
     "hermes-sway-config",
