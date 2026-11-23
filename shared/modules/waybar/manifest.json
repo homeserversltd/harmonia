@@ -25,7 +25,8 @@
     ],
 
     "receipt_schema": "harmonia.hometv.waybar.v1",
-    "meaning": "TV Waybar status service owns its configuration and user service"
+    "meaning": "TV Waybar status service owns its configuration and user service",
+    "unmanaged_operator_seed": ".config/waybar/clock-override.json"
   },
   "ladder": [
     {
