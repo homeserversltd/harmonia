@@ -1,0 +1,32 @@
+{
+  "schema": "caduceus.staff.v1",
+  "kernel": {
+    "fields": [
+      "schema",
+      "intent_id",
+      "transition",
+      "version",
+      "timestamp"
+    ],
+    "required": [
+      "schema",
+      "intent_id",
+      "transition",
+      "version",
+      "timestamp"
+    ]
+  },
+  "payload": {
+    "optional": true,
+    "absent": "empty object (primitive)",
+    "null": "explicit null is read exactly as absent: empty object (primitive)",
+    "unknown_fields_preserved": true
+  },
+  "required": [
+    "schema",
+    "intent_id",
+    "transition",
+    "version",
+    "timestamp"
+  ]
+}

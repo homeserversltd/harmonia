@@ -1,0 +1,21 @@
+{
+  "description": "Harmonia's own schema is key-paired with caduceus/schema.",
+  "authority": {
+    "owner": "harmonia",
+    "path": "schema/index.json"
+  },
+  "seats": {
+    "caduceus.staff.v1": {
+      "file": "schema/caduceus.staff.v1.json",
+      "schema_version": null
+    },
+    "harmonia.module.ladder.v1": {
+      "file": "schema/harmonia.module.ladder.v1.json",
+      "schema_version": null
+    },
+    "intents/": {
+      "folder": "schema/intents",
+      "schema_version": null
+    }
+  }
+}
