@@ -4,6 +4,7 @@ use crate::atoms::r#do::InvocationKey;
 use crate::tools::ladder::ValidatedStep;
 use crate::{CmdResult, OperationOutcome};
 use serde_json::{Map, Value};
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -84,7 +85,8 @@ pub(crate) fn execute_validated_step(step: &ValidatedStep, apply: bool, active_l
         return Ok(result(intent, "Blocked", false, "none", Some("staff-ask-receipt-form-unread"), false, false, None));
     };
     let door = door.to_string_lossy();
-    let timeout = step.args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let timeout = step.args.get("timeout_secs").and_then(Value::as_u64)
+        .filter(|seconds| *seconds != 0).unwrap_or(DEFAULT_TIMEOUT_SECS);
     let (mut id, mut last) = observe(step, &door, intent, "observe", timeout);
     if !last.as_ref().is_some_and(|r| r.ok && r.code == 0) {
         return Ok(result(intent, "Blocked", false, &id, Some("staff-ask-observation-failed"), false, false, last));
@@ -100,16 +102,19 @@ pub(crate) fn execute_validated_step(step: &ValidatedStep, apply: bool, active_l
         return Ok(result(intent, diff, false, &id, Some("staff-ask-act-failed"), false, false, last));
     };
     let argv = vec!["-B".to_string(), door.to_string(), intent.to_string(), json.clone()];
+    let attempted = Cell::new(false);
     let action = comparison::execute_once("staff-ask", || Ok::<_, String>(same),
         |same| if *same { DiffDecision::Empty } else { DiffDecision::Different },
         |authorization, _| {
             let key = invocation.ok_or("invocation-key-missing")?;
+            attempted.set(true);
             authorized_capture(&authorization, key, PYTHON, &argv, None,
                 Duration::from_secs(timeout), None, None)
         });
     let movement = match action {
         Ok(ComparisonRun::Moved { movement, .. }) => movement,
-        _ => return Ok(result(intent, diff, false, &id, Some("staff-ask-act-failed"), false, false, last)),
+        _ => return Ok(result(intent, diff, attempted.get(), &id, Some("staff-ask-act-failed"), false, false,
+            if attempted.get() { None } else { last })),
     };
     last = Some(CmdResult { ok: movement.ok, code: movement.code.unwrap_or(-1),
         stdout: movement.stdout.replace(&json, "[redacted]"),
