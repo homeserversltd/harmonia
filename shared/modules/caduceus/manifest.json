@@ -44,18 +44,13 @@
     },
     {
       "step_id": "caduceus-staff-module-path",
-      "tool": "command",
-      "permutation": "act",
+      "tool": "staff",
+      "permutation": "ask",
       "args": {
-        "program": "/usr/bin/python3",
-        "args": ["-B", "/usr/local/sbin/agathodaimon/cli.py", "python/staff-path", "{\"payload\":{\"args\":[\"--apply\"]}}"],
-        "skip_if_absent": "/usr/local/sbin/agathodaimon/cli.py",
-        "observation": {
-          "program": "/usr/bin/python3",
-          "args": ["-B", "/usr/local/sbin/agathodaimon/cli.py", "python/staff-path", "{\"payload\":{\"args\":[\"--check\"]}}"],
-          "expected_exit_code": 0,
-          "expected_stdout": "/usr/local/sbin"
-        }
+        "intent": "python/staff-path",
+        "observe": {"args": ["--check"]},
+        "act": {"args": ["--apply"]},
+        "converged": {"stdout": "/usr/local/sbin\n"}
       }
     },
     {
