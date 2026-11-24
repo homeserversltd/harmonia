@@ -735,6 +735,7 @@ pub(crate) fn execute_validated_step_with_source(
                 | ("aur", "build-pinned")
                 | ("command", "capture")
                 | ("command", "act")
+                | ("staff", "ask")
                 | ("release-binary", "install")
                 | ("hermes-maintenance", "converge")
                 | ("household-time", "resolve")
@@ -756,6 +757,7 @@ pub(crate) fn execute_validated_step_with_source(
         }
 
         ("ask", "path-exists") => tools::ask::execute_validated_step(step, module_dir),
+        ("staff", "ask") => tools::staff::execute_validated_step(step, software_apply, active_lane, invocation),
         ("command", "capture") | ("command", "act") | ("command", "propose") => {
             tools::command::execute_validated_step(
                 step,

@@ -414,6 +414,26 @@
       ]
     },
     {
+      "name": "staff",
+      "description": "Ask the staff front door to converge a declared intent.",
+      "routine_summonable": false,
+      "permutations": [
+        {
+          "name": "ask",
+          "description": "Observe, compare and act through the staff front door.",
+          "args": [
+            { "name": "intent", "kind": "string", "required": true },
+            { "name": "observe", "kind": "json", "required": true },
+            { "name": "act", "kind": "json", "required": true },
+            { "name": "converged", "kind": "json", "required": true },
+            { "name": "timeout_secs", "kind": "integer", "required": false },
+            { "name": "lane", "kind": "string", "required": false }
+          ],
+          "placement": "ProposeEdits"
+        }
+      ]
+    },
+    {
       "name": "command",
       "description": "Re-export seat for the command atom; every subprocess produces a command receipt.",
       "routine_summonable": false,
