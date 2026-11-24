@@ -48,11 +48,11 @@
       "permutation": "act",
       "args": {
         "program": "/usr/bin/python3",
-        "args": ["/usr/local/sbin/agathodaimon/cli.py", "python", "staff-path", "--apply"],
+        "args": ["-B", "/usr/local/sbin/agathodaimon/cli.py", "python/staff-path", "{\"payload\":{\"args\":[\"--apply\"]}}"],
         "skip_if_absent": "/usr/local/sbin/agathodaimon/cli.py",
         "observation": {
           "program": "/usr/bin/python3",
-          "args": ["/usr/local/sbin/agathodaimon/cli.py", "python", "staff-path", "--check"],
+          "args": ["-B", "/usr/local/sbin/agathodaimon/cli.py", "python/staff-path", "{\"payload\":{\"args\":[\"--check\"]}}"],
           "expected_exit_code": 0,
           "expected_stdout": "/usr/local/sbin"
         }
