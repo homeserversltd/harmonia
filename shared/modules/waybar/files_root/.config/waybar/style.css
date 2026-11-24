@@ -27,8 +27,6 @@ window#waybar {
 #clock,
 #tray,
 #custom-clipboard,
-#custom-power,
-#custom-restart,
 #custom-printer,
 #custom-fetch,
 #custom-drives,
@@ -130,9 +128,7 @@ window#waybar {
 #custom-launcher,
 #custom-printer,
 #custom-fetch,
-#custom-drives,
-#custom-power,
-#custom-restart {
+#custom-drives {
     font-size: 16px;
 }
 
