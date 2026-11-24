@@ -765,10 +765,11 @@ pub(crate) fn execute_routine_child(
             installed["proved_at"] = json!(proved_at);
             discovered["at"] = json!(proved_at);
             let base = crate::atoms::ask::caduceus_door::base_url().map_err(str::to_owned)?;
+            let observe_path = format!("/api/v1/xenia/{id}/observe");
             let post_observation = |payload: &Value| -> Result<bool, String> {
                 let (status, value) = http(
                     "POST",
-                    &format!("{base}/api/v1/xenia/{id}/observe"),
+                    &format!("{base}{observe_path}"),
                     Some(payload),
                     Duration::from_secs(5),
                 )
@@ -776,9 +777,11 @@ pub(crate) fn execute_routine_child(
                 if status >= 500 {
                     return Err("xenia-observe-unreachable".into());
                 }
+                let schema_matches = value.get("schema").and_then(Value::as_str)
+                    == Some("caduceus.xenia.verdict.v1")
+                    || crate::atoms::ask::beam::staff_receipt_matches_path(&value, &observe_path);
                 if (400..500).contains(&status)
-                    || value.get("schema").and_then(Value::as_str)
-                        != Some("caduceus.xenia.verdict.v1")
+                    || !schema_matches
                     || value.get("ok").and_then(Value::as_bool) != Some(true)
                     || value.get("verdict").and_then(Value::as_str) != Some("admissible")
                 {

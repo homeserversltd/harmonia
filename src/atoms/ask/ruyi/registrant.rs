@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 pub(crate) const PERSPECTIVE: &str = "harmonia.ruyi-perspective.v1";
 const REGISTER: &str = "harmonia.ruyi-register.v1";
+const ROSTER_PATH: &str = "/api/v1/ruyi";
 
 /// One event's declaration snapshot. Unknown entry fields remain additive.
 struct DeclaredServices {
@@ -804,8 +805,14 @@ pub(crate) fn gateway_is_local(gateway: Ipv4Addr, row: &Value) -> bool {
         })
 }
 
+fn roster_schema_matches(roster: &Value) -> bool {
+    // An absent schema was already allowed; a present null or foreign id was not.
+    roster.get("schema").is_none_or(|schema| schema.as_str() == Some(ROW_SCHEMA))
+        || crate::atoms::ask::beam::staff_receipt_matches_path(roster, ROSTER_PATH)
+}
+
 fn local_seat_is_local(port: u16, row: &Value) -> bool {
-    let url = format!("http://127.0.0.1:{port}/api/v1/ruyi");
+    let url = format!("http://127.0.0.1:{port}{ROSTER_PATH}");
     // This is a decision-only observation: every door or answer failure
     // becomes false so registration can continue through its other arms.
     let Ok(roster) = get_roster(&url) else {
@@ -815,9 +822,7 @@ fn local_seat_is_local(port: u16, row: &Value) -> bool {
         || roster
             .get("ok")
             .is_some_and(|ok| ok.as_bool() != Some(true))
-        || roster
-            .get("schema")
-            .is_some_and(|schema| schema.as_str() != Some(ROW_SCHEMA))
+        || !roster_schema_matches(&roster)
     {
         return false;
     }
@@ -1355,7 +1360,7 @@ fn exchange(
             }
         }
     };
-    let url = format!("http://{host}:{port}/api/v1/ruyi");
+    let url = format!("http://{host}:{port}{ROSTER_PATH}");
     perspective["self"] = row.clone();
     perspective["written_at"] = json!(now()?);
     // Observe the roster before changing the feed: an unavailable gateway leaves
@@ -1374,10 +1379,7 @@ fn exchange(
     if !roster.is_object() || roster.get("ok").and_then(Value::as_bool) == Some(false) {
         return Ok(receipt("refused", row, Vec::new(), "ruyi-roster-malformed"));
     }
-    if roster
-        .get("schema")
-        .is_some_and(|schema| schema.as_str() != Some(ROW_SCHEMA))
-    {
+    if !roster_schema_matches(&roster) {
         return Ok(receipt(
             "refused",
             row,

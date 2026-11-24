@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -7,6 +8,21 @@ use std::time::Duration;
 pub(crate) const LOCK_SCHEMA: &str = "harmonia.beam-lock.v1";
 pub(crate) const SLOT_SCHEMA: &str = "harmonia.beam-slot.v1";
 pub(crate) const DOOR_SCHEMA: &str = "caduceus.beam.v1";
+const STAFF_RECEIPT_SCHEMA: &str = "caduceus.staff.receipt.v1";
+
+/// A shared receipt's schema identifies its family, not the door that answered.
+pub(crate) fn staff_receipt_matches_path(reply: &Value, requested_path: &str) -> bool {
+    if reply.get("schema").and_then(Value::as_str) != Some(STAFF_RECEIPT_SCHEMA) {
+        return false;
+    }
+    let Some(command) = requested_path.strip_prefix("/api/v1/").filter(|path| !path.is_empty()) else {
+        return false;
+    };
+    let (noun, verb) = command.rsplit_once('/').unwrap_or((command, ""));
+    reply.pointer("/stop/noun").and_then(Value::as_str) == Some(noun)
+        && reply.pointer("/stop/verb").and_then(Value::as_str) == Some(verb)
+}
+
 pub(crate) fn door_url() -> Result<String, &'static str> {
     super::caduceus_door::base_url().map(|base| format!("{base}/api/v1/beam"))
 }
@@ -158,8 +174,10 @@ pub(crate) fn parse_lock_optional(raw: Option<&str>) -> Result<Option<BeamLock>,
     raw.map(parse_lock).transpose()
 }
 pub(crate) fn parse_door(raw: &str) -> Result<BeamDoor, String> {
-    let door = serde_json::from_str(raw).map_err(|_| "beam-door-malformed".to_string())?;
-    validate_door(door)
+    validate_door(decode_door(raw)?)
+}
+fn decode_door(raw: &str) -> Result<BeamDoor, String> {
+    serde_json::from_str(raw).map_err(|_| "beam-door-malformed".to_string())
 }
 pub(crate) fn read_embedded_lock() -> Result<BeamLock, String> {
     parse_lock(include_str!("../../../locks/beam.json"))
@@ -240,7 +258,19 @@ pub(crate) fn fetch_door(url: &str) -> Result<BeamDoor, String> {
     if !result.ok {
         return Err("beam-door-unreachable".into());
     }
-    parse_door(&result.stdout)
+    let raw = &result.stdout;
+    // The explicit beam URL can differ from the default. Bind to its path,
+    // not the default route or any name supplied by the answer.
+    let target = url.split(['?', '#']).next().unwrap_or_default();
+    let target = target.split_once("://").map_or(target, |(_, rest)| rest);
+    if let Some(start) = target.find('/') {
+        if serde_json::from_str(raw)
+            .is_ok_and(|reply| staff_receipt_matches_path(&reply, &target[start..]))
+        {
+            return validate_door_fields(decode_door(raw)?);
+        }
+    }
+    parse_door(raw)
 }
 pub(crate) fn validate_lock(lock: BeamLock) -> Result<BeamLock, String> {
     match &lock {
@@ -272,9 +302,14 @@ pub(crate) fn validate_lock(lock: BeamLock) -> Result<BeamLock, String> {
         _ => Err("beam-lock-malformed".into()),
     }
 }
-pub(crate) fn validate_door(mut door: BeamDoor) -> Result<BeamDoor, String> {
-    if door.schema != DOOR_SCHEMA
-        || !door.ok
+pub(crate) fn validate_door(door: BeamDoor) -> Result<BeamDoor, String> {
+    if door.schema != DOOR_SCHEMA {
+        return Err("beam-door-malformed".into());
+    }
+    validate_door_fields(door)
+}
+fn validate_door_fields(mut door: BeamDoor) -> Result<BeamDoor, String> {
+    if !door.ok
         || door.service != "caduceus"
         || !hex_len(&door.caduceus_sha, 40)
         || !hex_len(&door.env_sha, 64)
