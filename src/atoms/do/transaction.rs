@@ -1,6 +1,4 @@
 //! Profile/update adapters for the durable ritual owner in ritual.rs.
-#[path = "notify.rs"]
-mod notify;
 use crate::Profile;
 use crate::*;
 use std::{
@@ -134,53 +132,6 @@ pub(crate) struct RunCarrier {
 }
 
 pub(crate) type RunCarrierRef = Rc<RefCell<RunCarrier>>;
-
-fn post_update_notifications(profile: &Profile, final_receipt: &serde_json::Value, key: &crate::atoms::r#do::InvocationKey) -> Vec<serde_json::Value> {
-    use crate::atoms::comparison::{ComparisonRun, DiffDecision};
-    if final_receipt.get("converged").and_then(serde_json::Value::as_bool) != Some(true)
-        || !final_receipt.get("promoted").and_then(serde_json::Value::as_array).is_some_and(|values| !values.is_empty()) { return Vec::new(); }
-    let identity = match crate::atoms::ask::ruyi::local_identity() {
-        Ok(identity) => identity,
-        Err(_) => { eprintln!("notify-identity-unavailable"); return Vec::new(); }
-    };
-    let rows = notify::rows(&profile.id, &identity, final_receipt);
-    let override_program = std::env::var("HARMONIA_NOTIFY_STAFF").ok();
-    let (program, args) = match override_program {
-        Some(path) => (path, Vec::new()),
-        None => ("/usr/bin/env".to_string(), vec!["PYTHONPATH=/usr/local/sbin".into(), "/usr/bin/python3".into(), "-m".into(), "agathodaimon.notify".into(), "post".into()]),
-    };
-    rows.into_iter().map(|(kind, row)| {
-        let started = std::time::Instant::now();
-        let input = serde_json::to_vec(&row).unwrap_or_default();
-        let outcome: Result<ComparisonRun<(), crate::atoms::CommandObservation>, String> = crate::atoms::comparison::execute_once(
-            "notify-post", || Ok(()), |_| DiffDecision::Different,
-            |authorization, _| crate::atoms::r#do::run_command::command_with_stdin(&authorization, key, &program, &args, Some(input), std::time::Duration::from_secs(10)),
-        );
-        let result = match outcome {
-            Ok(ComparisonRun::Moved { movement, .. }) => {
-                let receipt: Option<serde_json::Value> = serde_json::from_str(&movement.stdout).ok();
-                let signal = receipt.as_ref().and_then(|v| v.get("firstMissingSignal")).and_then(serde_json::Value::as_str);
-                if movement.ok && receipt.as_ref().and_then(|v| v.get("ok")).and_then(serde_json::Value::as_bool) == Some(true)
-                    && receipt.as_ref().and_then(|v| v.get("converged")).and_then(serde_json::Value::as_bool) != Some(false)
-                    && receipt.as_ref().and_then(|v| v.pointer("/final_receipt/converged")).and_then(serde_json::Value::as_bool) != Some(false) {
-                    let id = receipt.as_ref().and_then(|v| v.get("id")).and_then(serde_json::Value::as_str)
-                        .filter(|id| id.len() <= 200 && !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:./".contains(&b)))
-                        .unwrap_or_else(|| row["id"].as_str().unwrap_or(""));
-                    serde_json::json!({"row":kind,"posted":true,"id":id})
-                } else {
-                    let absent = signal == Some("notify-door-absent") || (movement.code.is_none() && movement.stderr.contains("No such file")) || movement.stderr.contains("No module named agathodaimon.notify");
-                    let signal = if absent { "notify-staff-absent" } else { signal.filter(|s| s.len() <= 96 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')).unwrap_or("notify-staff-failed") };
-                    serde_json::json!({"row":kind,"posted":false,"signal":signal})
-                }
-            }
-            _ => serde_json::json!({"row":kind,"posted":false,"signal":"notify-staff-failed"}),
-        };
-        let posted = result["posted"].as_bool().unwrap_or(false);
-        let signal = result.get("signal").and_then(serde_json::Value::as_str);
-        let _ = crate::deeds::record("run-command", "notify-staff", posted, posted, Some(started.elapsed().as_millis()), None, None, signal, None);
-        result
-    }).collect()
-}
 
 #[derive(Debug)]
 pub(crate) struct RunContext {
@@ -1043,17 +994,12 @@ pub(crate) fn rolling_update_run(
             }
             return Err(error);
         }
-        // Construct and persist the committed closure before projecting the notification.
+        // Construct and persist the committed closure.
         let mut run_receipt = valid_run_receipt(&effective_receipt_dir)
             .ok_or_else(|| "transaction-final-receipt-unavailable".to_string())?;
         let promoted = carrier.borrow().rung_promoted.clone();
         crate::receipts::project_run_alkahest(&mut run_receipt, Some(true), &promoted, &effective_receipt_dir);
         write_json(&effective_receipt_dir.join("run.json"), &run_receipt)?;
-        if let Some(key) = mode.invocation() {
-            *notify_outcome.borrow_mut() = serde_json::json!(post_update_notifications(
-                profile, &run_receipt["final_receipt"], key,
-            ));
-        }
         crate::bands::report_home::emit_run_profile_deed(deed);
         carrier.borrow_mut().terminal_deed_emitted = true;
         match outside_failure {
