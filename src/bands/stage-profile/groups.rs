@@ -35,6 +35,7 @@ fn appliance_config_path() -> PathBuf {
 #[derive(Default)]
 pub(crate) struct DeviceModulePolicy {
     pub(crate) disabled_modules: BTreeSet<String>,
+    pub(crate) safe_modules: BTreeSet<String>,
     pub(crate) syzygy_declaration: Option<SyzygyDeclaration>,
 }
 
@@ -207,9 +208,15 @@ fn read_device_module_policy_at(path: &Path) -> Result<DeviceModulePolicy, Strin
                 .collect()
         })
         .unwrap_or_default();
+    let safe_modules = config.get("harmonia")
+        .and_then(|harmonia| harmonia.get("safe_modules"))
+        .and_then(serde_json::Value::as_array)
+        .map(|modules| modules.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default();
     let syzygy_declaration = parse_syzygy_declaration(&config, path)?;
     Ok(DeviceModulePolicy {
         disabled_modules,
+        safe_modules,
         syzygy_declaration,
     })
 }

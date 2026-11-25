@@ -68,6 +68,7 @@ impl From<&TransactionCensus> for TransactionCensusSnapshot {
 pub(crate) struct Target {
     pub path: PathBuf,
     pub member: String,
+    pub module: String,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +76,7 @@ pub(crate) struct ServiceBinding {
     pub name: String,
     pub user: bool,
     pub target_user: Option<String>,
+    pub module: String,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct UpdatePlan {
@@ -112,6 +114,7 @@ pub(crate) fn derive_plan(
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunCarrier {
+    pub safe_modules: BTreeSet<String>,
     /// This run only: populated by actual pointer movement, never quiet success.
     pub rung_promoted: Vec<String>,
     /// Per-surface pointer preimages and the last rung moved to by this run.
@@ -532,6 +535,7 @@ pub(crate) fn rolling_update_run(
                 crate::atoms::r#do::transaction::RunCarrier::default(),
             ))
         });
+    carrier.borrow_mut().safe_modules = policy.safe_modules.clone();
     let notify_outcome = RefCell::new(if apply { serde_json::json!([]) } else { serde_json::json!("report-only") });
     let run = || {
         carrier.borrow_mut().rung_promoted.clear();

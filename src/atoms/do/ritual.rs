@@ -152,6 +152,7 @@ fn snapshot_with_sudoers_preimages(
         let target = Target {
             path: preimage.path.clone(),
             member: "sudoers".into(),
+            module: "sudoers".into(),
         };
         validate_member_scoped_target(&target.path, &target.member)?;
         if snapshot.roots.iter().any(|root| root.path == target.path) {
@@ -771,6 +772,7 @@ pub(crate) fn seal_projection(
     profile_id: &str,
     profile_identity: &str,
     source_head: &str,
+    safe_modules: &BTreeSet<String>,
 ) -> Result<ProjectionTransaction, String> {
     if plan.gui_member.is_none() && plan.gui_face.is_some() {
         return Err("sealed-projection-gui-missing".into());
@@ -778,15 +780,19 @@ pub(crate) fn seal_projection(
     for t in &plan.targets {
         validate_exact_root(&t.path, &t.member)?;
     }
-    let sudoers_targets = plan
+    let mut rollback_plan = plan.clone();
+    rollback_plan.targets.retain(|target| safe_modules.contains(&target.module));
+    rollback_plan.services.retain(|service| safe_modules.contains(&service.module));
+    let sudoers_targets = rollback_plan
         .targets
         .iter()
         .filter(|target| target.member == "sudoers")
         .collect::<Vec<_>>();
-    let sudoers_step_will_run = plan.member_modules.contains_key("sudoers");
+    let sudoers_step_will_run = safe_modules.contains("sudoers")
+        && plan.member_modules.get("sudoers").is_some_and(|modules| modules.iter().any(|module| module == "sudoers"));
     // Sudoers fragment targets enter this one filesystem snapshot;
     // supplemental sudoers preimages extend it for common rollback.
-    let snapshot = if sudoers_step_will_run || !sudoers_targets.is_empty() {
+    let snapshot = if sudoers_step_will_run {
         let selected_names = sudoers_targets
             .iter()
             .map(|target| {
@@ -813,11 +819,11 @@ pub(crate) fn seal_projection(
             Path::new("/etc/sudoers.d"),
             &selected_names,
         )?;
-        snapshot_with_sudoers_preimages(&plan.targets, &preimages)?
+        snapshot_with_sudoers_preimages(&rollback_plan.targets, &preimages)?
     } else {
-        snapshot(&plan.targets)?
+        snapshot(&rollback_plan.targets)?
     };
-    let services = snapshot_services(plan)?;
+    let services = snapshot_services(&rollback_plan)?;
     let members = if let Some(members) = &plan.pinned_members {
         members.clone()
     } else {

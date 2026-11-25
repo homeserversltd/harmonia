@@ -897,6 +897,16 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
                 "pinned_module_membership={}",
                 pinned_module_membership.join(",")
             );
+            let safe_modules = crate::bands::stage_profile::groups::read_device_module_policy()
+                .map(|policy| policy.safe_modules).unwrap_or_default();
+            let census = profile.modules.iter()
+                .filter(|id| !projection.outside_set(id, true) && projection.modules.contains_key(*id))
+                .map(|id| {
+                    let targets = plan.targets.iter().filter(|target| &target.module == id && safe_modules.contains(id)).count();
+                    let services = plan.services.iter().filter(|service| &service.module == id && safe_modules.contains(id)).count();
+                    format!("{id}:{targets}/{services}")
+                }).collect::<Vec<_>>();
+            println!("census={}", census.join(","));
             Ok(())
         }
         Some("plan-run") => {

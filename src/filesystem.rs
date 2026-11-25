@@ -341,6 +341,7 @@ pub fn apply_transaction(members: Vec<(PathBuf, String, Vec<u8>)>) -> serde_json
             .map(|(path, member, _)| Target {
                 path: path.clone(),
                 member: member.clone(),
+                module: member.clone(),
             })
             .collect(),
         services: Vec::new(),
@@ -355,6 +356,7 @@ pub fn apply_transaction(members: Vec<(PathBuf, String, Vec<u8>)>) -> serde_json
         "filesystem-convergence",
         "filesystem",
         "members",
+        &members.iter().map(|(_, member, _)| member.clone()).collect(),
     ) {
         Ok(value) => value,
         Err(error) => {

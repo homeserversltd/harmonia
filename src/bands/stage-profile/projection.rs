@@ -339,7 +339,7 @@ fn projection_gui_member(face: &str) -> String {
         face.to_ascii_lowercase()
     }
 }
-fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> Result<(), String> {
+fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str, module: &str) -> Result<(), String> {
     // The validated sudoers lane is the sole sudoers.d configuration
     // exception.
     let sudoers_fragment = member == "sudoers"
@@ -361,6 +361,7 @@ fn projection_add_target(out: &mut Vec<Target>, path: PathBuf, member: &str) -> 
     out.push(Target {
         path,
         member: member.into(),
+        module: module.into(),
     });
     Ok(())
 }
@@ -368,6 +369,7 @@ fn projection_add_census_target(
     out: &mut Vec<Target>,
     path: PathBuf,
     member: &str,
+    module: &str,
     emit_diagnostics: bool,
 ) -> Result<(), String> {
     if matches!(
@@ -379,7 +381,7 @@ fn projection_add_census_target(
         }
         return Ok(());
     }
-    projection_add_target(out, path, member)
+    projection_add_target(out, path, member, module)
 }
 fn projection_add_service(
     out: &mut Vec<ServiceBinding>,
@@ -387,6 +389,7 @@ fn projection_add_service(
     user: bool,
     target_user: Option<String>,
     member: &str,
+    module: &str,
 ) {
     if !out
         .iter()
@@ -396,6 +399,7 @@ fn projection_add_service(
             name,
             user,
             target_user,
+            module: module.into(),
         });
     }
 }
@@ -504,7 +508,7 @@ fn projection_derive_plan_inner(
             };
             for name in files {
                 let path = Path::new("/etc/sudoers.d").join(name);
-                projection_add_target(&mut targets, path, "sudoers")?;
+                projection_add_target(&mut targets, path, "sudoers", module_id)?;
             }
         }
         let is_gui = face
@@ -521,20 +525,20 @@ fn projection_derive_plan_inner(
                 continue;
             };
             if let Some(p) = projection_text(args, "install_bin") {
-                projection_add_census_target(&mut targets, p.into(), member, emit_diagnostics)?;
+                projection_add_census_target(&mut targets, p.into(), member, module_id, emit_diagnostics)?;
                 record_module(member, module_id);
             }
             if let Some(a) = args.get("managed_files").and_then(Value::as_array) {
                 for x in a {
                     if let Some(p) = projection_value_path(x, "path") {
-                        projection_add_census_target(&mut targets, p, member, emit_diagnostics)?;
+                        projection_add_census_target(&mut targets, p, member, module_id, emit_diagnostics)?;
                         record_module(member, module_id);
                     }
                 }
             }
 
             if let Some(name) = projection_text(args, "service") {
-                projection_add_service(&mut services, name, false, None, member);
+                projection_add_service(&mut services, name, false, None, member, module_id);
                 record_module(member, module_id);
             }
         }
@@ -557,6 +561,7 @@ fn projection_derive_plan_inner(
                         &mut targets,
                         p.into(),
                         staff_member,
+                        module_id,
                         emit_diagnostics,
                     )?;
                     record_module(staff_member, module_id);
@@ -591,6 +596,7 @@ fn projection_derive_plan_inner(
                         &mut targets,
                         tr.join(n),
                         staff_member,
+                        module_id,
                         emit_diagnostics,
                     )?;
                     record_module(staff_member, module_id);
@@ -607,6 +613,7 @@ fn projection_derive_plan_inner(
                             &mut targets,
                             p,
                             gui_member.as_deref().unwrap_or(""),
+                            module_id,
                             emit_diagnostics,
                         )?;
                         record_module(gui_member.as_deref().unwrap_or(""), module_id);
@@ -623,6 +630,7 @@ fn projection_derive_plan_inner(
                         user,
                         target_user,
                         gui_member.as_deref().unwrap_or(""),
+                        module_id,
                     );
                     record_module(gui_member.as_deref().unwrap_or(""), module_id);
                 }
@@ -650,6 +658,7 @@ fn projection_derive_plan_inner(
                         &mut targets,
                         p,
                         gui_member.as_deref().unwrap_or(""),
+                        module_id,
                         emit_diagnostics,
                     )?;
                     record_module(gui_member.as_deref().unwrap_or(""), module_id);
@@ -664,6 +673,7 @@ fn projection_derive_plan_inner(
                         name.into(),
                         user,
                         if user { Some("owner".into()) } else { None },
+                        module_id,
                         module_id,
                     );
                     record_module(module_id, module_id);
