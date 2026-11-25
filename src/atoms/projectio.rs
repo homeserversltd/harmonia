@@ -9,6 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Name and metadata acts use Compare's known-good witness.
+fn check_act_path(path: &Path) -> std::io::Result<()> {
+    if path.components().any(|part| part == std::path::Component::ParentDir) {
+        return Err(std::io::Error::other(format!("projectio-path-dotdot-refused {}", path.display())));
+    }
+    Ok(())
+}
+
 fn act_mismatch(act: &str, path: &Path) -> std::io::Error {
     std::io::Error::other(format!("projectio-readback-{act}-mismatch {}", path.display()))
 }
@@ -17,6 +24,7 @@ pub(crate) fn act_mode(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
     path: &Path, mode: u32,
 ) -> std::io::Result<()> {
+    check_act_path(path)?;
     let before = fs::symlink_metadata(path)?;
     if before.file_type().is_symlink() {
         return Err(std::io::Error::other(format!("projectio-mode-symlink-refused {}", path.display())));
@@ -34,6 +42,7 @@ pub(crate) fn act_owner(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
     path: &Path, uid: libc::uid_t, gid: libc::gid_t,
 ) -> std::io::Result<()> {
+    check_act_path(path)?;
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
@@ -53,6 +62,8 @@ pub(crate) fn act_rename(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
     from: &Path, to: &Path, scratch_from: bool,
 ) -> std::io::Result<()> {
+    check_act_path(from)?;
+    check_act_path(to)?;
     fs::rename(from, to)?;
     let to_readback = fs::symlink_metadata(to);
     let from_readback = fs::symlink_metadata(from);
@@ -68,6 +79,7 @@ pub(crate) fn act_remove(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
     path: &Path, scratch: bool,
 ) -> std::io::Result<()> {
+    check_act_path(path)?;
     fs::remove_file(path)?;
     let readback = fs::symlink_metadata(path);
     let matches = matches!(readback, Err(ref e) if e.kind() == std::io::ErrorKind::NotFound);
@@ -79,6 +91,7 @@ pub(crate) fn act_remove(
 pub(crate) fn act_make_dir(
     _authorization: &crate::atoms::comparison::ActionAuthorization, path: &Path,
 ) -> std::io::Result<()> {
+    check_act_path(path)?;
     let mut missing = Vec::new();
     for candidate in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
         match fs::symlink_metadata(candidate) {
@@ -91,6 +104,114 @@ pub(crate) fn act_make_dir(
     let matches = fs::metadata(path).is_ok_and(|after| after.is_dir());
     for directory in missing { crate::atoms::touch::record_lane(&directory, "known-good"); }
     if !matches { return Err(act_mismatch("make-dir", path)); }
+    Ok(())
+}
+
+// The seated link act: scratch staging and ownership, then promotion.
+pub(crate) fn act_link_stage(
+    _authorization: &crate::atoms::comparison::ActionAuthorization, source: &Path, candidate: &Path,
+) -> std::io::Result<()> {
+    check_act_path(source)?;
+    check_act_path(candidate)?;
+    std::os::unix::fs::symlink(source, candidate)?;
+    if !fs::read_link(candidate).is_ok_and(|actual| actual == source) {
+        return Err(act_mismatch("link", candidate));
+    }
+    Ok(())
+}
+
+pub(crate) fn act_scratch_owner(
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    path: &Path, uid: libc::uid_t, gid: libc::gid_t,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    check_act_path(path)?;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let _before = fs::symlink_metadata(path)?;
+    if unsafe { libc::lchown(c.as_ptr(), uid, gid) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if !fs::symlink_metadata(path).is_ok_and(|after|
+        (uid == !0 || after.uid() == uid) && (gid == !0 || after.gid() == gid)) {
+        return Err(act_mismatch("owner", path));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum LinkPromotion { Rename, Exchange, NoReplace }
+
+fn renameat2_raw(candidate: &Path, target: &Path, flags: libc::c_uint) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let left = std::ffi::CString::new(candidate.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let right = std::ffi::CString::new(target.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    #[cfg(target_os = "linux")]
+    let rc = unsafe { libc::renameat2(libc::AT_FDCWD, left.as_ptr(), libc::AT_FDCWD, right.as_ptr(), flags) };
+    #[cfg(not(target_os = "linux"))]
+    let rc = { let _ = (left, right, flags); -1 };
+    if rc != 0 { return Err(std::io::Error::last_os_error()); }
+    Ok(())
+}
+
+pub(crate) fn act_link_promote(
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    source: &Path, candidate: &Path, target: &Path, how: LinkPromotion,
+) -> std::io::Result<()> {
+    check_act_path(source)?;
+    check_act_path(candidate)?;
+    check_act_path(target)?;
+    match how {
+        LinkPromotion::Rename => fs::rename(candidate, target)?,
+        LinkPromotion::Exchange => renameat2_raw(candidate, target, libc::RENAME_EXCHANGE)?,
+        LinkPromotion::NoReplace => renameat2_raw(candidate, target, libc::RENAME_NOREPLACE)?,
+    }
+    let matches = fs::read_link(target).is_ok_and(|actual| actual == source);
+    crate::atoms::touch::record_lane(target, "known-good");
+    if !matches { return Err(act_mismatch("link", target)); }
+    Ok(())
+}
+
+pub(crate) fn act_exchange_back(
+    _authorization: &crate::atoms::comparison::ActionAuthorization, candidate: &Path, target: &Path,
+) -> std::io::Result<()> {
+    check_act_path(candidate)?;
+    check_act_path(target)?;
+    renameat2_raw(candidate, target, libc::RENAME_EXCHANGE)?;
+    let matches = fs::symlink_metadata(candidate).is_ok() && fs::symlink_metadata(target).is_ok();
+    crate::atoms::touch::record_lane(target, "known-good");
+    if !matches { return Err(act_mismatch("link", target)); }
+    Ok(())
+}
+
+// The seated remove-tree act, including empty directories and scratch names.
+#[derive(Clone, Copy)]
+pub(crate) enum RemoveTree { Empty, Tree }
+
+pub(crate) fn act_remove_tree(
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    path: &Path, how: RemoveTree, scratch: bool,
+) -> std::io::Result<()> {
+    check_act_path(path)?;
+    let result = match how {
+        RemoveTree::Empty => fs::remove_dir(path),
+        RemoveTree::Tree => (|| {
+            let m = fs::symlink_metadata(path)?;
+            if m.is_dir() && !m.file_type().is_symlink() { fs::remove_dir_all(path) }
+            else { fs::remove_file(path) }
+        })(),
+    };
+    if let Err(error) = result {
+        if matches!(how, RemoveTree::Tree) && !scratch {
+            crate::atoms::touch::record_lane(path, "known-good");
+        }
+        return Err(error);
+    }
+    let matches = matches!(fs::symlink_metadata(path), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound);
+    if !scratch { crate::atoms::touch::record_lane(path, "known-good"); }
+    if !matches { return Err(act_mismatch("remove-tree", path)); }
     Ok(())
 }
 

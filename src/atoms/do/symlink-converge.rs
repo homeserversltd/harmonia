@@ -39,20 +39,16 @@ pub(crate) fn stage(
             ".{name}.harmonia-symlink-converge-{}-{attempt}",
             std::process::id()
         ));
-        match std::os::unix::fs::symlink(source, &candidate) {
+        match crate::atoms::projectio::act_link_stage(a, source, &candidate) {
             Ok(()) => {
                 if uid.is_some() || gid.is_some() {
-                    if let Err(error) = crate::atoms::r#do::change_owner::change(
-                        a,
-                        i,
-                        &crate::atoms::r#do::change_owner::Plan {
-                            path: candidate.clone(),
-                            uid,
-                            gid,
-                            no_follow: true,
-                        },
-                    ) {
-                        let _ = remove_file(a, i, &candidate);
+                    let owner = CString::new(candidate.as_os_str().as_bytes())
+                        .map_err(|_| "change-owner-path-nul".to_string())
+                        .and_then(|_| crate::atoms::projectio::act_scratch_owner(
+                            a, &candidate, uid.unwrap_or(!0), gid.unwrap_or(!0),
+                        ).map_err(|e| format!("change-owner-failed: {e}")));
+                    if let Err(error) = owner {
+                        let _ = remove_scratch_file(a, i, &candidate);
                         return Err(error);
                     }
                 }
@@ -70,75 +66,35 @@ pub(crate) fn stage(
     }
     Err("symlink-converge-stage-name-exhausted".into())
 }
-fn renameat2(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    left: &Path,
-    right: &Path,
-    flags: libc::c_uint,
-    message: &str,
-) -> Result<(), String> {
-    let l = CString::new(left.as_os_str().as_bytes())
+fn check_rename_paths(left: &Path, right: &Path) -> Result<(), String> {
+    let _l = CString::new(left.as_os_str().as_bytes())
         .map_err(|_| "symlink-converge-rename-path-invalid".to_string())?;
-    let r = CString::new(right.as_os_str().as_bytes())
+    let _r = CString::new(right.as_os_str().as_bytes())
         .map_err(|_| "symlink-converge-rename-path-invalid".to_string())?;
-    #[cfg(target_os = "linux")]
-    let rc = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            l.as_ptr(),
-            libc::AT_FDCWD,
-            r.as_ptr(),
-            flags,
-        )
-    };
-    #[cfg(not(target_os = "linux"))]
-    let rc = -1;
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    receipt(
-        a,
-        i,
-        format!("{message} {} {}", left.display(), right.display()),
-    )
-}
-pub(crate) fn exchange(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    left: &Path,
-    right: &Path,
-) -> Result<(), String> {
-    renameat2(a, i, left, right, libc::RENAME_EXCHANGE, "exchanged").map_err(|error| {
-        format!(
-            "symlink-converge-exchange-failed {}: {error}",
-            right.display()
-        )
-    })
-}
-pub(crate) fn rename_noreplace(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    left: &Path,
-    right: &Path,
-) -> Result<(), String> {
-    renameat2(a, i, left, right, libc::RENAME_NOREPLACE, "promoted")
-        .map_err(|error| format!("symlink-converge-create-raced {}: {error}", right.display()))
+    Ok(())
 }
 pub(crate) fn remove_file(
     a: &ActionAuthorization,
     i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
-    fs::remove_file(path).map_err(|e| e.to_string())?;
+    crate::atoms::projectio::act_remove(a, path, false).map_err(|e| e.to_string())?;
     receipt(a, i, format!("removed file {}", path.display()))
+}
+pub(crate) fn remove_scratch_file(a: &ActionAuthorization, i: &InvocationKey, path: &Path) -> Result<(), String> {
+    crate::atoms::projectio::act_remove(a, path, true).map_err(|e| e.to_string())?;
+    receipt(a, i, format!("removed file {}", path.display()))
+}
+pub(crate) fn remove_scratch_dir(a: &ActionAuthorization, i: &InvocationKey, path: &Path) -> Result<(), String> {
+    crate::atoms::projectio::act_remove_tree(a, path, crate::atoms::projectio::RemoveTree::Empty, true).map_err(|e| e.to_string())?;
+    receipt(a, i, format!("removed directory {}", path.display()))
 }
 pub(crate) fn remove_dir(
     a: &ActionAuthorization,
     i: &InvocationKey,
     path: &Path,
 ) -> Result<(), String> {
-    fs::remove_dir(path).map_err(|e| e.to_string())?;
+    crate::atoms::projectio::act_remove_tree(a, path, crate::atoms::projectio::RemoveTree::Empty, false).map_err(|e| e.to_string())?;
     receipt(a, i, format!("removed directory {}", path.display()))
 }
 pub(crate) fn sync_parent(
@@ -156,11 +112,19 @@ fn promote_staged_symlink(
     invocation: &crate::atoms::r#do::InvocationKey,
     candidate: &Path,
     target: &Path,
+    source: &Path,
     before: &SymlinkPathIdentity,
 ) -> Result<(), String> {
+    use crate::atoms::projectio::{self, LinkPromotion};
+    let forward = |how, message: &str| {
+        check_rename_paths(candidate, target)
+            .and_then(|_| projectio::act_link_promote(authorization, source, candidate, target, how).map_err(|e| e.to_string()))
+            .and_then(|_| receipt(authorization, invocation, format!("{message} {} {}", candidate.display(), target.display())))
+    };
     if before.kind == "absent" {
-        if let Err(error) = rename_noreplace(authorization, invocation, candidate, target) {
-            let _ = crate::atoms::r#do::symlink_converge::remove_file(
+        if let Err(error) = forward(LinkPromotion::NoReplace, "promoted")
+            .map_err(|error| format!("symlink-converge-create-raced {}: {error}", target.display())) {
+            let _ = crate::atoms::r#do::symlink_converge::remove_scratch_file(
                 authorization,
                 invocation,
                 candidate,
@@ -170,9 +134,10 @@ fn promote_staged_symlink(
         return Ok(());
     }
 
-    if let Err(error) = exchange(authorization, invocation, candidate, target) {
+    if let Err(error) = forward(LinkPromotion::Exchange, "exchanged")
+        .map_err(|error| format!("symlink-converge-exchange-failed {}: {error}", target.display())) {
         let _ =
-            crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, candidate);
+            crate::atoms::r#do::symlink_converge::remove_scratch_file(authorization, invocation, candidate);
         return Err(error);
     }
     let exchanged = crate::atoms::files::observe_symlink_path(candidate);
@@ -182,9 +147,12 @@ fn promote_staged_symlink(
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(false);
     if !prior_matches || !directory_still_empty {
-        let rollback = exchange(authorization, invocation, candidate, target);
+        let rollback = check_rename_paths(candidate, target)
+            .and_then(|_| projectio::act_exchange_back(authorization, candidate, target).map_err(|e| e.to_string()))
+            .and_then(|_| receipt(authorization, invocation, format!("exchanged {} {}", candidate.display(), target.display())))
+            .map_err(|error| format!("symlink-converge-exchange-failed {}: {error}", target.display()));
         if rollback.is_ok() {
-            let _ = crate::atoms::r#do::symlink_converge::remove_file(
+            let _ = crate::atoms::r#do::symlink_converge::remove_scratch_file(
                 authorization,
                 invocation,
                 candidate,
@@ -197,9 +165,9 @@ fn promote_staged_symlink(
     }
 
     let cleanup = if before.kind == "directory" {
-        crate::atoms::r#do::symlink_converge::remove_dir(authorization, invocation, candidate)
+        crate::atoms::r#do::symlink_converge::remove_scratch_dir(authorization, invocation, candidate)
     } else {
-        crate::atoms::r#do::symlink_converge::remove_file(authorization, invocation, candidate)
+        crate::atoms::r#do::symlink_converge::remove_scratch_file(authorization, invocation, candidate)
     };
     cleanup.map_err(|error| {
         format!(
@@ -808,7 +776,7 @@ fn symlink_converge_action(
     ) {
         Ok(identity) => identity,
         Err(blocker) => {
-            let _ = crate::atoms::r#do::symlink_converge::remove_file(
+            let _ = crate::atoms::r#do::symlink_converge::remove_scratch_file(
                 authorization,
                 invocation,
                 &candidate,
@@ -817,7 +785,7 @@ fn symlink_converge_action(
         }
     };
     if source_pre_promote != source_before {
-        let _ = crate::atoms::r#do::symlink_converge::remove_file(
+        let _ = crate::atoms::r#do::symlink_converge::remove_scratch_file(
             authorization,
             invocation,
             &candidate,
@@ -835,6 +803,7 @@ fn symlink_converge_action(
         invocation,
         &candidate,
         &request.target,
+        &request.source,
         &before,
     ) {
         match crate::atoms::files::observe_symlink_path(&request.target) {

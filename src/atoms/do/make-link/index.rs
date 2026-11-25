@@ -16,37 +16,20 @@ pub(crate) struct Outcome {
 }
 
 #[cfg(unix)]
-fn exchange(left: &Path, right: &Path) -> Result<(), String> {
+fn checked_exchange_paths(left: &Path, right: &Path) -> Result<(), String> {
     use std::ffi::CString;
     let l = CString::new(left.as_os_str().as_encoded_bytes())
         .map_err(|_| "make-link-invalid-path".to_string())?;
     let r = CString::new(right.as_os_str().as_encoded_bytes())
         .map_err(|_| "make-link-invalid-path".to_string())?;
     #[cfg(target_os = "linux")]
-    {
-        let rc = unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                l.as_ptr(),
-                libc::AT_FDCWD,
-                r.as_ptr(),
-                libc::RENAME_EXCHANGE,
-            )
-        };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error().to_string())
-        }
-    }
+    { let _ = (l, r); Ok(()) }
     #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (l, r);
-        Err("make-link-exchange-unsupported".into())
-    }
+    { let _ = (l, r); Err("make-link-exchange-unsupported".into()) }
 }
 #[cfg(unix)]
 pub(crate) fn converge(
+    authorization: &ActionAuthorization,
     source: &Path,
     link: &Path,
     policy: CollisionPolicy,
@@ -96,41 +79,42 @@ pub(crate) fn converge(
     }
     let n = link.file_name().and_then(|v| v.to_str()).unwrap_or("link");
     let c = parent.join(format!(".{n}.make-link-{}", std::process::id()));
-    let _ = fs::remove_file(&c);
-    std::os::unix::fs::symlink(source, &c).map_err(|e| format!("make-link-stage-failed: {e}"))?;
+    use crate::atoms::projectio::{self, LinkPromotion, RemoveTree};
+    let _ = projectio::act_remove(authorization, &c, true);
+    projectio::act_link_stage(authorization, source, &c).map_err(|e| format!("make-link-stage-failed: {e}"))?;
     if let (Some(u), Some(g)) = (uid, gid) {
         use std::ffi::CString;
-        let cc = CString::new(c.as_os_str().as_encoded_bytes())
+        let _cc = CString::new(c.as_os_str().as_encoded_bytes())
             .map_err(|_| "make-link-invalid-path".to_string())?;
-        if unsafe { libc::lchown(cc.as_ptr(), u, g) } != 0 {
-            let _ = fs::remove_file(&c);
-            return Err(std::io::Error::last_os_error().to_string());
+        if let Err(error) = projectio::act_scratch_owner(authorization, &c, u, g) {
+            let _ = projectio::act_remove(authorization, &c, true);
+            return Err(error.to_string());
         }
     }
     let promoted = if before == "absent" {
         if fs::symlink_metadata(link).is_ok() {
-            let _ = fs::remove_file(&c);
+            let _ = projectio::act_remove(authorization, &c, true);
             return Err("make-link-target-raced".into());
         }
-        fs::rename(&c, link).map_err(|e| e.to_string())
+        projectio::act_link_promote(authorization, source, &c, link, LinkPromotion::Rename).map_err(|e| e.to_string())
     } else {
-        exchange(&c, link)
+        checked_exchange_paths(&c, link).and_then(|_| projectio::act_link_promote(authorization, source, &c, link, LinkPromotion::Exchange).map_err(|e| e.to_string()))
     };
     if let Err(e) = promoted {
-        let _ = fs::remove_file(&c);
+        let _ = projectio::act_remove(authorization, &c, true);
         return Err(format!("make-link-promote-failed: {e}"));
     }
     if std::env::var_os("HARMONIA_MAKE_LINK_FAIL_AFTER_ACTION").is_some() {
         let rb = if before == "absent" {
-            fs::remove_file(link).map_err(|e| e.to_string())
+            projectio::act_remove(authorization, link, false).map_err(|e| e.to_string())
         } else {
-            exchange(&c, link)
+            checked_exchange_paths(&c, link).and_then(|_| projectio::act_exchange_back(authorization, &c, link).map_err(|e| e.to_string()))
         };
         if rb.is_ok() {
             let cleanup = if before == "directory" {
-                fs::remove_dir(&c)
+                projectio::act_remove_tree(authorization, &c, RemoveTree::Empty, true)
             } else {
-                fs::remove_file(&c)
+                projectio::act_remove(authorization, &c, true)
             };
             let _ = cleanup;
         }
@@ -141,9 +125,9 @@ pub(crate) fn converge(
     }
     if before != "absent" {
         (if before == "directory" {
-            fs::remove_dir(&c)
+            projectio::act_remove_tree(authorization, &c, RemoveTree::Empty, true)
         } else {
-            fs::remove_file(&c)
+            projectio::act_remove(authorization, &c, true)
         })
         .map_err(|e| format!("make-link-cleanup-failed: {e}"))?;
     }
@@ -154,6 +138,7 @@ pub(crate) fn converge(
 }
 #[cfg(not(unix))]
 pub(crate) fn converge(
+    _: &ActionAuthorization,
     _: &Path,
     _: &Path,
     _: CollisionPolicy,
@@ -165,12 +150,12 @@ pub(crate) fn converge(
 
 #[cfg(unix)]
 pub(crate) fn symlink(
-    _authorization: &ActionAuthorization,
+    authorization: &ActionAuthorization,
     _invocation: &InvocationKey,
     target: &Path,
     link: &Path,
 ) -> Result<(), String> {
-    converge(target, link, CollisionPolicy::Refuse, None, None).map(|_| ())
+    converge(authorization, target, link, CollisionPolicy::Refuse, None, None).map(|_| ())
 }
 #[cfg(not(unix))]
 pub(crate) fn symlink(

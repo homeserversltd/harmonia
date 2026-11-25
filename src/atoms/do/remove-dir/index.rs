@@ -182,18 +182,14 @@ pub(crate) fn remove_authorized(
     invocation: &InvocationKey,
     root: &Path,
 ) -> Result<(), String> {
-    remove(root)?;
+    remove(authorization, root)?;
     let _ = (authorization, invocation);
     Ok(())
 }
 
-pub(crate) fn remove(root: &Path) -> Result<(), String> {
-    let m = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
-    if m.is_dir() && !m.file_type().is_symlink() {
-        fs::remove_dir_all(root).map_err(|e| e.to_string())
-    } else {
-        fs::remove_file(root).map_err(|e| e.to_string())
-    }
+pub(crate) fn remove(authorization: &ActionAuthorization, root: &Path) -> Result<(), String> {
+    crate::atoms::projectio::act_remove_tree(authorization, root, crate::atoms::projectio::RemoveTree::Tree, false)
+        .map_err(|e| e.to_string())
 }
 fn restore_node(base: &Path, n: &Node) -> Result<(), String> {
     use std::os::unix::ffi::OsStringExt;
@@ -289,7 +285,9 @@ pub(crate) fn restore(base: &Path, image: &Image) -> Result<(), String> {
         }
         Ok(())
     }
-    walk(base, &image.root)
+    walk(base, &image.root)?;
+    crate::atoms::touch::record_lane(base, "known-good");
+    Ok(())
 }
 
 pub(crate) fn exact(a: &Image, b: &Image) -> bool {
@@ -315,14 +313,14 @@ pub(crate) fn replace_authorized(
     };
     let result = (|| {
         if old.is_some() {
-            remove(root)?;
+            remove(a, root)?;
         }
         restore(root, replacement)
     })();
     if let Err(original) = result {
         let rollback = (|| {
             if fs::symlink_metadata(root).is_ok() {
-                remove(root)?;
+                remove(a, root)?;
             }
             if let Some(image) = old.as_ref() {
                 restore(root, image)?;
@@ -349,7 +347,7 @@ pub(crate) fn operate(
         return Err("remove-dir-path-absent".into());
     }
     let image = capture(root)?;
-    remove(root)?;
+    remove(a, root)?;
     if let Some(x) = restore_image {
         restore(root, x)?
     };
