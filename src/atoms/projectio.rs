@@ -1129,8 +1129,12 @@ pub(crate) fn act_strike(
         target, desired_bytes: bytes, mode, uid, gid, backup_path: &backup,
         witness: KnownGoodWitness(auth),
     }, Some(file_identity(&metadata)), Some((&original_bytes, &metadata)));
-    match attempt.result {
-        Ok(receipt) => { remove_engine_state_backup(&backup)?; Ok(receipt) }
+    let outcome = attempt.result.and_then(|receipt| {
+        remove_engine_state_backup(&backup)?;
+        Ok(receipt)
+    });
+    match outcome {
+        Ok(receipt) => Ok(receipt),
         Err(error) => match restore_existing_engine_state(
             target, &backup, &original_bytes, &metadata, attempt.target_identity,
             attempt.backup_created, attempt.target_replaced,
