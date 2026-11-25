@@ -158,7 +158,26 @@ pub(crate) fn authorize_shadow() -> Result<(), String> {
         }
     })?;
     if let Some(snapshot) = snapshot {
-        match build_shadows(&snapshot) {
+        let result = (|| {
+            let run_id = crate::receipts::active_run_id().ok_or_else(|| "rollback-shadow-record-failed: run id absent".to_string())?;
+            let roots = snapshot.roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>();
+            crate::ledger::rollback_begin(&run_id, &roots)?;
+            if let Err(mut error) = build_shadows(&snapshot) {
+                if let Err(cleanup) = crate::ledger::rollback_delete(&run_id) {
+                    error.push_str(&format!("; rollback-shadow-cleanup-failed run_id={run_id}: {cleanup}"));
+                }
+                return Err(error);
+            }
+            if let Err(mut error) = crate::ledger::rollback_mark(&run_id, "held") {
+                if let Err(cleanup) = remove_shadow_roots(&roots) { error.push_str(&format!("; {cleanup}")); }
+                if let Err(cleanup) = crate::ledger::rollback_delete(&run_id) {
+                    error.push_str(&format!("; rollback-shadow-cleanup-failed run_id={run_id}: {cleanup}"));
+                }
+                return Err(error);
+            }
+            Ok(())
+        })();
+        match result {
             Ok(()) => SHADOW.with(|state| *state.borrow_mut() = ShadowState::Built(snapshot, true)),
             Err(error) => {
                 SHADOW.with(|state| *state.borrow_mut() = ShadowState::Refused(error.clone()));
@@ -170,21 +189,54 @@ pub(crate) fn authorize_shadow() -> Result<(), String> {
 }
 
 pub(crate) fn shadow_not_owed() {
-    SHADOW.with(|state| if let ShadowState::Built(_, owed) = &mut *state.borrow_mut() { *owed = false; });
+    SHADOW.with(|state| if let ShadowState::Built(_, owed) = &mut *state.borrow_mut() {
+        *owed = false;
+        let result = crate::receipts::active_run_id().ok_or_else(|| "rollback-shadow-record-failed: run id absent".to_string())
+            .and_then(|id| crate::ledger::rollback_mark(&id, "closing"));
+        if let Err(error) = result { eprintln!("rollback-shadow-mark-failed: {error}"); }
+    });
+}
+
+pub(crate) fn remove_shadow_roots(roots: &[PathBuf]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for root in roots {
+        for building in [false, true] {
+            match shadow_name(root, building) {
+                Ok(path) => if let Err(error) = rm(root, &path) {
+                    errors.push(format!("rollback-shadow-cleanup-failed {}: {error}", path.display()));
+                },
+                Err(error) => errors.push(format!("rollback-shadow-cleanup-failed {}: {error}", root.display())),
+            }
+        }
+    }
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+}
+
+pub(crate) fn recover_dead_shadow() -> Result<(), String> {
+    let Some(press) = crate::ledger::rollback_read()? else { return Ok(()); };
+    let live = super::convergence_lock::engine_run_lock_pid_is_live(press.pid)
+        .map_err(|error| format!("rollback-shadow-cleanup-failed pid={}: {error}", press.pid))?;
+    let ticks = crate::atoms::attest::convergence_receipts::process_start_ticks(press.pid);
+    if live && (press.start_ticks.is_none() || ticks.is_none() || press.start_ticks == ticks) { return Ok(()); }
+    match press.state.as_str() {
+        "held" => Err(format!("rollback-recovery-owed run_id={}", press.run_id)),
+        "building" | "closing" => {
+            remove_shadow_roots(&press.roots)?;
+            crate::ledger::rollback_delete(&press.run_id)
+                .map_err(|error| format!("rollback-shadow-cleanup-failed run_id={}: {error}", press.run_id))
+        },
+        other => Err(format!("rollback-shadow-cleanup-failed run_id={}: invalid state {other}", press.run_id)),
+    }
 }
 
 pub(crate) fn close_shadow() -> Result<(), String> {
     let old = SHADOW.with(|state| std::mem::replace(&mut *state.borrow_mut(), ShadowState::Idle));
     if let ShadowState::Built(snapshot, false) = old {
-        let mut errors = Vec::new();
-        for root in snapshot.roots {
-            for building in [false, true] {
-                match shadow_name(&root.path, building).and_then(|path| rm(&root.path, &path)) {
-                    Ok(()) => {}, Err(error) => errors.push(error),
-                }
-            }
-        }
-        if !errors.is_empty() { return Err(errors.join("; ")); }
+        let run_id = crate::receipts::active_run_id().ok_or_else(|| "rollback-shadow-record-failed: run id absent".to_string())?;
+        crate::ledger::rollback_mark(&run_id, "closing")?;
+        let roots = snapshot.roots.into_iter().map(|root| root.path).collect::<Vec<_>>();
+        remove_shadow_roots(&roots)?;
+        crate::ledger::rollback_delete(&run_id)?;
     }
     Ok(())
 }

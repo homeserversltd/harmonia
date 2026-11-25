@@ -730,6 +730,65 @@ pub(crate) fn has_unmatched_proposals() -> Result<bool, String> {
     connection.query_row(sql, [], |row| row.get(0)).map_err(database_error)
 }
 
+pub(crate) struct RollbackPress {
+    pub(crate) run_id: String,
+    pub(crate) pid: u32,
+    pub(crate) start_ticks: Option<u64>,
+    pub(crate) state: String,
+    pub(crate) roots: Vec<PathBuf>,
+}
+
+pub(crate) fn rollback_begin(run_id: &str, roots: &[PathBuf]) -> Result<(), String> {
+    with_proposal_transaction(|connection| {
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS rollback_press (run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, start_ticks INTEGER, state TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS rollback_root (run_id TEXT NOT NULL, path BLOB NOT NULL, PRIMARY KEY(run_id,path));"
+        ).map_err(database_error)?;
+        let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM rollback_press)", [], |row| row.get(0)).map_err(database_error)?;
+        if present { return Err("rollback-shadow-record-present".into()); }
+        connection.execute("INSERT INTO rollback_press(run_id,pid,start_ticks,state) VALUES (?1,?2,?3,'building')",
+            params![run_id, std::process::id(), crate::atoms::attest::convergence_receipts::current_process_start_ticks()]).map_err(database_error)?;
+        for path in roots {
+            connection.execute("INSERT INTO rollback_root(run_id,path) VALUES (?1,?2)", params![run_id,path.as_os_str().as_bytes()]).map_err(database_error)?;
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn rollback_mark(run_id: &str, state: &str) -> Result<(), String> {
+    with_proposal_transaction(|connection| {
+        let changed = connection.execute("UPDATE rollback_press SET state=?1 WHERE run_id=?2", params![state,run_id]).map_err(database_error)?;
+        if changed != 1 { return Err("harmonia-state-database-failed: rollback press row absent".into()); }
+        Ok(())
+    })
+}
+
+pub(crate) fn rollback_delete(run_id: &str) -> Result<(), String> {
+    with_proposal_transaction(|connection| {
+        connection.execute("DELETE FROM rollback_root WHERE run_id=?1", [run_id]).map_err(database_error)?;
+        connection.execute("DELETE FROM rollback_press WHERE run_id=?1", [run_id]).map_err(database_error)?;
+        Ok(())
+    })
+}
+
+pub(crate) fn rollback_read() -> Result<Option<RollbackPress>, String> {
+    use std::os::unix::ffi::OsStringExt;
+    let Some(connection) = reader()? else { return Ok(None); };
+    let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='rollback_press')", [], |row| row.get(0)).map_err(database_error)?;
+    if !exists { return Ok(None); }
+    connection.prepare("SELECT run_id,pid,start_ticks,state FROM rollback_press LIMIT 0").map_err(database_error)?;
+    let row: Option<(String,u32,Option<u64>,String)> = connection.query_row(
+        "SELECT run_id,pid,start_ticks,state FROM rollback_press LIMIT 1", [],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    ).optional().map_err(database_error)?;
+    let Some((run_id,pid,start_ticks,state)) = row else { return Ok(None); };
+    let mut query = connection.prepare("SELECT path FROM rollback_root WHERE run_id=?1 ORDER BY path").map_err(database_error)?;
+    let roots = query.query_map([&run_id], |row| row.get::<_,Vec<u8>>(0)).map_err(database_error)?
+        .map(|path| path.map(|bytes| PathBuf::from(std::ffi::OsString::from_vec(bytes))))
+        .collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    Ok(Some(RollbackPress { run_id,pid,start_ticks,state,roots }))
+}
+
 pub(crate) fn with_proposal_transaction<T>(operation: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
     let mut connection = writer()?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;

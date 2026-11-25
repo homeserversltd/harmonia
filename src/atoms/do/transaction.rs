@@ -468,6 +468,12 @@ pub(crate) fn rolling_update_run(
             return Err(reason);
         }
     };
+    if apply {
+        if let Err(reason) = crate::atoms::r#do::ritual::recover_dead_shadow() {
+            write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
+            return Err(reason);
+        }
+    }
     let mut effective_profile = profile.clone();
     if let Some(declaration) = policy.syzygy_declaration.clone() {
         effective_profile.syzygy_declaration = Some(declaration);
@@ -1083,7 +1089,8 @@ pub(crate) fn rolling_update_run(
     };
     let mut run_result = run();
     if let Err(error) = crate::atoms::r#do::ritual::close_shadow() {
-        eprintln!("rollback-shadow-close-failed: {error}");
+        let close_error = format!("rollback-shadow-close-failed: {error}");
+        run_result = Err(match run_result { Ok(()) => close_error, Err(prior) => format!("{prior}; {close_error}") });
     }
     let mut lifecycle_receipt_ready =
         run_receipt_matches_invocation(&effective_receipt_dir, profile, apply);

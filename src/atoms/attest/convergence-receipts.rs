@@ -115,7 +115,7 @@ fn validated_receipt_root(root: &Path, error_prefix: &str) -> Result<(PathBuf, u
     }
 }
 
-fn process_start_ticks(pid: u32) -> Option<u64> {
+pub(crate) fn process_start_ticks(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let close = stat.rfind(')')?;
     stat[close + 1..]

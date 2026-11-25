@@ -50,7 +50,7 @@ fn engine_run_lock_pid(path: &Path) -> Result<Option<u32>, String> {
 }
 
 #[cfg(unix)]
-fn engine_run_lock_pid_is_live(pid: u32) -> Result<bool, String> {
+pub(crate) fn engine_run_lock_pid_is_live(pid: u32) -> Result<bool, String> {
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
         return Ok(true);
@@ -66,7 +66,7 @@ fn engine_run_lock_pid_is_live(pid: u32) -> Result<bool, String> {
 }
 
 #[cfg(not(unix))]
-fn engine_run_lock_pid_is_live(_pid: u32) -> Result<bool, String> {
+pub(crate) fn engine_run_lock_pid_is_live(_pid: u32) -> Result<bool, String> {
     Err("engine-run-lock-pid-probe-unsupported".to_string())
 }
 
