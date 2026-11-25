@@ -657,6 +657,9 @@ pub(crate) fn run_profile_engine_with_projection(
                             )?;
                         }
                     }
+                    if let Some(transaction) = value.sealed_projection.as_ref() {
+                        crate::atoms::r#do::ritual::arm_shadow(&transaction.sealed.snapshot);
+                    }
                 }
             }
             crate::bands::Band::Compare => {
@@ -894,6 +897,9 @@ pub(crate) fn run_profile_engine_with_projection(
             remember_halt_origins(&halted_modules, &mut halt_origins, band);
         }
         if let Err(error) = band_result {
+            if matches!(band, crate::bands::Band::StageProfile) && !device_module_policy.safe_modules.is_empty() {
+                crate::atoms::r#do::ritual::refuse_shadow(error.clone());
+            }
             let named = format!("band={band:?} failure={error}");
             state.ok = false;
             state.outside_module_failure = true;

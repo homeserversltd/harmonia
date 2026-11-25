@@ -1277,6 +1277,14 @@ fn target_pattern_files(
             if source_shelf_excluded(exclude, relative) {
                 continue;
             }
+            let basename = entry.file_name();
+            let basename = basename.to_string_lossy();
+            if basename.starts_with('.')
+                && (basename.ends_with(".harmonia-shadow")
+                    || basename.ends_with(".harmonia-shadow.building"))
+            {
+                continue;
+            }
             let kind = entry.file_type().map_err(|error| error.to_string())?;
             if kind.is_dir() {
                 walk(root, &path, pattern, exclude, out)?;

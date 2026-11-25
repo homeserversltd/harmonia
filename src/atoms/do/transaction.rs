@@ -710,6 +710,7 @@ pub(crate) fn rolling_update_run(
                 }
             };
             let (receipt, rollback_error) = if skip_rollback {
+                crate::atoms::r#do::ritual::shadow_not_owed();
                 (crate::atoms::r#do::transaction::transaction_receipt(&txn), None)
             } else if let Some(key) = mode.invocation() {
                 let rollback = crate::atoms::r#do::transaction::rollback_projection(&mut txn, key);
@@ -893,7 +894,10 @@ pub(crate) fn rolling_update_run(
             return Err(return_error);
         }
         let receipt = match crate::atoms::r#do::transaction::commit_projection(&mut txn) {
-            Ok(receipt) => receipt,
+            Ok(receipt) => {
+                crate::atoms::r#do::ritual::shadow_not_owed();
+                receipt
+            },
             Err(error) => {
                 let failure_receipt = write_transaction_failure_run_receipt(
                     &effective_receipt_dir,
@@ -1078,6 +1082,9 @@ pub(crate) fn rolling_update_run(
         }
     };
     let mut run_result = run();
+    if let Err(error) = crate::atoms::r#do::ritual::close_shadow() {
+        eprintln!("rollback-shadow-close-failed: {error}");
+    }
     let mut lifecycle_receipt_ready =
         run_receipt_matches_invocation(&effective_receipt_dir, profile, apply);
     if let Some(run_error) = run_result.as_ref().err().cloned() {

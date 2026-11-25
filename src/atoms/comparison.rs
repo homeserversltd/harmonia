@@ -62,11 +62,14 @@ where
         CeilingComparison::Empty
         | CeilingComparison::CeilingExceeded
         | CeilingComparison::Incomparable => Ok(CeilingComparisonRun::Current { observation, comparison }),
-        CeilingComparison::DifferentAndWithinCeiling => Ok(CeilingComparisonRun::Moved {
-            movement: act(ActionAuthorization(()), CeilingAuthorization(()), &observation)?,
-            observation,
-            comparison,
-        }),
+        CeilingComparison::DifferentAndWithinCeiling => {
+            crate::atoms::r#do::ritual::authorize_shadow().map_err(Error::from)?;
+            Ok(CeilingComparisonRun::Moved {
+                movement: act(ActionAuthorization(()), CeilingAuthorization(()), &observation)?,
+                observation,
+                comparison,
+            })
+        },
     }
 }
 
@@ -85,6 +88,7 @@ where Error: From<String> {
     if !matches!(comparison, CeilingComparison::DifferentAndWithinCeiling) {
         return Ok(CeilingComparisonRun::Current { observation: before, comparison });
     }
+    crate::atoms::r#do::ritual::authorize_shadow().map_err(Error::from)?;
     let movement = act(ActionAuthorization(()), CeilingAuthorization(()), &before)?;
     if !require_convergence {
         return Ok(CeilingComparisonRun::Moved { observation: before, comparison, movement });
@@ -191,11 +195,14 @@ where
             observation,
             decision: DiffDecision::Empty,
         }),
-        DiffDecision::Different => Ok(ComparisonRun::Moved {
-            movement: act(ActionAuthorization(()), &observation)?,
-            observation,
-            decision: DiffDecision::Different,
-        }),
+        DiffDecision::Different => {
+            crate::atoms::r#do::ritual::authorize_shadow().map_err(Error::from)?;
+            Ok(ComparisonRun::Moved {
+                movement: act(ActionAuthorization(()), &observation)?,
+                observation,
+                decision: DiffDecision::Different,
+            })
+        },
     }
 }
 
@@ -218,6 +225,7 @@ where
             decision: DiffDecision::Empty,
         }),
         DiffDecision::Different => {
+            crate::atoms::r#do::ritual::authorize_shadow().map_err(Error::from)?;
             let movement = act(ActionAuthorization(()), &observed_before)?;
             let observed_after = observe()?;
             if compare(&observed_after) == DiffDecision::Different {
@@ -249,6 +257,7 @@ where
             decision: DiffDecision::Empty,
         }),
         DiffDecision::Different => {
+            crate::atoms::r#do::ritual::authorize_shadow().map_err(Error::from)?;
             let movement = act(ActionAuthorization(()), &observed_before)?;
             if !require_convergence {
                 return Ok(ComparisonRun::Moved {

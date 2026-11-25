@@ -1958,6 +1958,9 @@ where
         )
     })?;
 
+    if !candidates.is_empty() {
+        crate::atoms::r#do::ritual::authorize_shadow()?;
+    }
     let mut removed = Vec::new();
     for index in 0..candidates.len() {
         let unlink_result = {
