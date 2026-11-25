@@ -1,7 +1,7 @@
 {
   "schema": "harmonia.touch.v1",
   "schema_version": "1.0.0",
-  "role": "The touch declaration combines the shared base and the selected profile, and its base profile when it extends one, as the union of their allows and nevers. Paths and path patterns are absolute and begin with /; no .. segment or placeholder is permitted. A path containing a .. segment is undeclared regardless of its match; other paths are lexically normalized before matching. * matches one path segment and ** matches any depth. Never beats allow. A path with no matching allow row is undeclared, and an operation with no matching operation row is undeclared like a path. The shared/touch.json instance must include never; profile instances may omit it. The config.json owner-accept lane, when declared, writes one key at a time under HouseholdConfigLock.",
+  "role": "The touch declaration combines the shared base and the selected profile, and its base profile when it extends one, as the union of their allows and nevers. Paths and path patterns are absolute and begin with /; no .. segment or placeholder is permitted. A path containing a .. segment is undeclared regardless of its match; other paths are lexically normalized before matching. * matches one path segment and ** matches any depth. Never beats allow. A path with no matching allow row is undeclared, and an operation with no matching operation row is undeclared like a path. The package-upgrade operation means the package manager upgrading the installed set and its match is * only. A command operation matches the program as the step names it, an absolute path or a bare name. The shared/touch.json instance must include never; profile instances may omit it. The config.json owner-accept lane, when declared, writes one key at a time under HouseholdConfigLock.",
   "authority": {
     "owner": "harmonia",
     "path": "schema/harmonia.touch.v1.json",
@@ -95,6 +95,7 @@
           "type": "string",
           "enum": [
             "package",
+            "package-upgrade",
             "command",
             "unit"
           ]

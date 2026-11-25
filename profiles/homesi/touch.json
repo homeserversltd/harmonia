@@ -594,6 +594,14 @@
   "operations": [
     {
       "kind": "command",
+      "match": "systemctl",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "model-shelf names it bare; the step should name /usr/bin/systemctl"
+    },
+    {
+      "kind": "command",
       "match": "/usr/bin/systemctl",
       "lanes": [
         "interactable"

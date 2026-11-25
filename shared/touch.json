@@ -254,6 +254,13 @@
       ]
     },
     {
+      "path": "/usr/local/sbin/agathodaimon/**",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "Kept current by the sbin source-shelf-sweep step."
+    },
+    {
       "path": "/var/lib/caduceus/venv",
       "lanes": [
         "known-good"
@@ -368,12 +375,12 @@
       ]
     },
     {
-      "kind": "package",
+      "kind": "package-upgrade",
       "match": "*",
       "lanes": [
         "known-good"
       ],
-      "note": "The system-packages upgrade selects the installed package set dynamically; this pattern cannot distinguish upgrade from install or removal."
+      "note": "The system-packages upgrade selects the installed package set dynamically."
     }
   ]
 }
