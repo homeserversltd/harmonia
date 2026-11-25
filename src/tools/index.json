@@ -530,7 +530,7 @@
             }
           ],
           "placement": "ProposeEdits",
-          "touches": {"paths": [], "operations": [{"kind": "command", "arg": "program"}]}
+          "touches": {"paths": [{"fixed": "/var/lib/harmonia/harmonia.sqlite3"}], "operations": [{"kind": "command", "arg": "program"}]}
         },
         {
           "name": "act",
@@ -597,7 +597,7 @@
             {"name": "receipt_name", "kind": "string", "required": true}
           ],
           "placement": "ProposeEdits",
-          "touches": {"paths": [{"arg": "target"}], "operations": []}
+          "touches": {"paths": [{"arg": "target"}, {"fixed": "/var/lib/harmonia/harmonia.sqlite3"}], "operations": []}
         },
         {
           "name": "managed-files",
@@ -946,7 +946,7 @@
             }
           ],
           "placement": "BackfillFiles",
-          "touches": {"paths": [{"arg": "target_shelf", "tree": true}, {"arg": "provenance_state"}], "operations": []}
+          "touches": {"paths": [{"arg": "target_shelf", "tree": true}, {"arg": "provenance_state"}, {"arg": "launcher_target_root", "tree": true}], "operations": []}
         },
         {
           "name": "executable-present",
@@ -1208,7 +1208,7 @@
             }
           ],
           "placement": "RestartServices",
-          "touches": {"paths": [{"arg": "state_path"}], "operations": []}
+          "touches": {"paths": [{"arg": "state_path"}], "operations": [{"kind": "command", "fixed": "/usr/local/bin/caduceus"}, {"kind": "command", "fixed": "/usr/bin/env"}]}
         },
         {
           "name": "set-timezone",
@@ -1236,7 +1236,7 @@
             }
           ],
           "placement": "RestartServices",
-          "touches": {"paths": [{"arg": "state_path"}], "operations": []}
+          "touches": {"paths": [{"arg": "state_path"}], "operations": [{"kind": "command", "fixed": "/usr/local/bin/caduceus"}, {"kind": "command", "fixed": "/usr/bin/env"}]}
         },
         {
           "name": "watch-and-set",
@@ -1264,7 +1264,7 @@
             }
           ],
           "placement": "RestartServices",
-          "touches": {"paths": [{"arg": "state_path"}], "operations": []}
+          "touches": {"paths": [{"arg": "state_path"}], "operations": [{"kind": "command", "fixed": "/usr/local/bin/caduceus"}, {"kind": "command", "fixed": "/usr/bin/env"}]}
         }
       ]
     },
@@ -1314,7 +1314,7 @@
             }
           ],
           "placement": "InstallPackages",
-          "touches": {"paths": [], "operations": [{"kind": "package", "arg": "package"}, {"kind": "command", "fixed": "pacman-key"}]}
+          "touches": {"paths": [], "operations": [{"kind": "package", "arg": "package"}, {"kind": "command", "fixed": "/usr/bin/pacman-key"}]}
         }
       ]
     },
@@ -1795,7 +1795,7 @@
             }
           ],
           "placement": "RatchetBinaries",
-          "touches": {"paths": [{"arg": "destination"}], "operations": [{"kind": "command", "fixed": "cargo"}]}
+          "touches": {"paths": [{"arg": "destination"}], "operations": [{"kind": "command", "fixed": "cargo"}, {"kind": "command", "fixed": "/usr/bin/curl"}]}
         }
       ]
     },
