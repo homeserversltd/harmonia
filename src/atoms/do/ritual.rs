@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    os::fd::AsRawFd,
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt, PermissionsExt}},
     path::{Path, PathBuf},
 };
 
@@ -172,19 +172,54 @@ fn snapshot_with_sudoers_preimages(
     }
     Ok(snapshot)
 }
-fn rm(p: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(p) {
-        Ok(m) => {
-            if m.is_dir() && !m.file_type().is_symlink() {
-                fs::remove_dir_all(p)
-            } else {
-                fs::remove_file(p)
-            }
+// Resolve every parent component through a directory descriptor without following links.
+fn open_dir_nofollow(path: &Path) -> Result<OwnedFd, String> {
+    let slash = std::ffi::CString::new("/").unwrap();
+    let fd = unsafe { libc::open(slash.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 { return Err(std::io::Error::last_os_error().to_string()); }
+    let mut dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {},
+            std::path::Component::Normal(name) => {
+                let name = std::ffi::CString::new(name.as_bytes()).map_err(|e| e.to_string())?;
+                let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+                if fd < 0 { return Err(std::io::Error::last_os_error().to_string()); }
+                dir = unsafe { OwnedFd::from_raw_fd(fd) };
+            },
+            _ => return Err("invalid directory component".into()),
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
     }
-    .map_err(|e| e.to_string())
+    Ok(dir)
+}
+
+fn stat_at(dir: &OwnedFd, name: &std::ffi::CStr) -> Result<libc::stat, std::io::Error> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let rc = unsafe { libc::fstatat(dir.as_raw_fd(), name.as_ptr(), st.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
+    if rc != 0 { return Err(std::io::Error::last_os_error()); }
+    Ok(unsafe { st.assume_init() })
+}
+
+fn rm(p: &Path) -> Result<(), String> {
+    let parent = p.parent().ok_or_else(|| "parent missing".to_string())?;
+    let dir = match open_dir_nofollow(parent) {
+        Ok(dir) => dir,
+        Err(error) => return Err(error),
+    };
+    let name = std::ffi::CString::new(p.file_name().ok_or_else(|| "name missing".to_string())?.as_bytes()).map_err(|e| e.to_string())?;
+    let st = match stat_at(&dir, &name) {
+        Ok(st) => st,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+        // std's remove_dir_all uses a descriptor-relative no-follow walk.
+        let anchored = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd())).join(p.file_name().unwrap());
+        fs::remove_dir_all(anchored).map_err(|e| e.to_string())
+    } else {
+        let rc = unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) };
+        if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error().to_string()) }
+    }
 }
 fn restore_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
     let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -207,7 +242,9 @@ fn restore_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
 }
 fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String> {
     let mut current = Vec::new();
-    capture_tree(root, &mut current)?;
+    let mut capture_errors = Vec::new();
+    capture_tree_for_verify(root, &mut current, &mut capture_errors);
+    if !capture_errors.is_empty() { return Err(capture_errors.join("; ")); }
     let mut wanted = expected
         .iter()
         .filter(|node| node.path == root || node.path.starts_with(root.join("")))
@@ -233,6 +270,20 @@ fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String>
 struct SnapshotVerification {
     errors: Vec<String>,
     verified_roots: BTreeSet<PathBuf>,
+}
+
+// O_PATH pins a non-followed inode without opening a device or FIFO for reading.
+fn read_regular_nofollow(path: &Path) -> Result<Vec<u8>, String> {
+    let pinned = fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path).map_err(|e| e.to_string())?;
+    if !pinned.metadata().map_err(|e| e.to_string())?.file_type().is_file() {
+        return Err(format!("not a regular file: {}", path.display()));
+    }
+    let mut file = fs::File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd())).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
 }
 
 fn capture_tree_for_verify(p: &Path, nodes: &mut Vec<Node>, errors: &mut Vec<String>) {
@@ -269,17 +320,17 @@ fn capture_tree_for_verify(p: &Path, nodes: &mut Vec<Node>, errors: &mut Vec<Str
         }
     } else if m.is_dir() {
         Kind::Dir
-    } else {
-        match fs::read(p) {
+    } else if m.file_type().is_file() {
+        match read_regular_nofollow(p) {
             Ok(bytes) => Kind::File(bytes),
             Err(error) => {
-                errors.push(format!(
-                    "rollback-capture-failed {}: {error}",
-                    p.display()
-                ));
+                errors.push(format!("rollback-capture-failed {}: {error}", p.display()));
                 return;
             }
         }
+    } else {
+        // The full mode records the special kind without opening it.
+        Kind::File(Vec::new())
     };
     let is_dir = matches!(kind, Kind::Dir);
     nodes.push(Node {
@@ -560,12 +611,7 @@ fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key
                 Err(e) => return Err(e.to_string()),
             };
             if !metadata.file_type().is_file() { return Ok(None); }
-            let mut file = fs::OpenOptions::new().read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&path).map_err(|e| e.to_string())?;
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
-            Ok(Some(bytes))
+            Ok::<_, String>(read_regular_nofollow(&path).ok())
         },
         |observed| if observed.as_deref() == Some(desired.as_slice()) { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
         |authorization, _| crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(&authorization, key, &path, &desired, mode, None, None),
@@ -606,17 +652,9 @@ fn restore_missing(root: &Path, path: &Path) -> Result<(), String> {
     rm(path)
 }
 
-// Unlike rm, a changed-kind directory is removed one entry at a time.
+// Changed-kind removals use the same anchored descriptor path as missing roots.
 fn remove_changed_kind(path: &Path) -> Result<(), String> {
-    let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if m.file_type().is_dir() {
-        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
-            remove_changed_kind(&entry.map_err(|e| e.to_string())?.path())?;
-        }
-        fs::remove_dir(path).map_err(|e| e.to_string())
-    } else {
-        fs::remove_file(path).map_err(|e| e.to_string())
-    }
+    rm(path)
 }
 
 fn restore_link(node: &Node, target: &Path) -> Result<(), String> {
@@ -643,24 +681,54 @@ fn restore_link(node: &Node, target: &Path) -> Result<(), String> {
     result
 }
 
-fn collect_extras(path: &Path, named: &BTreeSet<PathBuf>, extras: &mut Vec<PathBuf>, failures: &mut BTreeMap<PathBuf, String>) {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+fn collect_extra_dir(dir: &OwnedFd, path: &Path, named: &BTreeSet<PathBuf>, extras: &mut Vec<PathBuf>, failures: &mut BTreeMap<PathBuf, String>) {
+    // The proc fd refers to this pinned directory, not to a re-resolved tree path.
+    let entries = match fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd())) {
+        Ok(entries) => entries,
         Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); return; }
     };
-    if metadata.file_type().is_dir() {
-        match fs::read_dir(path) {
-            Ok(entries) => for entry in entries {
-                match entry {
-                    Ok(e) => collect_extras(&e.path(), named, extras, failures),
-                    Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); }
-                }
-            },
-            Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); }
+    for entry in entries {
+        let entry = match entry { Ok(e) => e, Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); continue; } };
+        let name_os = entry.file_name();
+        let child = path.join(&name_os);
+        let name = match std::ffi::CString::new(name_os.as_bytes()) { Ok(n) => n, Err(e) => { failures.insert(child, e.to_string()); continue; } };
+        let st = match stat_at(dir, &name) { Ok(st) => st, Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue, Err(e) => { failures.insert(child, e.to_string()); continue; } };
+        if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+            if fd < 0 { failures.insert(child.clone(), std::io::Error::last_os_error().to_string()); }
+            else {
+                let child_dir = unsafe { OwnedFd::from_raw_fd(fd) };
+                collect_extra_dir(&child_dir, &child, named, extras, failures);
+            }
         }
+        if !named.contains(&child) { extras.push(child); }
     }
-    if !named.contains(path) { extras.push(path.to_path_buf()); }
+}
+
+fn collect_extras(path: &Path, named: &BTreeSet<PathBuf>, extras: &mut Vec<PathBuf>, failures: &mut BTreeMap<PathBuf, String>) {
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_dir() => match open_dir_nofollow(path) {
+            Ok(dir) => collect_extra_dir(&dir, path, named, extras, failures),
+            Err(e) => { failures.insert(path.to_path_buf(), e); },
+        },
+        Ok(_) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); },
+    }
+}
+
+fn remove_extra(path: &Path) -> Result<(), String> {
+    let parent = path.parent().ok_or_else(|| "parent missing".to_string())?;
+    let dir = open_dir_nofollow(parent)?;
+    let name = std::ffi::CString::new(path.file_name().ok_or_else(|| "name missing".to_string())?.as_bytes()).map_err(|e| e.to_string())?;
+    let st = match stat_at(&dir, &name) {
+        Ok(st) => st,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let flags = if st.st_mode & libc::S_IFMT == libc::S_IFDIR { libc::AT_REMOVEDIR } else { 0 };
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } == 0 { Ok(()) }
+    else { Err(std::io::Error::last_os_error().to_string()) }
 }
 
 pub(crate) fn restore(
@@ -670,6 +738,7 @@ pub(crate) fn restore(
 ) -> Result<(), String> {
     let mut changed = Vec::new();
     let mut errors = Vec::new();
+    let mut observations = Vec::new();
     let mut restored_roots = BTreeSet::new();
     for root in &s.roots {
         if let Err(error) = validate_member_scoped_target(&root.path, &root.member) {
@@ -683,7 +752,7 @@ pub(crate) fn restore(
             Ok(true) => {}
             Ok(false) => changed.push(root.path.clone()),
             Err(error) => {
-                errors.push(format!("rollback-observe-failed {}: {error}", root.path.display()));
+                observations.push((root.path.clone(), format!("rollback-observe-failed {}: {error}", root.path.display())));
                 changed.push(root.path.clone());
             },
         }
@@ -696,6 +765,12 @@ pub(crate) fn restore(
     });
     for root in changed.iter().rev() {
         let mut root_failed = false;
+        if let Some(parent) = root.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                root_failed = true;
+                errors.push(format!("rollback-restore-failed {}: {error}", parent.display()));
+            }
+        }
         let mut nodes = s.nodes.iter().filter(|n| n.path == *root || n.path.starts_with(root)).collect::<Vec<_>>();
         nodes.sort_by_key(|n| n.path.components().count());
         let named = nodes.iter().filter(|n| !matches!(n.kind, Kind::Missing)).map(|n| n.path.clone()).collect::<BTreeSet<_>>();
@@ -755,11 +830,7 @@ pub(crate) fn restore(
             if named.contains(root) { collect_extras(root, &named, &mut extras, &mut failures); }
             extras.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
             for path in extras {
-                let result = restore_parent_is_safe(root, &path).and_then(|_| {
-                    let m = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-                    if m.file_type().is_dir() { fs::remove_dir(&path) } else { fs::remove_file(&path) }.map_err(|e| e.to_string())
-                });
-                if let Err(error) = result { failures.insert(path, error); }
+                if let Err(error) = remove_extra(&path) { failures.insert(path, error); }
             }
             if pass == 1 {
                 for (path, error) in failures {
@@ -790,6 +861,9 @@ pub(crate) fn restore(
         errors.push(format!("rollback-test-mutation-failed: {error}"));
     }
     let verification = verify(s);
+    for (root, error) in observations {
+        if !verification.verified_roots.contains(&root) { errors.push(error); }
+    }
     errors.extend(
         verification
             .errors
