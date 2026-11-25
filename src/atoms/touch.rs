@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const TOUCH_SCHEMA: &str = "harmonia.touch.v1";
-const HOOKED: [&str; 15] = [
+const HOOKED: [&str; 16] = [
     "file_write",
     "atomic_write_bytes_with_ownership",
     "update_existing_xenia",
@@ -23,6 +23,7 @@ const HOOKED: [&str; 15] = [
     "make-link",
     "symlink-converge",
     "remove-dir",
+    "copy-file",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

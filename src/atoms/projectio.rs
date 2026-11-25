@@ -231,6 +231,31 @@ pub(crate) fn engine_state_witness() -> EngineStateWitness {
     EngineStateWitness(())
 }
 
+struct KnownGoodWitness<'a>(&'a crate::atoms::comparison::ActionAuthorization);
+enum ProjectionWitness<'a> {
+    Owner(OwnerAcceptance),
+    Engine(EngineStateWitness),
+    KnownGood(KnownGoodWitness<'a>),
+}
+impl ProjectionWitness<'_> {
+    fn lane(&self) -> &'static str {
+        match self {
+            Self::Owner(_) => "interactable",
+            Self::Engine(_) => "self",
+            Self::KnownGood(witness) => { let _ = witness.0; "known-good" },
+        }
+    }
+}
+impl<'a> From<OwnerAcceptance> for ProjectionWitness<'a> {
+    fn from(witness: OwnerAcceptance) -> Self { Self::Owner(witness) }
+}
+impl<'a> From<EngineStateWitness> for ProjectionWitness<'a> {
+    fn from(witness: EngineStateWitness) -> Self { Self::Engine(witness) }
+}
+impl<'a> From<KnownGoodWitness<'a>> for ProjectionWitness<'a> {
+    fn from(witness: KnownGoodWitness<'a>) -> Self { Self::KnownGood(witness) }
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Receipt {
     pub struck_bytes: Vec<u8>,
@@ -244,23 +269,23 @@ pub(crate) struct Receipt {
     pub gid: u32,
 }
 
-pub(crate) struct Request<'a> {
+pub(crate) struct Request<'a, W = OwnerAcceptance> {
     pub target: &'a Path,
     pub desired_bytes: &'a [u8],
     pub mode: u32,
     pub uid: u32,
     pub gid: u32,
     pub backup_path: &'a Path,
-    pub witness: OwnerAcceptance,
+    pub witness: W,
 }
 
-pub(crate) struct AbsentCreationRequest<'a> {
+pub(crate) struct AbsentCreationRequest<'a, W = OwnerAcceptance> {
     pub target: &'a Path,
     pub desired_bytes: &'a [u8],
     pub mode: u32,
     pub uid: u32,
     pub gid: u32,
-    pub witness: OwnerAcceptance,
+    pub witness: W,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,7 +325,17 @@ fn create_temp(dir: &Path, name: &str) -> Result<(File, PathBuf), String> {
 }
 
 fn recognized_temp_owner(name: &str, target_name: &str) -> Option<u32> {
+    if let Some(body) = name.strip_prefix(".projectio-absent-") {
+        let (pid, sequence) = body.split_once('-')?;
+        if !pid.is_empty() && !sequence.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+            && sequence.bytes().all(|b| b.is_ascii_digit()) {
+            return pid.parse::<u32>().ok().filter(|pid| *pid != 0);
+        }
+        return None;
+    }
     let (body, backup) = if let Some(body) = name.strip_prefix(".projectio-engine-state-") {
+        (body.strip_suffix(".backup")?, true)
+    } else if let Some(body) = name.strip_prefix(".projectio-known-good-") {
         (body.strip_suffix(".backup")?, true)
     } else if let Some(body) = name.strip_prefix(".projectio-") {
         (body, false)
@@ -442,11 +477,10 @@ struct StrikeAttempt {
     backup_created: bool,
 }
 
-fn strike_with_tracking(
-    request: Request<'_>,
+fn strike_with_tracking<'a, W: Into<ProjectionWitness<'a>>>(
+    request: Request<'_, W>,
     expected_target_identity: Option<FileIdentity>,
     expected_preimage: Option<(&[u8], &fs::Metadata)>,
-    owner_accept: bool,
 ) -> StrikeAttempt {
     let Request {
         target,
@@ -457,7 +491,8 @@ fn strike_with_tracking(
         backup_path,
         witness,
     } = request;
-    let _witness = witness;
+    let witness = witness.into();
+    let lane = witness.lane();
     let target_metadata = match fs::symlink_metadata(target) {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -517,7 +552,7 @@ fn strike_with_tracking(
             .sync_all()
             .map_err(|e| io_error("backup-sync", backup_path, e))?;
         drop(backup);
-        crate::atoms::touch::record(backup_path, None, owner_accept);
+        if lane == "interactable" { crate::atoms::touch::record_lane(backup_path, lane); }
         let target_dir = target
             .parent()
             .ok_or_else(|| format!("projectio-target-parent-missing {}", target.display()))?;
@@ -559,7 +594,7 @@ fn strike_with_tracking(
             }
             fs::rename(&temp_path, target).map_err(|e| io_error("rename", target, e))?;
             target_replaced = true;
-            crate::atoms::touch::record(target, None, owner_accept);
+            crate::atoms::touch::record_lane(target, lane);
             target_identity = fs::symlink_metadata(target)
                 .ok()
                 .map(|metadata| file_identity(&metadata));
@@ -610,7 +645,7 @@ fn strike_with_tracking(
 }
 
 pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
-    strike_with_tracking(request, None, None, true).result
+    strike_with_tracking(request, None, None).result
 }
 
 /// Keep a caller's read/modify/write bound to its observed preimage inside the
@@ -618,7 +653,7 @@ pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
 pub(crate) fn strike_if_current(
     request: Request<'_>, bytes: &[u8], metadata: &fs::Metadata,
 ) -> Result<Receipt, String> {
-    strike_with_tracking(request, Some(file_identity(metadata)), Some((bytes, metadata)), true).result
+    strike_with_tracking(request, Some(file_identity(metadata)), Some((bytes, metadata))).result
 }
 
 fn stat_at_nofollow(directory: &File, name: &std::ffi::CString) -> Result<libc::stat, std::io::Error> {
@@ -704,6 +739,12 @@ fn unlink_owned_staged_file(
 pub(crate) fn create_absent(
     request: AbsentCreationRequest<'_>,
 ) -> Result<AbsentCreationReceipt, String> {
+    create_absent_with_witness(request)
+}
+
+fn create_absent_with_witness<'a, W: Into<ProjectionWitness<'a>>>(
+    request: AbsentCreationRequest<'_, W>,
+) -> Result<AbsentCreationReceipt, String> {
     let AbsentCreationRequest {
         target,
         desired_bytes,
@@ -712,7 +753,8 @@ pub(crate) fn create_absent(
         gid,
         witness,
     } = request;
-    let _witness = witness;
+    let witness = witness.into();
+    let lane = witness.lane();
     let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -819,7 +861,7 @@ pub(crate) fn create_absent(
                 return Err(io_error("absent-promote-noreplace", target, error));
             }
             promoted = true;
-            crate::atoms::touch::record(target, None, true);
+            crate::atoms::touch::record_lane(target, lane);
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1068,13 +1110,53 @@ fn restore_created_engine_state(
     Ok(())
 }
 
+pub(crate) fn act_strike(
+    auth: &crate::atoms::comparison::ActionAuthorization,
+    target: &Path, bytes: &[u8], mode: u32, uid: u32, gid: u32,
+) -> Result<Receipt, String> {
+    check_act_path(target).map_err(|e| e.to_string())?;
+    let metadata = fs::symlink_metadata(target).map_err(|e| io_error("target-stat", target, e))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("projectio-target-not-regular-file {}", target.display()));
+    }
+    let original_bytes = read_engine_state_target(target)?;
+    let sequence = ENGINE_STATE_BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("target");
+    let backup = target.parent().unwrap_or_else(|| Path::new(".")).join(format!(
+        ".projectio-known-good-{}-{sequence}-{name}.backup", std::process::id()
+    ));
+    let attempt = strike_with_tracking(Request {
+        target, desired_bytes: bytes, mode, uid, gid, backup_path: &backup,
+        witness: KnownGoodWitness(auth),
+    }, Some(file_identity(&metadata)), Some((&original_bytes, &metadata)));
+    match attempt.result {
+        Ok(receipt) => { remove_engine_state_backup(&backup)?; Ok(receipt) }
+        Err(error) => match restore_existing_engine_state(
+            target, &backup, &original_bytes, &metadata, attempt.target_identity,
+            attempt.backup_created, attempt.target_replaced,
+        ) {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(format!("{error}; {restore_error}")),
+        },
+    }
+}
+
+pub(crate) fn act_create(
+    auth: &crate::atoms::comparison::ActionAuthorization,
+    target: &Path, bytes: &[u8], mode: u32, uid: u32, gid: u32,
+) -> Result<AbsentCreationReceipt, String> {
+    check_act_path(target).map_err(|e| e.to_string())?;
+    create_absent_with_witness(AbsentCreationRequest {
+        target, desired_bytes: bytes, mode, uid, gid, witness: KnownGoodWitness(auth),
+    })
+}
+
 /// Replace engine-maintained state through the Projectio membrane.
 pub(crate) fn write_engine_state(
     target: &Path,
     desired_bytes: &[u8],
     witness: EngineStateWitness,
 ) -> Result<Receipt, String> {
-    let _witness = witness;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| io_error("state-directory", parent, e))?;
     }
@@ -1120,8 +1202,8 @@ pub(crate) fn write_engine_state(
         uid: metadata.uid(),
         gid: metadata.gid(),
         backup_path: &backup,
-        witness: OwnerAcceptance(()),
-    }, Some(original_identity), None, false);
+        witness,
+    }, Some(original_identity), None);
     match attempt.result {
         Ok(receipt) => {
             remove_engine_state_backup(&backup)?;
