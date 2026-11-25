@@ -771,6 +771,28 @@ pub(crate) fn rollback_delete(run_id: &str) -> Result<(), String> {
     })
 }
 
+pub(crate) fn rollback_clear_dead(
+    run_id: &str, remove: impl FnOnce(&[PathBuf]) -> Result<(), String>,
+) -> Result<(), String> {
+    use std::os::unix::ffi::OsStringExt;
+    with_proposal_transaction(|connection| {
+        let still_clearable: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM rollback_press WHERE run_id=?1 AND state IN ('building','closing'))",
+            [run_id], |row| row.get(0),
+        ).map_err(database_error)?;
+        if !still_clearable { return Ok(()); }
+        let mut query = connection.prepare("SELECT path FROM rollback_root WHERE run_id=?1 ORDER BY path").map_err(database_error)?;
+        let roots = query.query_map([run_id], |row| row.get::<_,Vec<u8>>(0)).map_err(database_error)?
+            .map(|path| path.map(|bytes| PathBuf::from(std::ffi::OsString::from_vec(bytes))))
+            .collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+        drop(query);
+        remove(&roots)?;
+        connection.execute("DELETE FROM rollback_root WHERE run_id=?1", [run_id]).map_err(database_error)?;
+        connection.execute("DELETE FROM rollback_press WHERE run_id=?1", [run_id]).map_err(database_error)?;
+        Ok(())
+    })
+}
+
 pub(crate) fn rollback_read() -> Result<Option<RollbackPress>, String> {
     use std::os::unix::ffi::OsStringExt;
     let Some(connection) = reader()? else { return Ok(None); };

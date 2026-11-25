@@ -58,7 +58,7 @@ fn hard_link_nofollow(root: &Path, source: &Path, destination: &Path) -> Result<
     Ok(())
 }
 
-fn build_shadows(snapshot: &Snapshot) -> Result<(), String> {
+fn check_shadows(snapshot: &Snapshot) -> Result<(), String> {
     for root in &snapshot.roots {
         if snapshot.roots.iter().any(|other| other.path != root.path && root.path.starts_with(&other.path)) {
             return Err(format!("rollback-shadow-nested-root {}", root.path.display()));
@@ -72,6 +72,10 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), String> {
             }
         }
     }
+    Ok(())
+}
+
+fn build_shadows(snapshot: &Snapshot) -> Result<(), (String, bool)> {
     let mut made = Vec::new();
     let result = (|| {
         for root in &snapshot.roots {
@@ -134,12 +138,14 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), String> {
         Ok(())
     })();
     if let Err(mut error) = result {
+        let mut survives = false;
         for (root, path) in made.iter().rev() {
             if let Err(cleanup) = rm(root, path) {
+                survives = true;
                 error.push_str(&format!("; rollback-shadow-cleanup-failed {}: {cleanup}", path.display()));
             }
         }
-        Err(error)
+        Err((error, survives))
     } else {
         Ok(())
     }
@@ -161,17 +167,26 @@ pub(crate) fn authorize_shadow() -> Result<(), String> {
         let result = (|| {
             let run_id = crate::receipts::active_run_id().ok_or_else(|| "rollback-shadow-record-failed: run id absent".to_string())?;
             let roots = snapshot.roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>();
+            if crate::ledger::rollback_read()?.is_some() { return Err("rollback-shadow-record-present".into()); }
+            if let Err(error) = check_shadows(&snapshot) {
+                if crate::ledger::rollback_read()?.is_some() { return Err("rollback-shadow-record-present".into()); }
+                return Err(error);
+            }
             crate::ledger::rollback_begin(&run_id, &roots)?;
-            if let Err(mut error) = build_shadows(&snapshot) {
-                if let Err(cleanup) = crate::ledger::rollback_delete(&run_id) {
-                    error.push_str(&format!("; rollback-shadow-cleanup-failed run_id={run_id}: {cleanup}"));
+            if let Err((mut error, survives)) = build_shadows(&snapshot) {
+                if !survives {
+                    if let Err(cleanup) = crate::ledger::rollback_delete(&run_id) {
+                        error.push_str(&format!("; rollback-shadow-cleanup-failed run_id={run_id}: {cleanup}"));
+                    }
                 }
                 return Err(error);
             }
             if let Err(mut error) = crate::ledger::rollback_mark(&run_id, "held") {
-                if let Err(cleanup) = remove_shadow_roots(&roots) { error.push_str(&format!("; {cleanup}")); }
-                if let Err(cleanup) = crate::ledger::rollback_delete(&run_id) {
-                    error.push_str(&format!("; rollback-shadow-cleanup-failed run_id={run_id}: {cleanup}"));
+                match remove_shadow_roots(&roots) {
+                    Err(cleanup) => error.push_str(&format!("; {cleanup}")),
+                    Ok(()) => if let Err(cleanup) = crate::ledger::rollback_delete(&run_id) {
+                        error.push_str(&format!("; rollback-shadow-cleanup-failed run_id={run_id}: {cleanup}"));
+                    },
                 }
                 return Err(error);
             }
@@ -221,9 +236,9 @@ pub(crate) fn recover_dead_shadow() -> Result<(), String> {
     match press.state.as_str() {
         "held" => Err(format!("rollback-recovery-owed run_id={}", press.run_id)),
         "building" | "closing" => {
-            remove_shadow_roots(&press.roots)?;
-            crate::ledger::rollback_delete(&press.run_id)
-                .map_err(|error| format!("rollback-shadow-cleanup-failed run_id={}: {error}", press.run_id))
+            crate::ledger::rollback_clear_dead(&press.run_id, remove_shadow_roots)
+                .map_err(|error| if error.starts_with("rollback-shadow-cleanup-failed") { error }
+                    else { format!("rollback-shadow-cleanup-failed run_id={}: {error}", press.run_id) })
         },
         other => Err(format!("rollback-shadow-cleanup-failed run_id={}: invalid state {other}", press.run_id)),
     }
