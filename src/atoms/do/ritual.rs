@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    os::unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt, PermissionsExt}},
+    os::unix::{ffi::OsStrExt, fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt}},
     path::{Path, PathBuf},
 };
 
@@ -86,10 +86,10 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), String> {
                 let destination = if relative.as_os_str().is_empty() { building.clone() } else { building.join(relative) };
                 match &node.kind {
                     Kind::Dir => {
-                        fs::create_dir(&destination).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
+                        fs::DirBuilder::new().mode(0o700).create(&destination).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
                         if node.path == root.path { made.push(building.clone()); }
-                        fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-                        directories.push((destination, node));
+                        let directory = open_dir_nofollow(&destination).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
+                        directories.push((directory, node));
                     },
                     Kind::Symlink(target) => {
                         std::os::unix::fs::symlink(target, &destination).map_err(|e| e.to_string())?;
@@ -108,21 +108,41 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), String> {
                     Kind::Missing => {},
                 }
             }
-            for (destination, node) in directories.into_iter().rev() {
-                restore_owner(&destination, node.uid, node.gid)?;
-                fs::set_permissions(&destination, fs::Permissions::from_mode(node.mode & 0o7777)).map_err(|e| e.to_string())?;
+            for (directory, node) in directories.into_iter().rev() {
+                let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                if unsafe { libc::fstat(directory.as_raw_fd(), stat.as_mut_ptr()) } != 0 { return Err(std::io::Error::last_os_error().to_string()); }
+                let stat = unsafe { stat.assume_init() };
+                if (stat.st_uid != node.uid || stat.st_gid != node.gid)
+                    && unsafe { libc::fchown(directory.as_raw_fd(), node.uid, node.gid) } != 0 {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+                if unsafe { libc::fchmod(directory.as_raw_fd(), node.mode & 0o7777) } != 0 { return Err(std::io::Error::last_os_error().to_string()); }
             }
             if made.last() == Some(&building) {
-                fs::rename(&building, &final_path).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", final_path.display()))?;
+                let old = std::ffi::CString::new(building.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+                let new = std::ffi::CString::new(final_path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+                if unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) } != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        return Err(format!("rollback-shadow-left-standing {}", final_path.display()));
+                    }
+                    return Err(format!("rollback-shadow-build-failed {}: {error}", final_path.display()));
+                }
                 *made.last_mut().unwrap() = final_path;
             }
         }
         Ok(())
     })();
-    if result.is_err() {
-        for path in made.iter().rev() { let _ = rm(path); }
+    if let Err(mut error) = result {
+        for path in made.iter().rev() {
+            if let Err(cleanup) = rm(path) {
+                error.push_str(&format!("; rollback-shadow-cleanup-failed {}: {cleanup}", path.display()));
+            }
+        }
+        Err(error)
+    } else {
+        Ok(())
     }
-    result
 }
 
 pub(crate) fn authorize_shadow() -> Result<(), String> {
@@ -780,9 +800,23 @@ fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], _key: 
         },
         |current| if *current { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
         |_, _| {
-            let shadow_meta = fs::symlink_metadata(&shadow).map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
-            if !shadow_meta.file_type().is_file() { return Err(format!("rollback-shadow-missing {}", node.path.display())); }
-            let got = hash_regular_nofollow(&shadow).map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
+            let pinned = fs::OpenOptions::new().read(true)
+                .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&shadow).map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
+            let pinned_meta = pinned.metadata().map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
+            if !pinned_meta.file_type().is_file() { return Err(format!("rollback-shadow-missing {}", node.path.display())); }
+            let mut shadow_file = fs::File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd()))
+                .map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
+            let shadow_meta = shadow_file.metadata().map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0u8; 65536];
+            loop {
+                use std::io::Read;
+                let count = shadow_file.read(&mut buffer).map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
+                if count == 0 { break; }
+                hasher.update(&buffer[..count]);
+            }
+            let got: [u8; 32] = hasher.finalize().into();
             if got != *hash { return Err(format!("rollback-shadow-altered {}", node.path.display())); }
             let same = fs::symlink_metadata(&node.path).ok().is_some_and(|m| m.file_type().is_file() && m.dev() == shadow_meta.dev() && m.ino() == shadow_meta.ino());
             if !same {
@@ -792,7 +826,12 @@ fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], _key: 
                 let parent = node.path.parent().ok_or_else(|| "parent missing".to_string())?;
                 let name = node.path.file_name().ok_or_else(|| "name missing".to_string())?.to_string_lossy();
                 let temp = parent.join(format!(".{name}.harmonia-restore-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-                hard_link_nofollow(&shadow, &temp)?;
+                let destination = open_dir_nofollow(parent)?;
+                let target = std::ffi::CString::new(temp.file_name().ok_or_else(|| "name missing".to_string())?.as_bytes()).map_err(|e| e.to_string())?;
+                let descriptor_path = std::ffi::CString::new(format!("/proc/self/fd/{}", shadow_file.as_raw_fd())).map_err(|e| e.to_string())?;
+                if unsafe { libc::linkat(libc::AT_FDCWD, descriptor_path.as_ptr(), destination.as_raw_fd(), target.as_ptr(), libc::AT_SYMLINK_FOLLOW) } != 0 {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
                 if let Err(error) = fs::rename(&temp, &node.path) {
                     let _ = fs::remove_file(&temp);
                     return Err(error.to_string());
