@@ -36,6 +36,19 @@ pub(crate) fn converge(
     uid: Option<u32>,
     gid: Option<u32>,
 ) -> Result<Outcome, String> {
+    converge_with_scratch(authorization, source, link, policy, uid, gid, false)
+}
+
+#[cfg(unix)]
+fn converge_with_scratch(
+    authorization: &ActionAuthorization,
+    source: &Path,
+    link: &Path,
+    policy: CollisionPolicy,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    scratch: bool,
+) -> Result<Outcome, String> {
     let parent = link
         .parent()
         .ok_or_else(|| "make-link-parent-missing".to_string())?;
@@ -96,9 +109,9 @@ pub(crate) fn converge(
             let _ = projectio::act_remove(authorization, &c, true);
             return Err("make-link-target-raced".into());
         }
-        projectio::act_link_promote(authorization, source, &c, link, LinkPromotion::Rename).map_err(|e| e.to_string())
+        projectio::act_link_promote(authorization, source, &c, link, LinkPromotion::Rename, scratch).map_err(|e| e.to_string())
     } else {
-        checked_exchange_paths(&c, link).and_then(|_| projectio::act_link_promote(authorization, source, &c, link, LinkPromotion::Exchange).map_err(|e| e.to_string()))
+        checked_exchange_paths(&c, link).and_then(|_| projectio::act_link_promote(authorization, source, &c, link, LinkPromotion::Exchange, scratch).map_err(|e| e.to_string()))
     };
     if let Err(e) = promoted {
         let _ = projectio::act_remove(authorization, &c, true);
@@ -156,6 +169,15 @@ pub(crate) fn symlink(
     link: &Path,
 ) -> Result<(), String> {
     converge(authorization, target, link, CollisionPolicy::Refuse, None, None).map(|_| ())
+}
+#[cfg(unix)]
+pub(crate) fn symlink_scratch(
+    authorization: &ActionAuthorization,
+    _invocation: &InvocationKey,
+    target: &Path,
+    link: &Path,
+) -> Result<(), String> {
+    converge_with_scratch(authorization, target, link, CollisionPolicy::Refuse, None, None, true).map(|_| ())
 }
 #[cfg(not(unix))]
 pub(crate) fn symlink(

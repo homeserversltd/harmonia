@@ -111,7 +111,6 @@ pub(crate) fn act_make_dir(
 pub(crate) fn act_link_stage(
     _authorization: &crate::atoms::comparison::ActionAuthorization, source: &Path, candidate: &Path,
 ) -> std::io::Result<()> {
-    check_act_path(source)?;
     check_act_path(candidate)?;
     std::os::unix::fs::symlink(source, candidate)?;
     if !fs::read_link(candidate).is_ok_and(|actual| actual == source) {
@@ -158,9 +157,8 @@ fn renameat2_raw(candidate: &Path, target: &Path, flags: libc::c_uint) -> std::i
 
 pub(crate) fn act_link_promote(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
-    source: &Path, candidate: &Path, target: &Path, how: LinkPromotion,
+    source: &Path, candidate: &Path, target: &Path, how: LinkPromotion, scratch: bool,
 ) -> std::io::Result<()> {
-    check_act_path(source)?;
     check_act_path(candidate)?;
     check_act_path(target)?;
     match how {
@@ -169,7 +167,7 @@ pub(crate) fn act_link_promote(
         LinkPromotion::NoReplace => renameat2_raw(candidate, target, libc::RENAME_NOREPLACE)?,
     }
     let matches = fs::read_link(target).is_ok_and(|actual| actual == source);
-    crate::atoms::touch::record_lane(target, "known-good");
+    if !scratch { crate::atoms::touch::record_lane(target, "known-good"); }
     if !matches { return Err(act_mismatch("link", target)); }
     Ok(())
 }

@@ -118,7 +118,7 @@ fn promote_staged_symlink(
     use crate::atoms::projectio::{self, LinkPromotion};
     let forward = |how, message: &str| {
         check_rename_paths(candidate, target)
-            .and_then(|_| projectio::act_link_promote(authorization, source, candidate, target, how).map_err(|e| e.to_string()))
+            .and_then(|_| projectio::act_link_promote(authorization, source, candidate, target, how, false).map_err(|e| e.to_string()))
             .and_then(|_| receipt(authorization, invocation, format!("{message} {} {}", candidate.display(), target.display())))
     };
     if before.kind == "absent" {

@@ -501,7 +501,7 @@ fn execute_action(
     }
     #[cfg(unix)]
     if let Err(error) = file_symlink_fault(FileSymlinkFault::StageLink).and_then(|_| {
-        atoms::r#do::make_link::symlink(
+        atoms::r#do::make_link::symlink_scratch(
             authorization,
             invocation,
             &source_candidate,
@@ -562,7 +562,7 @@ fn execute_action(
         }
         #[cfg(unix)]
         if let Err(error) = file_symlink_fault(FileSymlinkFault::BeforeLinkRestage).and_then(|_| {
-            atoms::r#do::make_link::symlink(authorization, invocation, request.source, &link_candidate).map(
+            atoms::r#do::make_link::symlink_scratch(authorization, invocation, request.source, &link_candidate).map(
                 |_| {
                     link_candidate_exists.set(true);
                 },
