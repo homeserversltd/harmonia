@@ -354,6 +354,10 @@ pub(crate) struct SourceResolutionReceipt {
     pub requested_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blessed_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followed: Option<&'static str>,
     pub ordered_candidate_identities: Vec<String>,
     pub credential_selectors: Vec<String>,
     pub blocker: Option<String>,
@@ -673,6 +677,8 @@ fn receipt(
         step_id: step_id.to_string(),
         requested_ref,
         blessed_ref,
+        mode: None,
+        followed: None,
         ordered_candidate_identities: candidates,
         credential_selectors: selectors,
         blocker,
@@ -1084,7 +1090,8 @@ fn resolve_appliance_config_source(
     }
 
     // A stamp selects artifact provenance, never the developer build source.
-    let stamped_ref = crate::atoms::ask::collective_stamp::target_sha(component);
+    let observation = crate::atoms::ask::collective_stamp::current_with_fire_seal();
+    let stamped_ref = observation.target(component).map(str::to_owned);
     let requested_ref = if source_policy == "developer" {
         "main".to_owned()
     } else {
@@ -1141,9 +1148,17 @@ fn resolve_appliance_config_source(
         Some(resolution),
     );
     if result.source_policy == "developer" {
+        result.followed = Some("newest");
         result.blessed_ref = valid_commit(stamped_ref.as_deref())
             .or_else(|| valid_commit(Some(configured_ref)));
+    } else if observation.seal_target(component).is_some() {
+        result.followed = Some("seal");
+    } else if observation.stamp_target(component).is_some() {
+        result.followed = Some("stamp");
+    } else {
+        result.followed = Some("newest");
     }
+    result.mode = Some(observation.member_mode(component));
     result
 }
 
