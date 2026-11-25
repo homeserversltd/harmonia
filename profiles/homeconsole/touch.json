@@ -3,6 +3,55 @@
   "profile": "homeconsole",
   "allow": [
     {
+      "path": "/opt/hermes/hermes-agent",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent-console module source root."
+    },
+    {
+      "path": "/opt/hermes/hermes-agent/**",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent-console module source and native update tree."
+    },
+    {
+      "path": "/home/hermes/.local/bin/hermes",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent-console module launcher."
+    },
+    {
+      "path": "/home/hermes/.local/bin/*",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent-console module rollback restores source-bound sibling launchers and stages temporary files."
+    },
+    {
+      "path": "/home/hermes/.cache",
+      "lanes": [
+        "self"
+      ],
+      "note": "hermes-agent-console module maintenance scratch parent."
+    },
+    {
+      "path": "/home/hermes/.cache/hermes-maintenance",
+      "lanes": [
+        "self"
+      ],
+      "note": "hermes-agent-console module maintenance scratch parent."
+    },
+    {
+      "path": "/home/hermes/.cache/hermes-maintenance/**",
+      "lanes": [
+        "self"
+      ],
+      "note": "hermes-agent-console module maintenance scratch."
+    },
+    {
       "path": "/etc/netplan/00-installer-config.yaml",
       "lanes": [
         "interactable"
@@ -208,6 +257,14 @@
     }
   ],
   "operations": [
+    {
+      "kind": "command",
+      "match": "/home/hermes/.local/bin/hermes",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent-console module native updater."
+    },
     {
       "kind": "command",
       "match": "/usr/bin/systemctl",

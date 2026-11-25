@@ -3,6 +3,55 @@
   "profile": "homesi",
   "allow": [
     {
+      "path": "/opt/hermes/hermes-agent",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent module source root."
+    },
+    {
+      "path": "/opt/hermes/hermes-agent/**",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent module source and native update tree."
+    },
+    {
+      "path": "/home/hermes/.local/bin/hermes",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent module launcher."
+    },
+    {
+      "path": "/home/hermes/.local/bin/*",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent module rollback restores source-bound sibling launchers and stages temporary files."
+    },
+    {
+      "path": "/home/hermes/.cache",
+      "lanes": [
+        "self"
+      ],
+      "note": "hermes-agent module maintenance scratch parent."
+    },
+    {
+      "path": "/home/hermes/.cache/hermes-maintenance",
+      "lanes": [
+        "self"
+      ],
+      "note": "hermes-agent module maintenance scratch parent."
+    },
+    {
+      "path": "/home/hermes/.cache/hermes-maintenance/**",
+      "lanes": [
+        "self"
+      ],
+      "note": "hermes-agent module maintenance scratch."
+    },
+    {
       "path": "/etc/chromium.d/user-flags",
       "lanes": [
         "known-good"
@@ -592,6 +641,14 @@
     }
   ],
   "operations": [
+    {
+      "kind": "command",
+      "match": "/home/hermes/.local/bin/hermes",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "hermes-agent module native updater."
+    },
     {
       "kind": "command",
       "match": "systemctl",

@@ -677,7 +677,7 @@
     {
       "path": "/usr/share/harmonia/matrix/postgres.sql",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {

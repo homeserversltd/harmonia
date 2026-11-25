@@ -190,7 +190,7 @@
     {
       "path": "/opt/caduceus/source",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -244,7 +244,7 @@
     {
       "path": "/usr/local/bin/caduceus",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -293,7 +293,7 @@
     {
       "path": "/opt/caduceus/source/**",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -361,17 +361,10 @@
       ]
     },
     {
-      "kind": "command",
-      "match": "/usr/bin/systemd-analyze",
-      "lanes": [
-        "interactable"
-      ]
-    },
-    {
       "kind": "unit",
       "match": "caduceus.service",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
