@@ -679,6 +679,18 @@
       "lanes": [
         "interactable"
       ]
+    },
+    {
+      "path": "/opt/harmonia/source/**",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "path": "/opt/coronatio/source/**",
+      "lanes": [
+        "known-good"
+      ]
     }
   ],
   "operations": [

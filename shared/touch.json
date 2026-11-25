@@ -276,6 +276,48 @@
       "lanes": [
         "known-good"
       ]
+    },
+    {
+      "path": "/boot/grub/themes/homeserver/**",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "path": "/opt/caduceus/source/**",
+      "lanes": [
+        "interactable"
+      ]
+    },
+    {
+      "path": "/opt/docs/docs/**",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "path": "/opt/docs/source/**",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "path": "/opt/keyman/source/**",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "path": "/opt/sbin/source/**",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "path": "/var/lib/caduceus/venv/**",
+      "lanes": [
+        "known-good"
+      ]
     }
   ],
   "never": [
@@ -324,6 +366,14 @@
       "lanes": [
         "interactable"
       ]
+    },
+    {
+      "kind": "package",
+      "match": "*",
+      "lanes": [
+        "known-good"
+      ],
+      "note": "The system-packages upgrade selects the installed package set dynamically; this pattern cannot distinguish upgrade from install or removal."
     }
   ]
 }

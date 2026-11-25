@@ -199,6 +199,12 @@
       "lanes": [
         "known-good"
       ]
+    },
+    {
+      "path": "/opt/arcadia/source/**",
+      "lanes": [
+        "known-good"
+      ]
     }
   ],
   "operations": [

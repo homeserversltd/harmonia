@@ -577,6 +577,18 @@
       "lanes": [
         "known-good"
       ]
+    },
+    {
+      "path": "/etc/systemd/system/model-slot@.service",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "path": "/opt/noesis/source/**",
+      "lanes": [
+        "known-good"
+      ]
     }
   ],
   "operations": [
@@ -674,6 +686,27 @@
     {
       "kind": "unit",
       "match": "systemd-timesyncd.service",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "kind": "unit",
+      "match": "model-slot@brain.service",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "kind": "unit",
+      "match": "model-slot@embed.service",
+      "lanes": [
+        "known-good"
+      ]
+    },
+    {
+      "kind": "unit",
+      "match": "model-slot@ear.service",
       "lanes": [
         "known-good"
       ]
