@@ -76,11 +76,20 @@ pub(crate) struct StampObservation {
     pub(crate) terms: std::collections::BTreeMap<String, String>,
     pub(crate) declared_members: Vec<String>,
     pub(crate) safe_modules: Vec<String>,
+    list_unreadable: Option<&'static str>,
     pub(crate) attempts: Vec<Value>,
     pub(crate) fire_seal: Option<FireSealObservation>,
 }
 
 impl StampObservation {
+    pub(crate) fn list_unreadable(&self) -> Option<&'static str> {
+        self.list_unreadable
+    }
+
+    pub(crate) fn has_safe_member(&self) -> bool {
+        self.declared_members.iter().any(|member| self.member_mode(member) == "safe")
+    }
+
     pub(crate) fn member_mode(&self, member: &str) -> &'static str {
         if member != MEMBERS[8] && self.safe_modules.iter().any(|name| name == member) {
             "safe"
@@ -245,26 +254,50 @@ fn observe_uncached(selected_candidate: &mut Option<FetchedStamp>) -> StampObser
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return StampObservation {
                 signal: "wukong-staff-source-undeclared".into(),
+                list_unreadable: Some("appliance-config-absent"),
                 ..StampObservation::default()
             }
         }
-        Err(_) => return unavailable("wukong-staff-config-unreachable"),
+        Err(_) => {
+            let mut observation = unavailable("wukong-staff-config-unreachable");
+            observation.list_unreadable = Some("appliance-config-unreachable");
+            return observation;
+        }
     };
     let config: Value = match serde_json::from_slice(&config_bytes) {
         Ok(config) => config,
-        Err(_) => return unavailable("wukong-staff-config-malformed"),
+        Err(_) => {
+            let mut observation = unavailable("wukong-staff-config-malformed");
+            observation.list_unreadable = Some("appliance-config-malformed");
+            return observation;
+        }
     };
+    let members = declared_members(&config);
+    let safe_value = config.get("harmonia").and_then(|harmonia| harmonia.get("safe_modules"));
+    let list_unreadable = if members.is_empty() {
+        Some("syzygy-members-undeclared")
+    } else if safe_value.is_some_and(|value| !value.is_array()) {
+        Some("safe-modules-not-a-list")
+    } else {
+        None
+    };
+    let safe_modules = safe_value
+        .and_then(Value::as_array)
+        .map(|modules| modules.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default();
     let source = config
         .get("sources")
         .and_then(|sources| sources.get("wukong-staff"));
     let Some(source) = source else {
         return StampObservation {
             signal: "wukong-staff-source-undeclared".into(),
+            declared_members: members,
+            safe_modules,
+            list_unreadable,
             ..StampObservation::default()
         };
     };
 
-    let members = declared_members(&config);
     let mut candidates = Vec::new();
     if let Some(configured) = source.get("candidates") {
         expand_candidates(configured, &mut candidates);
@@ -284,12 +317,8 @@ fn observe_uncached(selected_candidate: &mut Option<FetchedStamp>) -> StampObser
             "wukong-staff-stamp-absent".into()
         },
         declared_members: members,
-        safe_modules: config
-            .get("harmonia")
-            .and_then(|harmonia| harmonia.get("safe_modules"))
-            .and_then(Value::as_array)
-            .map(|modules| modules.iter().filter_map(Value::as_str).map(str::to_owned).collect())
-            .unwrap_or_default(),
+        safe_modules,
+        list_unreadable,
         ..StampObservation::default()
     };
     let mut selected: Option<(usize, FetchedStamp)> = None;

@@ -609,8 +609,10 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
     if let Some(fire_seal) = stamp.fire_seal.as_ref() {
         evidence.observations["wukong_fire_seal"] =
             crate::atoms::ask::collective_stamp::FireSealObservation::as_json(fire_seal);
-        fire_seal_members_match = fire_seal.status == "VALID"
-            && !stamp.declared_members.is_empty();
+        fire_seal_members_match = stamp.list_unreadable().is_none()
+            && stamp.has_safe_member()
+            && stamp.verdict.as_deref() == Some("VALID")
+            && fire_seal.status == "VALID";
     }
     if stamp.verdict.as_deref() == Some("VALID") {
         let mut actual_sources = serde_json::Map::new();
@@ -665,7 +667,7 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                 .as_deref()
                 .zip(expected_sha)
                 .map(|(actual, expected)| actual == expected);
-            if fire_seal_members_match {
+            if fire_seal_members_match && mode == "safe" {
                 fire_seal_members_match = actual_sha
                     .as_deref()
                     .zip(stamp.seal_target(member))
@@ -714,12 +716,17 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
             }
         });
     }
-    if stamp.fire_seal.is_some() {
-        evidence.observations["wukong_fire_seal_members_match"] = json!(fire_seal_members_match);
-    }
     if let Some(fire_seal) = stamp.fire_seal.as_ref() {
-        if evidence.mint.signal == "none" && !fire_seal_members_match {
-            let signal = format!("wukong-fire-unsealed {}", fire_seal.profile);
+        evidence.observations["wukong_fire_seal_members_match"] = json!(fire_seal_members_match);
+        let signal = if let Some(cause) = stamp.list_unreadable() {
+            format!("wukong-safe-modules-list-unreadable {cause}")
+        } else if stamp.has_safe_member() && !fire_seal_members_match {
+            format!("wukong-fire-unsealed {}", fire_seal.profile)
+        } else {
+            "none".into()
+        };
+        evidence.observations["wukong_fire_seal_close_signal"] = json!(signal);
+        if evidence.mint.signal == "none" && signal != "none" {
             evidence.mint.signal = signal.clone();
             signals.push(signal);
             evidence.observations["signals"] = json!(signals);
