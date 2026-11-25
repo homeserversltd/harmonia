@@ -616,6 +616,7 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
         let mut actual_sources = serde_json::Map::new();
         let mut first_stamp_signal = None;
         for member in &stamp.declared_members {
+            let mode = stamp.member_mode(member);
             let (actual_sha, provenance) = match member.as_str() {
                 // The committed beam is the worn Caduceus proof; the resolver's
                 // selected release flag is only the desired source watermark.
@@ -678,14 +679,23 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                     "effective_target": stamp.target(member),
                     "matches": matches,
                     "provenance": provenance,
+                    "mode": mode,
+                    "followed": if stamp.seal_target(member).is_some() {
+                        "seal"
+                    } else if expected_sha.is_some() {
+                        "stamp"
+                    } else {
+                        "newest"
+                    },
                 }),
             );
             match (actual_sha.as_deref(), expected_sha) {
                 (Some(actual), Some(expected)) if actual == expected => {}
-                (Some(_), _) => {
+                (Some(_), _) if mode == "safe" => {
                     first_stamp_signal
                         .get_or_insert_with(|| format!("wukong-staff-unstamped {member}"));
                 }
+                (Some(_), _) => {}
                 (None, _) => {
                     first_stamp_signal.get_or_insert_with(|| {
                         format!("wukong-staff-committed-source-unavailable {member}")
@@ -694,7 +704,15 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
             }
         }
         evidence.observations["wukong_staff_member_sources"] = Value::Object(actual_sources);
-        evidence.stamp_signal = first_stamp_signal.unwrap_or_else(|| "none".into());
+        evidence.stamp_signal = first_stamp_signal.unwrap_or_else(|| {
+            if !stamp.declared_members.is_empty()
+                && !stamp.declared_members.iter().any(|member| stamp.member_mode(member) == "safe")
+            {
+                "wukong-staff-not-followed".into()
+            } else {
+                "none".into()
+            }
+        });
     }
     if stamp.fire_seal.is_some() {
         evidence.observations["wukong_fire_seal_members_match"] = json!(fire_seal_members_match);
