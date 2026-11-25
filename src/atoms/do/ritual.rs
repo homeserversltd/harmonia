@@ -789,7 +789,8 @@ pub(crate) fn seal_projection(
         .filter(|target| target.member == "sudoers")
         .collect::<Vec<_>>();
     let sudoers_step_will_run = safe_modules.contains("sudoers")
-        && plan.member_modules.get("sudoers").is_some_and(|modules| modules.iter().any(|module| module == "sudoers"));
+        && (plan.member_modules.get("sudoers").is_some_and(|modules| modules.iter().any(|module| module == "sudoers"))
+            || sudoers_targets.iter().any(|target| target.module == "sudoers"));
     // Sudoers fragment targets enter this one filesystem snapshot;
     // supplemental sudoers preimages extend it for common rollback.
     let snapshot = if sudoers_step_will_run {
