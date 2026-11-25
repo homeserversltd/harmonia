@@ -1,6 +1,6 @@
 {
   "schema": "harmonia.touch.v1",
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "role": "The touch declaration combines the shared base and the selected profile, and its base profile when it extends one, as the union of their allows and nevers. Paths and path patterns are absolute and begin with /; no .. segment or placeholder is permitted. A path containing a .. segment is undeclared regardless of its match; other paths are lexically normalized before matching. * matches one path segment and ** matches any depth. Never beats allow. A path with no matching allow row is undeclared, and an operation with no matching operation row is undeclared like a path. The package-upgrade operation means the package manager upgrading the installed set and its match is * only. A command operation matches the program as the step names it, an absolute path or a bare name. The shared/touch.json instance must include never; profile instances may omit it. The config.json owner-accept lane, when declared, writes one key at a time under HouseholdConfigLock.",
   "authority": {
     "owner": "harmonia",
@@ -126,7 +126,126 @@
       "optional": [
         "note"
       ]
+    },
+    "Act": {
+      "fields": {
+        "name": {
+          "type": "string"
+        },
+        "does": {
+          "type": "string"
+        },
+        "ceremony": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "readback": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "does",
+        "ceremony",
+        "readback"
+      ]
     }
+  },
+  "acts": {
+    "can": [
+      {
+        "name": "strike",
+        "does": "replace an existing file's bytes",
+        "ceremony": [
+          "temp-in-target-directory",
+          "owner-and-mode",
+          "fsync",
+          "rename",
+          "readback"
+        ],
+        "readback": "bytes-equal"
+      },
+      {
+        "name": "create",
+        "does": "make an absent file",
+        "ceremony": [
+          "temp-in-target-directory",
+          "owner-and-mode",
+          "fsync",
+          "rename-noreplace",
+          "readback"
+        ],
+        "readback": "bytes-equal"
+      },
+      {
+        "name": "mode",
+        "does": "set mode without following a link",
+        "ceremony": [
+          "no-follow"
+        ],
+        "readback": "stat-mode-equal"
+      },
+      {
+        "name": "owner",
+        "does": "set owner and group without following a link",
+        "ceremony": [
+          "no-follow"
+        ],
+        "readback": "stat-owner-equal"
+      },
+      {
+        "name": "rename",
+        "does": "move a name to a name",
+        "ceremony": [],
+        "readback": "new-present-old-absent"
+      },
+      {
+        "name": "remove",
+        "does": "unlink one regular file",
+        "ceremony": [
+          "no-follow"
+        ],
+        "readback": "absent"
+      },
+      {
+        "name": "make-dir",
+        "does": "make a directory and its missing parents, mode 0755",
+        "ceremony": [],
+        "readback": "is-directory"
+      },
+      {
+        "name": "remove-tree",
+        "does": "remove a directory tree or an empty directory",
+        "ceremony": [
+          "no-follow"
+        ],
+        "readback": "absent"
+      },
+      {
+        "name": "link",
+        "does": "make or swap a symlink, staged beside it and exchanged in",
+        "ceremony": [
+          "stage-beside",
+          "exchange-or-rename"
+        ],
+        "readback": "readlink-equal"
+      }
+    ],
+    "cannot": [
+      "write-bytes-in-place",
+      "follow-symlink",
+      "act-without-witness",
+      "path-with-dotdot"
+    ],
+    "edges": [
+      "scratch-name-made-and-removed-in-one-call-is-not-recorded",
+      "a-tree-act-records-its-root-once",
+      "make-dir-records-only-a-directory-it-created"
+    ],
+    "records": "every act records its touch after its readback succeeds; a failed act records nothing; declared and undeclared alike are written; nothing is refused",
+    "witness": "every act takes the calling atom's own authorization; naked mutation is unrepresentable"
   },
   "canonical_bytes": "UTF-8 JSON, two-space indentation and one trailing LF"
 }
