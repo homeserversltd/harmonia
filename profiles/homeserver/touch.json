@@ -437,7 +437,7 @@
     {
       "path": "/etc/systemd/system/chrony-household-upstream.service",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
