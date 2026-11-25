@@ -560,7 +560,12 @@ fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key
                 Err(e) => return Err(e.to_string()),
             };
             if !metadata.file_type().is_file() { return Ok(None); }
-            fs::read(&path).map(Some).map_err(|e| e.to_string())
+            let mut file = fs::OpenOptions::new().read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&path).map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
+            Ok(Some(bytes))
         },
         |observed| if observed.as_deref() == Some(desired.as_slice()) { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
         |authorization, _| crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(&authorization, key, &path, &desired, mode, None, None),
@@ -579,6 +584,26 @@ fn restore_parent_is_safe(root: &Path, path: &Path) -> Result<(), String> {
         if !m.file_type().is_dir() { return Err(format!("{}: not a directory", current.display())); }
     }
     Ok(())
+}
+
+// A missing nested root is already restored if a non-link ancestor is absent.
+fn restore_missing(root: &Path, path: &Path) -> Result<(), String> {
+    if root != path {
+        let parent = path.parent().ok_or_else(|| "parent missing".to_string())?;
+        let relative = parent.strip_prefix(root).map_err(|e| e.to_string())?;
+        let mut current = root.to_path_buf();
+        for part in std::iter::once(None).chain(relative.components().map(Some)) {
+            if let Some(part) = part { current.push(part.as_os_str()); }
+            match fs::symlink_metadata(&current) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(format!("{}: {e}", current.display())),
+                Ok(m) if m.file_type().is_symlink() => return Err(format!("{}: symlink ancestor", current.display())),
+                Ok(m) if !m.file_type().is_dir() => return Ok(()),
+                Ok(_) => {},
+            }
+        }
+    }
+    rm(path)
 }
 
 // Unlike rm, a changed-kind directory is removed one entry at a time.
@@ -676,15 +701,15 @@ pub(crate) fn restore(
         let named = nodes.iter().filter(|n| !matches!(n.kind, Kind::Missing)).map(|n| n.path.clone()).collect::<BTreeSet<_>>();
         for n in &nodes {
             let result = (|| -> Result<(), String> {
+                if matches!(n.kind, Kind::Missing) {
+                    return restore_missing(root, &n.path).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()));
+                }
                 restore_parent_is_safe(root, &n.path)?;
                 let existing = match fs::symlink_metadata(&n.path) {
                     Ok(m) => Some(m),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                     Err(e) => return Err(e.to_string()),
                 };
-                if matches!(n.kind, Kind::Missing) {
-                    return rm(&n.path).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()));
-                }
                 if let Some(m) = &existing {
                     let same = match &n.kind {
                         Kind::Dir => m.file_type().is_dir(),
