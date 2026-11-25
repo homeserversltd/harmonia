@@ -553,10 +553,89 @@ fn comparison_authorized_write(path: &Path, bytes: &[u8], mode: Option<u32>, key
     let path = path.to_path_buf();
     crate::atoms::comparison::execute_once(
         "ritual-restore-write",
-        || Ok::<_, String>(fs::read(&path).ok()),
+        || {
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.to_string()),
+            };
+            if !metadata.file_type().is_file() { return Ok(None); }
+            fs::read(&path).map(Some).map_err(|e| e.to_string())
+        },
         |observed| if observed.as_deref() == Some(desired.as_slice()) { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
         |authorization, _| crate::atoms::r#do::write_file::atomic_write_bytes_with_ownership(&authorization, key, &path, &desired, mode, None, None),
     ).map(|_| ())
+}
+
+// Reject a failed or replaced ancestor before any operation can follow it.
+fn restore_parent_is_safe(root: &Path, path: &Path) -> Result<(), String> {
+    if path == root { return Ok(()); }
+    let parent = path.parent().ok_or_else(|| "parent missing".to_string())?;
+    let relative = parent.strip_prefix(root).map_err(|e| e.to_string())?;
+    let mut current = root.to_path_buf();
+    for part in std::iter::once(None).chain(relative.components().map(Some)) {
+        if let Some(part) = part { current.push(part.as_os_str()); }
+        let m = fs::symlink_metadata(&current).map_err(|e| format!("{}: {e}", current.display()))?;
+        if !m.file_type().is_dir() { return Err(format!("{}: not a directory", current.display())); }
+    }
+    Ok(())
+}
+
+// Unlike rm, a changed-kind directory is removed one entry at a time.
+fn remove_changed_kind(path: &Path) -> Result<(), String> {
+    let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if m.file_type().is_dir() {
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            remove_changed_kind(&entry.map_err(|e| e.to_string())?.path())?;
+        }
+        fs::remove_dir(path).map_err(|e| e.to_string())
+    } else {
+        fs::remove_file(path).map_err(|e| e.to_string())
+    }
+}
+
+fn restore_link(node: &Node, target: &Path) -> Result<(), String> {
+    if let Ok(m) = fs::symlink_metadata(&node.path) {
+        if m.file_type().is_symlink() && m.uid() == node.uid && m.gid() == node.gid
+            && fs::read_link(&node.path).map_err(|e| e.to_string())? == target { return Ok(()); }
+    }
+    let parent = node.path.parent().ok_or_else(|| "parent missing".to_string())?;
+    let name = node.path.file_name().ok_or_else(|| "name missing".to_string())?.to_string_lossy();
+    let temp = parent.join(format!(".{name}.harmonia-link-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+    std::os::unix::fs::symlink(target, &temp).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let m = fs::symlink_metadata(&temp).map_err(|e| e.to_string())?;
+        if m.uid() != node.uid || m.gid() != node.gid {
+            let p = std::ffi::CString::new(temp.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+            if unsafe { libc::lchown(p.as_ptr(), node.uid, node.gid) } != 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+        }
+        fs::rename(&temp, &node.path).map_err(|e| e.to_string())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temp); }
+    result
+}
+
+fn collect_extras(path: &Path, named: &BTreeSet<PathBuf>, extras: &mut Vec<PathBuf>, failures: &mut BTreeMap<PathBuf, String>) {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); return; }
+    };
+    if metadata.file_type().is_dir() {
+        match fs::read_dir(path) {
+            Ok(entries) => for entry in entries {
+                match entry {
+                    Ok(e) => collect_extras(&e.path(), named, extras, failures),
+                    Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); }
+                }
+            },
+            Err(e) => { failures.insert(path.to_path_buf(), e.to_string()); }
+        }
+    }
+    if !named.contains(path) { extras.push(path.to_path_buf()); }
 }
 
 pub(crate) fn restore(
@@ -578,10 +657,10 @@ pub(crate) fn restore(
         match root_matches_snapshot(&root.path, &s.nodes) {
             Ok(true) => {}
             Ok(false) => changed.push(root.path.clone()),
-            Err(error) => errors.push(format!(
-                "rollback-observe-failed {}: {error}",
-                root.path.display()
-            )),
+            Err(error) => {
+                errors.push(format!("rollback-observe-failed {}: {error}", root.path.display()));
+                changed.push(root.path.clone());
+            },
         }
     }
     let changed_roots = changed.clone();
@@ -591,54 +670,95 @@ pub(crate) fn restore(
             .any(|parent| parent != root && root.starts_with(parent))
     });
     for root in changed.iter().rev() {
-        if let Err(error) = rm(root) {
-            errors.push(format!(
-                "rollback-remove-failed {}: {error}",
-                root.display()
-            ));
-            continue;
-        }
         let mut root_failed = false;
-        for n in &s.nodes {
-            if !(n.path == *root || n.path.starts_with(root.join(""))) {
-                continue;
-            }
+        let mut nodes = s.nodes.iter().filter(|n| n.path == *root || n.path.starts_with(root)).collect::<Vec<_>>();
+        nodes.sort_by_key(|n| n.path.components().count());
+        let named = nodes.iter().filter(|n| !matches!(n.kind, Kind::Missing)).map(|n| n.path.clone()).collect::<BTreeSet<_>>();
+        for n in &nodes {
             let result = (|| -> Result<(), String> {
-                match &n.kind {
-                    Kind::Missing => return Ok(()),
-                    Kind::Dir => fs::create_dir_all(&n.path).map_err(|e| e.to_string())?,
-                    Kind::File(b) => {
-                        if let Some(p) = n.path.parent() {
-                            fs::create_dir_all(p).map_err(|e| e.to_string())?;
-                        }
-                        comparison_authorized_write(&n.path, b, Some(n.mode & 0o7777), key)?;
-                    }
-                    Kind::Symlink(t) => {
-                        if let Some(p) = n.path.parent() {
-                            fs::create_dir_all(p).map_err(|e| e.to_string())?;
-                        }
-                        std::os::unix::fs::symlink(t, &n.path).map_err(|e| e.to_string())?;
+                restore_parent_is_safe(root, &n.path)?;
+                let existing = match fs::symlink_metadata(&n.path) {
+                    Ok(m) => Some(m),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) => return Err(e.to_string()),
+                };
+                if matches!(n.kind, Kind::Missing) {
+                    return rm(&n.path).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()));
+                }
+                if let Some(m) = &existing {
+                    let same = match &n.kind {
+                        Kind::Dir => m.file_type().is_dir(),
+                        Kind::File(_) => m.file_type().is_file(),
+                        Kind::Symlink(_) => m.file_type().is_symlink(),
+                        Kind::Missing => false,
+                    };
+                    if !same {
+                        remove_changed_kind(&n.path).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()))?;
                     }
                 }
-                if !matches!(n.kind, Kind::Missing | Kind::Symlink(_)) {
-                    restore_owner(&n.path, n.uid, n.gid)?;
-                    fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777))
-                        .map_err(|e| e.to_string())?;
+                match &n.kind {
+                    Kind::Missing => {},
+                    Kind::Dir => {
+                        if fs::symlink_metadata(&n.path).is_err() { fs::create_dir(&n.path).map_err(|e| e.to_string())?; }
+                        let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
+                        if m.mode() & 0o700 != 0o700 {
+                            fs::set_permissions(&n.path, fs::Permissions::from_mode((m.mode() & 0o7777) | 0o700)).map_err(|e| e.to_string())?;
+                        }
+                    },
+                    Kind::File(bytes) => {
+                        comparison_authorized_write(&n.path, bytes, Some(n.mode & 0o7777), key)?;
+                        restore_owner(&n.path, n.uid, n.gid)?;
+                        let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
+                        if m.mode() & 0o7777 != n.mode & 0o7777 {
+                            fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777)).map_err(|e| e.to_string())?;
+                        }
+                    },
+                    Kind::Symlink(target) => restore_link(n, target)?,
                 }
                 Ok(())
             })();
             if let Err(error) = result {
                 root_failed = true;
-                errors.push(format!(
-                    "rollback-restore-failed {}: {error}",
-                    n.path.display()
-                ));
-                break;
+                if error.starts_with("rollback-remove-failed ") { errors.push(error); }
+                else { errors.push(format!("rollback-restore-failed {}: {error}", n.path.display())); }
             }
         }
-        if !root_failed {
-            restored_roots.insert(root.clone());
+        // Unnamed entries are visited only after every sealed node was attempted.
+        for pass in 0..2 {
+            let mut extras = Vec::new();
+            let mut failures = BTreeMap::new();
+            if named.contains(root) { collect_extras(root, &named, &mut extras, &mut failures); }
+            extras.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+            for path in extras {
+                let result = restore_parent_is_safe(root, &path).and_then(|_| {
+                    let m = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                    if m.file_type().is_dir() { fs::remove_dir(&path) } else { fs::remove_file(&path) }.map_err(|e| e.to_string())
+                });
+                if let Err(error) = result { failures.insert(path, error); }
+            }
+            if pass == 1 {
+                for (path, error) in failures {
+                    root_failed = true;
+                    errors.push(format!("rollback-extra-remove-failed {}: {error}", path.display()));
+                }
+            }
         }
+        for n in nodes.iter().rev().filter(|n| matches!(n.kind, Kind::Dir)) {
+            let result = restore_parent_is_safe(root, &n.path).and_then(|_| {
+                let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
+                if !m.file_type().is_dir() { return Err("not a directory".into()); }
+                restore_owner(&n.path, n.uid, n.gid)?;
+                if m.mode() & 0o7777 != n.mode & 0o7777 {
+                    fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777)).map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                root_failed = true;
+                errors.push(format!("rollback-restore-failed {}: {error}", n.path.display()));
+            }
+        }
+        if !root_failed { restored_roots.insert(root.clone()); }
     }
     #[cfg(feature = "test-facade")]
     if let Err(error) = mutate_rollback_verification_root(s) {
@@ -681,17 +801,22 @@ pub(crate) fn snapshot_services(plan: &UpdatePlan) -> Result<Vec<ServiceStateSna
         .collect()
 }
 pub(crate) fn restore_services(states: &[ServiceStateSnapshot], key: &InvocationKey) -> Result<(), String> {
+    let mut errors = Vec::new();
     for sealed in states {
-        let observed = crate::atoms::ask::change_unit::snapshot_service_state(
-            &sealed.name,
-            sealed.user,
-            sealed.target_user.as_deref(),
-        )?;
-        if observed.enabled != sealed.enabled || observed.active != sealed.active {
-            crate::atoms::r#do::change_unit::restore_service_state(key, sealed)?;
-        }
+        let result = (|| {
+            let observed = crate::atoms::ask::change_unit::snapshot_service_state(
+                &sealed.name,
+                sealed.user,
+                sealed.target_user.as_deref(),
+            )?;
+            if observed.enabled != sealed.enabled || observed.active != sealed.active {
+                crate::atoms::r#do::change_unit::restore_service_state(key, sealed)?;
+            }
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = result { errors.push(format!("{}: {error}", sealed.name)); }
     }
-    Ok(())
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
