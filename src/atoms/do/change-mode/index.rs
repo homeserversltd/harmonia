@@ -4,8 +4,7 @@ use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+
 use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub(crate) struct Plan {
@@ -25,7 +24,7 @@ pub(crate) fn change(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Re
     if observation.preimage.kind == Some(crate::atoms::ask::FsKind::Symlink) {
         return Err("change-mode-symlink-refused".into());
     };
-    fs::set_permissions(&p.path, fs::Permissions::from_mode(mode))
+    crate::atoms::projectio::act_mode(a, &p.path, mode)
         .map_err(|e| format!("change-mode-failed: {e}"))?;
     let _ = (a, i);
     Ok(())

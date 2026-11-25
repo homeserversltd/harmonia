@@ -1,7 +1,7 @@
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
-use std::fs;
+
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy)]
@@ -24,7 +24,19 @@ pub(crate) fn remove_file_with_policy(
     if observation.preimage.kind != Some(crate::atoms::ask::FsKind::File) {
         return Err("remove-file-collision-refused".into());
     }
-    fs::remove_file(path).map_err(|error| error.to_string())?;
+    crate::atoms::projectio::act_remove(authorization, path, false).map_err(|error| error.to_string())?;
+    let _ = (authorization, invocation);
+    Ok(())
+}
+
+pub(crate) fn remove_scratch_file(
+    authorization: &ActionAuthorization, invocation: &InvocationKey, path: &Path,
+) -> Result<(), String> {
+    let observation = crate::atoms::ask::remove_file::probe(path)?;
+    if observation.preimage.kind != Some(crate::atoms::ask::FsKind::File) {
+        return Err("remove-file-collision-refused".into());
+    }
+    crate::atoms::projectio::act_remove(authorization, path, true).map_err(|error| error.to_string())?;
     let _ = (authorization, invocation);
     Ok(())
 }

@@ -8,6 +8,92 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Name and metadata acts use Compare's known-good witness.
+fn act_mismatch(act: &str, path: &Path) -> std::io::Error {
+    std::io::Error::other(format!("projectio-readback-{act}-mismatch {}", path.display()))
+}
+
+pub(crate) fn act_mode(
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    path: &Path, mode: u32,
+) -> std::io::Result<()> {
+    let before = fs::symlink_metadata(path)?;
+    if before.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!("projectio-mode-symlink-refused {}", path.display())));
+    }
+    let changed = before.mode() & 0o7777 != mode & 0o7777;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    let matches = fs::symlink_metadata(path)
+        .is_ok_and(|after| !after.file_type().is_symlink() && after.mode() & 0o7777 == mode & 0o7777);
+    if changed { crate::atoms::touch::record_lane(path, "known-good"); }
+    if !matches { return Err(act_mismatch("mode", path)); }
+    Ok(())
+}
+
+pub(crate) fn act_owner(
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    path: &Path, uid: libc::uid_t, gid: libc::gid_t,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let before = fs::symlink_metadata(path)?;
+    let changed = (uid != !0 && before.uid() != uid) || (gid != !0 && before.gid() != gid);
+    if unsafe { libc::lchown(c.as_ptr(), uid, gid) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let matches = fs::symlink_metadata(path)
+        .is_ok_and(|after| (uid == !0 || after.uid() == uid) && (gid == !0 || after.gid() == gid));
+    if changed { crate::atoms::touch::record_lane(path, "known-good"); }
+    if !matches { return Err(act_mismatch("owner", path)); }
+    Ok(())
+}
+
+pub(crate) fn act_rename(
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    from: &Path, to: &Path, scratch_from: bool,
+) -> std::io::Result<()> {
+    fs::rename(from, to)?;
+    let to_readback = fs::symlink_metadata(to);
+    let from_readback = fs::symlink_metadata(from);
+    let matches = to_readback.is_ok()
+        && matches!(from_readback, Err(ref e) if e.kind() == std::io::ErrorKind::NotFound);
+    crate::atoms::touch::record_lane(to, "known-good");
+    if !scratch_from { crate::atoms::touch::record_lane(from, "known-good"); }
+    if !matches { return Err(act_mismatch("rename", to)); }
+    Ok(())
+}
+
+pub(crate) fn act_remove(
+    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    path: &Path, scratch: bool,
+) -> std::io::Result<()> {
+    fs::remove_file(path)?;
+    let readback = fs::symlink_metadata(path);
+    let matches = matches!(readback, Err(ref e) if e.kind() == std::io::ErrorKind::NotFound);
+    if !scratch { crate::atoms::touch::record_lane(path, "known-good"); }
+    if !matches { return Err(act_mismatch("remove", path)); }
+    Ok(())
+}
+
+pub(crate) fn act_make_dir(
+    _authorization: &crate::atoms::comparison::ActionAuthorization, path: &Path,
+) -> std::io::Result<()> {
+    let mut missing = Vec::new();
+    for candidate in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+        match fs::symlink_metadata(candidate) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing.push(candidate.to_path_buf()),
+            Err(_) => break,
+        }
+    }
+    fs::create_dir_all(path)?;
+    let matches = fs::metadata(path).is_ok_and(|after| after.is_dir());
+    for directory in missing { crate::atoms::touch::record_lane(&directory, "known-good"); }
+    if !matches { return Err(act_mismatch("make-dir", path)); }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(crate) struct OwnerAcceptance(());
 

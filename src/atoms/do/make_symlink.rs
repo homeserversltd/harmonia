@@ -467,7 +467,7 @@ fn execute_action(
             link_candidate_exists.set(false);
         }
         if source_candidate_exists.get()
-            && atoms::r#do::remove_file::remove_file(authorization, invocation, &source_candidate).is_ok()
+            && atoms::r#do::remove_file::remove_scratch_file(authorization, invocation, &source_candidate).is_ok()
         {
             source_candidate_exists.set(false);
         }
@@ -538,7 +538,7 @@ fn execute_action(
     if !source_current {
         if let Err(error) =
             file_symlink_fault(FileSymlinkFault::BeforeSourcePromotion).and_then(|_| {
-                atoms::r#do::rename::rename(authorization, invocation, &source_candidate, request.source)
+                atoms::r#do::rename::rename_from_scratch(authorization, invocation, &source_candidate, request.source)
             })
         {
             promotion_error = Some(format!(
@@ -575,7 +575,7 @@ fn execute_action(
         if promotion_error.is_none() {
             if let Err(error) =
                 file_symlink_fault(FileSymlinkFault::BeforeLinkPromotion).and_then(|_| {
-                    atoms::r#do::rename::rename(authorization, invocation, &link_candidate, request.target)
+                    atoms::r#do::rename::rename_from_scratch(authorization, invocation, &link_candidate, request.target)
                 })
             {
                 promotion_error = Some(format!(

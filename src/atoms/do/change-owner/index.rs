@@ -20,16 +20,12 @@ pub(crate) fn change(a: &ActionAuthorization, i: &InvocationKey, p: &Plan) -> Re
     if !p.no_follow {
         return Err("change-owner-no-follow-required".into());
     };
-    let c = CString::new(p.path.as_os_str().as_bytes())
+    let _c = CString::new(p.path.as_os_str().as_bytes())
         .map_err(|_| "change-owner-path-nul".to_string())?;
     let u = p.uid.map_or(!0, |v| v) as libc::uid_t;
     let g = p.gid.map_or(!0, |v| v) as libc::gid_t;
-    if unsafe { libc::lchown(c.as_ptr(), u, g) } != 0 {
-        return Err(format!(
-            "change-owner-failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    };
+    crate::atoms::projectio::act_owner(a, &p.path, u, g)
+        .map_err(|e| format!("change-owner-failed: {e}"))?;
     let _ = (a, i);
     Ok(())
 }

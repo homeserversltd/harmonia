@@ -2,7 +2,7 @@ use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+
 use std::path::{Path, PathBuf};
 
 pub(crate) fn create_dir_all(
@@ -19,13 +19,16 @@ pub(crate) fn create_dir_all(
         }
     }
 
-    fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    crate::atoms::projectio::act_make_dir(authorization, path).map_err(|error| error.to_string())?;
 
     if missing.is_empty() {
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Ok(());
+        }
         missing.push(path.to_path_buf());
     }
     for directory in missing {
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o755))
+        crate::atoms::projectio::act_mode(authorization, &directory, 0o755)
             .map_err(|error| error.to_string())?;
     }
 

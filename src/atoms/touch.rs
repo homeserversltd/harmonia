@@ -1,13 +1,13 @@
 //! Press-scoped Harmonia touch declarations and non-refusing collection.
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const TOUCH_SCHEMA: &str = "harmonia.touch.v1";
-const HOOKED: [&str; 7] = [
+const HOOKED: [&str; 12] = [
     "file_write",
     "atomic_write_bytes_with_ownership",
     "update_existing_xenia",
@@ -15,6 +15,11 @@ const HOOKED: [&str; 7] = [
     "strike_if_current",
     "create_absent",
     "write_engine_state",
+    "rename",
+    "make-dir",
+    "change-mode",
+    "change-owner",
+    "remove-file",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -646,6 +651,7 @@ struct Touch {
     module: Option<String>,
     step: Option<String>,
     owner_accept: bool,
+    explicit_lane: Option<&'static str>,
 }
 
 static COLLECTOR: OnceLock<Mutex<Option<Collector>>> = OnceLock::new();
@@ -709,7 +715,7 @@ fn lane_hint(normalized_target: Option<&str>, owner_accept: bool) -> Option<&'st
     None
 }
 
-fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool) {
+fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool, explicit_lane: Option<&'static str>) {
     let mut state = collector_lock();
     let Some(collector) = state.as_mut() else {
         return;
@@ -727,13 +733,20 @@ fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool) {
         step: step.map(str::to_owned).or(active_step),
         target,
         owner_accept,
+        explicit_lane,
     });
 }
 
 /// Record is deliberately non-refusing and inactive until [`start`] is called.
 pub fn record(path: &Path, step: Option<&str>, owner_accept: bool) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        record_inner(path, step, owner_accept);
+        record_inner(path, step, owner_accept, None);
+    }));
+}
+
+pub(crate) fn record_lane(path: &Path, lane: &'static str) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        record_inner(path, None, false, Some(lane));
     }));
 }
 
@@ -743,21 +756,38 @@ pub fn receipt() -> Value {
     let Some(collector) = state.as_ref() else {
         return Value::Null;
     };
-    let mut seen_targets = HashSet::new();
-    let undeclared: Vec<Value> = collector.writes.iter().filter_map(|touch| {
+    let mut seen_targets: HashMap<String, usize> = HashMap::new();
+    let mut undeclared: Vec<Value> = Vec::new();
+    for touch in &collector.writes {
         let normalized = normalize_absolute(&touch.target);
         let key = normalized.clone().unwrap_or_else(|| touch.target.clone());
-        if !seen_targets.insert(key) || check(&collector.declaration, &touch.target)
-            .get("allowed").and_then(Value::as_bool).unwrap_or(false) {
-            return None;
+        if let Some(&index) = seen_targets.get(&key) {
+            if let Some(lane) = touch.explicit_lane {
+                if undeclared[index]["lane_hint"] != "self" && undeclared[index]["explicit_lane_present"] == false {
+                    undeclared[index]["lane_hint"] = json!(lane);
+                    undeclared[index]["explicit_lane_present"] = json!(true);
+                }
+            }
+            continue;
         }
-        Some(json!({
+        if check(&collector.declaration, &touch.target)
+            .get("allowed").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        seen_targets.insert(key, undeclared.len());
+        let derived = lane_hint(normalized.as_deref(), touch.owner_accept);
+        let lane = if derived == Some("self") { derived } else { touch.explicit_lane.or(derived) };
+        undeclared.push(json!({
             "module": touch.module,
             "step": touch.step,
             "target": touch.target,
-            "lane_hint": lane_hint(normalized.as_deref(), touch.owner_accept),
-        }))
-    }).collect();
+            "lane_hint": lane,
+            "explicit_lane_present": touch.explicit_lane.is_some(),
+        }));
+    }
+    for row in &mut undeclared {
+        if let Some(object) = row.as_object_mut() { object.remove("explicit_lane_present"); }
+    }
     json!({
         "declaration": collector.declaration.state.as_str(),
         "source": collector.declaration.source,
