@@ -245,6 +245,13 @@ pub(crate) fn recover_dead_shadow(key: Option<&InvocationKey>, profile_id: &str)
             }
             let incomplete = |error: String| format!("rollback-recovery-incomplete run_id={}: {error}", press.run_id);
             let (snapshot, services) = snapshot_from_rows(&press.run_id).map_err(&incomplete)?;
+            // Keep raw path identities for the deed; restore's display strings are lossy.
+            let changed_roots: BTreeSet<PathBuf> = snapshot.roots.iter()
+                .filter(|root| !matches!(root_matches_snapshot(&root.path, &snapshot.nodes), Ok(true)))
+                .map(|root| root.path.clone()).collect();
+            let restored_count = changed_roots.iter()
+                .filter(|root| !changed_roots.iter().any(|parent| parent != *root && root.starts_with(parent)))
+                .count();
             let mut restored = Vec::new();
             let mut errors = Vec::new();
             SHADOW.with(|state| *state.borrow_mut() = ShadowState::Restoring);
@@ -254,7 +261,7 @@ pub(crate) fn recover_dead_shadow(key: Option<&InvocationKey>, profile_id: &str)
             if !errors.is_empty() { return Err(incomplete(errors.join("; "))); }
             remove_shadow_roots(&press.roots).map_err(&incomplete)?;
             crate::ledger::rollback_delete(&press.run_id).map_err(&incomplete)?;
-            let _ = crate::deeds::record("transaction", profile_id, false, true, None, Some(&press.run_id), None, Some("transaction-killed-rolled-back"), Some(restored.len() as u64));
+            let _ = crate::deeds::record("transaction", profile_id, false, true, None, Some(&press.run_id), None, Some("transaction-killed-rolled-back"), Some(restored_count as u64));
             Ok(())
         },
         "building" | "closing" => {
