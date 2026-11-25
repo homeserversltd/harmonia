@@ -1292,7 +1292,7 @@ mod beam_tests {
             caduceus_count: 1, pinned_members: Some(vec!["caduceus".into(), "sbin".into(), "face".into()]),
             member_modules: BTreeMap::new(),
         };
-        let mut transaction = crate::atoms::r#do::transaction::seal_projection(&plan, "profile", "identity", "source-head").unwrap();
+        let mut transaction = crate::atoms::r#do::transaction::seal_projection(&plan, "profile", "identity", "source-head", &std::collections::BTreeSet::new()).unwrap();
         transaction.authorize_caduceus_source(&authorization).unwrap();
         for child in 0..transaction.sealed.children.len() {
             crate::atoms::r#do::transaction::apply_projection(&mut transaction, child, &invocation).unwrap();

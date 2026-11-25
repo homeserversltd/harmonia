@@ -377,7 +377,12 @@ pub(crate) fn run_profile_engine_with_projection(
     let mut routine_states: BTreeMap<String, BTreeMap<String, crate::ModuleWalkState>> =
         BTreeMap::new();
     let mut final_result: Option<Result<(), String>> = None;
-    let device_module_policy = read_device_module_policy()?;
+    let carried_policy = carrier.or_else(|| context.map(|value| &value.carrier))
+        .and_then(|value| value.borrow().device_module_policy.clone());
+    let device_module_policy = match carried_policy {
+        Some(policy) => policy,
+        None => read_device_module_policy()?,
+    };
     let _walk_result = crate::bands::walk(|band| {
         state.visited_bands.push(format!("{:?}", band));
         let band_result = (|| -> Result<(), String> {

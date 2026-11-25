@@ -32,7 +32,7 @@ fn appliance_config_path() -> PathBuf {
     PathBuf::from(APPLIANCE_CONFIG_PATH)
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct DeviceModulePolicy {
     pub(crate) disabled_modules: BTreeSet<String>,
     pub(crate) safe_modules: BTreeSet<String>,

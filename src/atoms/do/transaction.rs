@@ -114,7 +114,7 @@ pub(crate) fn derive_plan(
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunCarrier {
-    pub safe_modules: BTreeSet<String>,
+    pub device_module_policy: Option<crate::bands::stage_profile::groups::DeviceModulePolicy>,
     /// This run only: populated by actual pointer movement, never quiet success.
     pub rung_promoted: Vec<String>,
     /// Per-surface pointer preimages and the last rung moved to by this run.
@@ -457,7 +457,7 @@ pub(crate) fn rolling_update_run(
         }
     };
     let mut effective_profile = profile.clone();
-    if let Some(declaration) = policy.syzygy_declaration {
+    if let Some(declaration) = policy.syzygy_declaration.clone() {
         effective_profile.syzygy_declaration = Some(declaration);
     }
     let profile = &effective_profile;
@@ -535,7 +535,7 @@ pub(crate) fn rolling_update_run(
                 crate::atoms::r#do::transaction::RunCarrier::default(),
             ))
         });
-    carrier.borrow_mut().safe_modules = policy.safe_modules.clone();
+    carrier.borrow_mut().device_module_policy = Some(policy);
     let notify_outcome = RefCell::new(if apply { serde_json::json!([]) } else { serde_json::json!("report-only") });
     let run = || {
         carrier.borrow_mut().rung_promoted.clear();

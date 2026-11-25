@@ -535,7 +535,7 @@ fn materialize_from_source(
     )?;
     let update_plan = projection.derive_update_plan(&refreshed, installed_module_root)?;
     let safe_modules = carrier.or_else(|| context.map(|value| &value.carrier))
-        .map(|value| value.borrow().safe_modules.clone())
+        .and_then(|value| value.borrow().device_module_policy.as_ref().map(|policy| policy.safe_modules.clone()))
         .unwrap_or_default();
     let sealed_projection = crate::atoms::r#do::transaction::seal_projection(
         &update_plan,
