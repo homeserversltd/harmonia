@@ -236,7 +236,7 @@ pub(crate) fn recover_dead_shadow() -> Result<(), String> {
     match press.state.as_str() {
         "held" => Err(format!("rollback-recovery-owed run_id={}", press.run_id)),
         "building" | "closing" => {
-            crate::ledger::rollback_clear_dead(&press.run_id, remove_shadow_roots)
+            crate::ledger::rollback_clear_dead(&press, remove_shadow_roots)
                 .map_err(|error| if error.starts_with("rollback-shadow-cleanup-failed") { error }
                     else { format!("rollback-shadow-cleanup-failed run_id={}: {error}", press.run_id) })
         },
