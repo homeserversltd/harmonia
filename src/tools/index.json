@@ -17,7 +17,8 @@
               "required": true
             }
           ],
-          "placement": null
+          "placement": null,
+          "touches": {"paths": [], "operations": []}
         }
       ]
     },
@@ -62,7 +63,8 @@
               "required": false
             }
           ],
-          "placement": "PullSource"
+          "placement": "PullSource",
+          "touches": {"paths": [{"arg": "path", "tree": true}], "operations": [{"kind": "command", "fixed": "/usr/bin/git"}]}
         }
       ]
     },
@@ -111,7 +113,8 @@
               "required": false
             }
           ],
-          "placement": "RatchetBinaries"
+          "placement": "RatchetBinaries",
+          "touches": {"paths": [{"join": {"root": "cwd", "fixed": "target/**"}}, {"arg": "installed_binary"}], "operations": [{"kind": "command", "fixed": "cargo"}]}
         }
       ]
     },
@@ -165,7 +168,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"arg": "path"}], "operations": []}
         },
         {
           "name": "binary-promotion",
@@ -197,7 +201,8 @@
               "required": false
             }
           ],
-          "placement": "RatchetBinaries"
+          "placement": "RatchetBinaries",
+          "touches": {"paths": [{"arg": "path"}], "operations": []}
         },
         {
           "name": "source-sha-record",
@@ -229,7 +234,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [{"arg": "path"}], "operations": []}
         }
       ]
     },
@@ -268,7 +274,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"arg": "path"}], "operations": []}
         }
       ]
     },
@@ -409,7 +416,8 @@
               "required": false
             }
           ],
-          "placement": "InstallPackages"
+          "placement": "InstallPackages",
+          "touches": {"paths": [{"arg": "build_root", "tree": true}], "operations": [{"kind": "package", "arg": "package"}, {"kind": "command", "fixed": "/usr/bin/makepkg"}]}
         }
       ]
     },
@@ -429,7 +437,8 @@
             { "name": "timeout_secs", "kind": "integer", "required": false },
             { "name": "lane", "kind": "string", "required": false }
           ],
-          "placement": "ProposeEdits"
+          "placement": "ProposeEdits",
+          "touches": {"paths": [], "operations": [{"kind": "command", "fixed": "/usr/bin/python3"}]}
         }
       ]
     },
@@ -520,7 +529,8 @@
               "required": false
             }
           ],
-          "placement": "ProposeEdits"
+          "placement": "ProposeEdits",
+          "touches": {"paths": [], "operations": [{"kind": "command", "arg": "program"}]}
         },
         {
           "name": "act",
@@ -567,7 +577,8 @@
               "required": false
             }
           ],
-          "placement": "ProposeEdits"
+          "placement": "ProposeEdits",
+          "touches": {"paths": [], "operations": [{"kind": "command", "arg": "program"}]}
         }
       ]
     },
@@ -585,7 +596,8 @@
             {"name": "value", "kind": "json", "required": false},
             {"name": "receipt_name", "kind": "string", "required": true}
           ],
-          "placement": "ProposeEdits"
+          "placement": "ProposeEdits",
+          "touches": {"paths": [{"arg": "target"}], "operations": []}
         },
         {
           "name": "managed-files",
@@ -613,7 +625,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"list": "files", "field": "path"}, {"files_root": true}], "operations": []}
         },
         {
           "name": "metadata",
@@ -625,7 +638,8 @@
               "required": true
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"list": "files", "field": "path"}], "operations": []}
         },
         {
           "name": "converge",
@@ -677,7 +691,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"join": {"root": "target_root", "list": "files"}}], "operations": []}
         },
         {
           "name": "compile-fragments",
@@ -690,7 +705,8 @@
             {"name": "gid", "kind": "integer", "required": false},
             {"name": "backup_existing", "kind": "bool", "required": true}
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"arg": "target_path"}], "operations": []}
         },
         {
           "name": "hotfix-file-backfill",
@@ -717,7 +733,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"arg": "target_path"}], "operations": []}
         },
         {
           "name": "remove",
@@ -734,7 +751,8 @@
               "required": true
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"join": {"root": "target_root", "list": "paths"}}], "operations": []}
         },
         {
           "name": "directory-sync",
@@ -786,7 +804,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"join": {"root": "target_root", "list": "files"}}, {"source_tree": {"source": "source_root", "root": "target_root"}}], "operations": []}
         },
         {
           "name": "validated-sudoers-converge",
@@ -843,7 +862,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"join": {"root": "target_root", "list": "selected_fragments"}}, {"fixed": "/etc/sudoers.d/caduceus-*"}], "operations": []}
         },
         {
           "name": "source-shelf-sweep",
@@ -925,7 +945,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"arg": "target_shelf", "tree": true}, {"arg": "provenance_state"}], "operations": []}
         },
         {
           "name": "executable-present",
@@ -984,7 +1005,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"arg": "target"}], "operations": []}
         },
         {
           "name": "validated-symlink",
@@ -1026,7 +1048,8 @@
               "required": false
             }
           ],
-          "placement": "BackfillFiles"
+          "placement": "BackfillFiles",
+          "touches": {"paths": [{"arg": "target"}], "operations": []}
         },
         {
           "name": "validated-file-symlink",
@@ -1102,7 +1125,8 @@
               "required": false
             }
           ],
-          "placement": "PullSource"
+          "placement": "PullSource",
+          "touches": {"paths": [{"arg": "path", "tree": true}], "operations": [{"kind": "command", "fixed": "/usr/bin/git"}]}
         }
       ]
     },
@@ -1119,7 +1143,8 @@
             {"name": "theme_name", "kind": "string", "required": false},
             {"name": "target_root", "kind": "string", "required": false}
           ],
-          "placement": "ProposeEdits"
+          "placement": "ProposeEdits",
+          "touches": {"paths": [{"join": {"root": "target_root", "fixed": "etc/default/grub"}}, {"join": {"root": "target_root", "fixed": "boot/grub/themes/**"}}, {"join": {"root": "target_root", "fixed": "boot/grub/grub.cfg"}}], "operations": [{"kind": "command", "fixed": "/usr/bin/update-grub"}, {"kind": "command", "fixed": "/usr/sbin/update-grub"}, {"kind": "command", "fixed": "/usr/sbin/grub-mkconfig"}, {"kind": "command", "fixed": "/usr/bin/grub-mkconfig"}]}
         }
       ]
     },
@@ -1182,7 +1207,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [{"arg": "state_path"}], "operations": []}
         },
         {
           "name": "set-timezone",
@@ -1209,7 +1235,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [{"arg": "state_path"}], "operations": []}
         },
         {
           "name": "watch-and-set",
@@ -1236,7 +1263,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [{"arg": "state_path"}], "operations": []}
         }
       ]
     },
@@ -1267,7 +1295,8 @@
               "required": false
             }
           ],
-          "placement": "InstallPackages"
+          "placement": "InstallPackages",
+          "touches": {"paths": [], "operations": [{"kind": "package-upgrade"}]}
         },
         {
           "name": "keyring-repair",
@@ -1284,7 +1313,8 @@
               "required": false
             }
           ],
-          "placement": "InstallPackages"
+          "placement": "InstallPackages",
+          "touches": {"paths": [], "operations": [{"kind": "package", "arg": "package"}, {"kind": "command", "fixed": "pacman-key"}]}
         }
       ]
     },
@@ -1369,7 +1399,8 @@
               "required": false
             }
           ],
-          "placement": null
+          "placement": null,
+          "touches": {"paths": [{"arg": "source_dir", "tree": true}, {"arg": "install_bin"}, {"arg": "source_sha_file"}, {"list": "managed_files", "field": "path"}], "operations": [{"kind": "unit", "arg": "service"}]}
         }
       ]
     },
@@ -1382,7 +1413,8 @@
           "name": "model-slots",
           "description": "converge the one model-slot template and brain/embed/ear instances from the read-only local_ai declaration",
           "args": [],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [{"fixed": "/etc/systemd/system/model-slot@.service"}], "operations": [{"kind": "unit", "fixed": "model-slot@brain.service"}, {"kind": "unit", "fixed": "model-slot@embed.service"}, {"kind": "unit", "fixed": "model-slot@ear.service"}]}
         },
         {
           "name": "daemon-reload",
@@ -1394,7 +1426,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "command", "fixed": "/usr/bin/systemctl"}]}
         },
         {
           "name": "enable",
@@ -1421,7 +1454,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "enable-now",
@@ -1438,7 +1472,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "enable-first-present-now",
@@ -1455,7 +1490,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "candidate_units"}]}
         },
         {
           "name": "unit-present",
@@ -1489,7 +1525,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "disable-stop-remove",
@@ -1506,7 +1543,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "disable-stop",
@@ -1523,7 +1561,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "restart",
@@ -1550,7 +1589,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "is-active-probe",
@@ -1601,7 +1641,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "command", "fixed": "/usr/bin/systemctl"}]}
         },
         {
           "name": "user-enable-now",
@@ -1623,7 +1664,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "user-restart",
@@ -1645,7 +1687,8 @@
               "required": false
             }
           ],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "user-is-active-probe",
@@ -1701,7 +1744,8 @@
               "required": false
             }
           ],
-          "placement": "InstallPackages"
+          "placement": "InstallPackages",
+          "touches": {"paths": [{"arg": "venv", "tree": true}], "operations": []}
         }
       ]
     },
@@ -1750,7 +1794,8 @@
               "required": false
             }
           ],
-          "placement": "RatchetBinaries"
+          "placement": "RatchetBinaries",
+          "touches": {"paths": [{"arg": "destination"}], "operations": [{"kind": "command", "fixed": "cargo"}]}
         }
       ]
     },
@@ -1774,7 +1819,8 @@
             {"name": "archive_sha256", "kind": "string", "required": false},
             {"name": "binary_sha256", "kind": "string", "required": false}
           ],
-          "placement": "RatchetBinaries"
+          "placement": "RatchetBinaries",
+          "touches": {"paths": [{"arg": "path"}], "operations": [{"kind": "unit", "arg": "service"}]}
         }
       ]
     },
@@ -1787,7 +1833,8 @@
           "name": "converge",
           "description": "Lower enabled process Xenia entries into isolated service routines.",
           "args": [],
-          "placement": "RestartServices"
+          "placement": "RestartServices",
+          "touches": {"paths": [{"fixed": "/var/lib/xenia"}, {"fixed": "/var/lib/xenia/**"}], "operations": []}
         }
       ]
     },
@@ -1892,7 +1939,8 @@
           "name": "offer",
           "description": "Snapshot the currently declared existing Hermes homes and offer one owner-tap adoption without changing config or skins.",
           "args": [],
-          "placement": "ProposeEdits"
+          "placement": "ProposeEdits",
+          "touches": {"paths": [{"fixed": "/var/lib/harmonia/harmonia.sqlite3"}], "operations": []}
         }
       ]
     },
@@ -1912,7 +1960,8 @@
             { "name": "branch", "kind": "string", "required": false },
             { "name": "daily_window", "kind": "string", "required": false }
           ],
-          "placement": "PullSource"
+          "placement": "PullSource",
+          "touches": {"paths": [{"arg": "source_root", "tree": true}, {"arg": "launcher"}, {"fixed": "/var/lib/harmonia/hermes-maintenance-days/**", "when": "daily_window"}], "operations": [{"kind": "command", "arg": "launcher"}]}
         }
       ]
     }
