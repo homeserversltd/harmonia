@@ -182,6 +182,7 @@ pub(crate) fn execute_manifest_modules(
     operation_count: &mut usize,
     changed: &mut bool,
     ok: &mut bool,
+    outside_module_failure: &mut bool,
     first_missing_signal: &mut String,
     events: &mut crate::receipts::EventSink,
 ) -> Result<(), String> {
@@ -228,6 +229,7 @@ pub(crate) fn execute_manifest_modules(
     crate::write_json(&receipt_dir.join("beam.json"), &beam_value)?;
     if matches!(beam.first_missing_signal, "beam-lock-malformed" | "beam-door-malformed") {
         *ok = false;
+        *outside_module_failure = true;
         if *first_missing_signal == "none" {
             *first_missing_signal = beam.first_missing_signal.to_string();
         }
@@ -264,6 +266,7 @@ pub(crate) fn execute_manifest_modules(
             | "beam-flag-unresolvable"
     ) {
         *ok = false;
+        *outside_module_failure = true;
         if *first_missing_signal == "none" {
             *first_missing_signal = beam.first_missing_signal.to_string();
         }

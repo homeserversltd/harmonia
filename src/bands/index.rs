@@ -358,6 +358,7 @@ pub(crate) fn run_profile_engine_with_projection(
         run_id: run_id.clone(),
         apply,
         ok: true,
+        outside_module_failure: false,
         suite_ok: true,
         changed: false,
         first_missing_signal: "none".to_string(),
@@ -392,6 +393,7 @@ pub(crate) fn run_profile_engine_with_projection(
             crate::bands::Band::RenewSelf => {
                 if let Some(suite_debt) = suite_debt {
                     state.ok = false;
+                    state.outside_module_failure = true;
                     state.suite_ok = false;
                     state.first_missing_signal = suite_debt.to_string();
                     event(&mut events, "profile-suite-spine-debt", false, suite_debt)?;
@@ -453,6 +455,7 @@ pub(crate) fn run_profile_engine_with_projection(
                                 if state.first_missing_signal == "none" {
                                     state.first_missing_signal = preflight_signal;
                                 }
+                                state.outside_module_failure = true;
                             }
                         }
                     }
@@ -495,12 +498,14 @@ pub(crate) fn run_profile_engine_with_projection(
                             // from an unavailable probe.
                             state.ok = false;
                             state.first_missing_signal = preflight_signal;
+                            state.outside_module_failure = true;
                         }
                     }
                 }
 
                 if active_profile.modules.is_empty() {
                     state.ok = false;
+                    state.outside_module_failure = true;
                     state.first_missing_signal = "profile-modules-empty".to_string();
                     event(
                         &mut events,
@@ -635,6 +640,7 @@ pub(crate) fn run_profile_engine_with_projection(
                                 if state.first_missing_signal == "none" {
                                     state.first_missing_signal = signal.clone();
                                 }
+                                state.outside_module_failure = true;
                                 event(
                                     &mut events,
                                     "engine-preflight-fresh-root-failed",
@@ -685,6 +691,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     &mut state.operation_count,
                     &mut state.changed,
                     &mut state.ok,
+                    &mut state.outside_module_failure,
                     &mut state.first_missing_signal,
                     &mut events,
                 )?;
@@ -845,6 +852,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         run_id: String::new(),
                         apply: false,
                         ok: false,
+                        outside_module_failure: true,
                         suite_ok: false,
                         changed: false,
                         first_missing_signal: String::new(),
@@ -888,6 +896,7 @@ pub(crate) fn run_profile_engine_with_projection(
         if let Err(error) = band_result {
             let named = format!("band={band:?} failure={error}");
             state.ok = false;
+            state.outside_module_failure = true;
             if state.first_missing_signal == "none" {
                 state.first_missing_signal = named.clone();
             }

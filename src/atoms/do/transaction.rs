@@ -687,7 +687,31 @@ pub(crate) fn rolling_update_run(
                 run_started,
             );
             let mut return_error = error.clone();
-            let (receipt, rollback_error) = if let Some(key) = mode.invocation() {
+            // Only a completely known developer-only red may skip restoration.
+            let skip_rollback = {
+                let carried = carrier.borrow();
+                match (&carried.deferred_terminal_summary, &carried.device_module_policy) {
+                    (Some(summary), Some(policy)) if !summary.outside_module_failure => {
+                        let mut saw_red = false;
+                        let mut known_developer_only = true;
+                        for module in &summary.module_steps {
+                            match (module.get("module").and_then(|v| v.as_str()), module.pointer("/outcome/ok").and_then(|v| v.as_bool())) {
+                                (Some(name), Some(false)) => {
+                                    saw_red = true;
+                                    if policy.safe_modules.contains(name) { known_developer_only = false; }
+                                }
+                                (Some(_), Some(true)) => {}
+                                _ => known_developer_only = false,
+                            }
+                        }
+                        saw_red && known_developer_only
+                    }
+                    _ => false,
+                }
+            };
+            let (receipt, rollback_error) = if skip_rollback {
+                (crate::atoms::r#do::transaction::transaction_receipt(&txn), None)
+            } else if let Some(key) = mode.invocation() {
                 let rollback = crate::atoms::r#do::transaction::rollback_projection(&mut txn, key);
                 match rollback {
                     Ok(receipt) => (receipt, None),

@@ -750,6 +750,10 @@ pub(crate) struct TransactionReceipt {
     pub(crate) syzygy_signal: String,
     #[serde(skip)]
     pub(crate) member_modules: BTreeMap<String, Vec<String>>,
+    #[serde(skip)]
+    pub(crate) held_root_members: BTreeSet<String>,
+    #[serde(skip)]
+    pub(crate) rollback_ran: bool,
     pub children: Vec<ProjectionChild>,
     pub target_count: usize,
     pub service_count: usize,
@@ -948,6 +952,8 @@ fn receipt_for(t: &ProjectionTransaction) -> TransactionReceipt {
         syzygy_sha: None,
         syzygy_signal: "none".into(),
         member_modules: t.sealed.member_modules.clone(),
+        held_root_members: t.sealed.snapshot.roots.iter().map(|root| root.member.clone()).collect(),
+        rollback_ran: matches!(t.state, TransactionState::RolledBack | TransactionState::RollbackIncomplete),
         children: t.sealed.children.clone(),
         target_count: t.sealed.snapshot.roots.len(),
         service_count: t.sealed.services.len(),
@@ -1035,19 +1041,24 @@ pub(crate) fn compute_syzygy_sha(
 pub(crate) fn project_update_set_v1(r: &TransactionReceipt) -> Value {
     let verdict = match r.state {
         TransactionState::Committed => "ok",
-        TransactionState::RolledBack => "failed-rolled-back",
+        TransactionState::RolledBack if r.target_count > 0 || r.service_count > 0 => "failed-rolled-back",
         TransactionState::RollbackIncomplete => "failed-rollback-incomplete",
-        TransactionState::RefusedForeignPostImage => "refused-foreign-post-image",
         _ => "failed",
     };
-    let member_status = if r.state == TransactionState::Committed {
-        "standing"
-    } else if r.state == TransactionState::RollbackIncomplete {
-        "rollback-incomplete"
-    } else {
-        "rolled-back"
-    };
-    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"syzygy_signal":r.syzygy_signal,"set_verdict":verdict,"members":r.children.iter().map(|c|json!({"ordinal":c.ordinal,"member":c.member,"status":member_status})).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
+    json!({"schema":"harmonia.update-set.v1","set_name":"appliance-syzygy","profile_id":r.profile_id,"profile_identity":r.profile_identity,"source_head":r.source_head,"gui":r.gui,"gui_member":r.gui_member,"syzygy_sha":r.syzygy_sha,"syzygy_signal":r.syzygy_signal,"set_verdict":verdict,"members":r.children.iter().map(|c| {
+        let status = if r.state == TransactionState::Committed {
+            "standing"
+        } else if !r.held_root_members.contains(&c.member) || !r.rollback_ran {
+            "not-restored"
+        } else if r.state == TransactionState::RollbackIncomplete {
+            "rollback-incomplete"
+        } else if r.state == TransactionState::RolledBack {
+            "rolled-back"
+        } else {
+            "not-restored"
+        };
+        json!({"ordinal":c.ordinal,"member":c.member,"status":status})
+    }).collect::<Vec<_>>(),"targets":r.target_count,"services":r.service_count,"caduceus_count":r.caduceus_count})
 }
 
 #[cfg(test)]
@@ -1149,6 +1160,8 @@ mod update_set_receipt_tests {
             syzygy_sha: None,
             syzygy_signal: "none".into(),
             member_modules,
+            held_root_members: Default::default(),
+            rollback_ran: false,
             children: vec![
                 ProjectionChild {
                     ordinal: 0,

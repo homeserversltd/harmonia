@@ -86,6 +86,7 @@ pub(crate) struct DeferredRunSummary {
     pub operation_count: usize,
     pub duration_ms: u128,
     pub module_steps: Vec<serde_json::Value>,
+    pub outside_module_failure: bool,
     pub ledger_unparsable_lines: usize,
     pub ledger_read_warnings: Vec<String>,
 }
@@ -94,6 +95,7 @@ pub(crate) struct RunState {
     pub run_id: String,
     pub apply: bool,
     pub ok: bool,
+    pub outside_module_failure: bool,
     pub suite_ok: bool,
     pub changed: bool,
     pub first_missing_signal: String,
@@ -600,6 +602,7 @@ pub(crate) fn settle(
             operation_count: state.operation_count,
             duration_ms: state.run_started.elapsed().as_millis(),
             module_steps,
+            outside_module_failure: state.outside_module_failure,
             ledger_unparsable_lines: ledger_report.unparsable_lines,
             ledger_read_warnings: ledger_report.read_warnings,
         });

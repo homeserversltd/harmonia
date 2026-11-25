@@ -607,6 +607,8 @@ mod tests {
             syzygy_sha: None,
             syzygy_signal: "none".into(),
             member_modules: Default::default(),
+            held_root_members: Default::default(),
+            rollback_ran: false,
             children: Vec::new(),
             target_count: 0,
             service_count: 0,
