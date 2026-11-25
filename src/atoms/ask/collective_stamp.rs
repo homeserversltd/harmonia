@@ -75,11 +75,20 @@ pub(crate) struct StampObservation {
     pub(crate) key_id: Option<String>,
     pub(crate) terms: std::collections::BTreeMap<String, String>,
     pub(crate) declared_members: Vec<String>,
+    pub(crate) safe_modules: Vec<String>,
     pub(crate) attempts: Vec<Value>,
     pub(crate) fire_seal: Option<FireSealObservation>,
 }
 
 impl StampObservation {
+    pub(crate) fn member_mode(&self, member: &str) -> &'static str {
+        if member != MEMBERS[8] && self.safe_modules.iter().any(|name| name == member) {
+            "safe"
+        } else {
+            "developer"
+        }
+    }
+
     pub(crate) fn stamp_target(&self, member: &str) -> Option<&str> {
         if member == MEMBERS[8]
             || self.verdict.as_deref() != Some("VALID")
@@ -273,6 +282,12 @@ fn observe_uncached(selected_candidate: &mut Option<FetchedStamp>) -> StampObser
             "wukong-staff-stamp-absent".into()
         },
         declared_members: members,
+        safe_modules: config
+            .get("harmonia")
+            .and_then(|harmonia| harmonia.get("safe_modules"))
+            .and_then(Value::as_array)
+            .map(|modules| modules.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default(),
         ..StampObservation::default()
     };
     let mut selected: Option<(usize, FetchedStamp)> = None;
