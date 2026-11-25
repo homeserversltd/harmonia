@@ -1544,7 +1544,7 @@
             }
           ],
           "placement": "RestartServices",
-          "touches": {"paths": [], "operations": [{"kind": "unit", "arg": "service"}]}
+          "touches": {"paths": [{"join": {"root_fixed": "/etc/systemd/system", "arg": "service"}}], "operations": [{"kind": "unit", "arg": "service"}]}
         },
         {
           "name": "disable-stop",
