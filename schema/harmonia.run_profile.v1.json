@@ -1,0 +1,75 @@
+{
+  "schema": "harmonia.run_profile.v1",
+  "schema_version": "1.2.0",
+  "optional": [
+    "touch"
+  ],
+  "fields": {
+    "touch": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "declaration": {
+          "type": "string",
+          "enum": [
+            "loaded",
+            "absent",
+            "malformed"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declared_count": {
+          "type": "integer"
+        },
+        "hooked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "undeclared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "module": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "step": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": "string"
+              },
+              "lane_hint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

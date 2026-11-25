@@ -18,6 +18,10 @@ struct Context {
     duration_scope: &'static str,
 }
 
+pub(crate) fn active_module_id() -> Option<String> {
+    ACTIVE_CONTEXT.with(|active| active.borrow().as_ref().and_then(|context| context.module_id.clone()))
+}
+
 /// Invocation-local identities and elapsed time, released on every return.
 /// A step may nest under its run; no receipt body or history is retained.
 pub(crate) struct ContextGuard(Option<Context>);

@@ -432,6 +432,7 @@ pub(crate) fn project_run_alkahest(
         "set_signal":{"caduceus":candidate_signal,"sbin":"candidate-not-observed","face":"candidate-not-observed"},
         "diff":{"caduceus":caduceus_diff,"sbin":null,"face":null}});
     receipt["attempt"] = json!(attempts);
+    receipt["touch"] = crate::atoms::touch::receipt();
     receipt["final_receipt"] = json!({"ok":ok && converged != Some(false) && pending.is_some(),
         "converged":converged,"promoted":promoted,"set_digest":digest,
         "stamps":[{"by":"harmonia","at":crate::bands::propose_edits::iso8601_now()}]});

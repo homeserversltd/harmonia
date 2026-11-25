@@ -449,6 +449,43 @@ fn write_cli_run_refusal(
     )
 }
 
+fn touch_command(args: &[String]) -> Result<(), String> {
+    if args.first().map(String::as_str) != Some("check") {
+        return Err("touch requires check <path> [--profile <id>] [--root <dir>]".into());
+    }
+    let mut root = None;
+    let mut profile = None;
+    let mut path = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--root" | "--profile" => {
+                let value = args.get(index + 1).ok_or("touch check option requires a value")?;
+                if args[index] == "--root" {
+                    if root.replace(PathBuf::from(value)).is_some() { return Err("touch check duplicate --root".into()); }
+                } else if profile.replace(value.clone()).is_some() {
+                    return Err("touch check duplicate --profile".into());
+                }
+                index += 2;
+            }
+            option if option.starts_with('-') => return Err(format!("touch check unknown option: {option}")),
+            value => {
+                if path.replace(value.to_owned()).is_some() { return Err("touch check requires one path".into()); }
+                index += 1;
+            }
+        }
+    }
+    let path = path.ok_or("touch check requires a path")?;
+    let profile = match profile {
+        Some(value) => value,
+        None => device_profile::certificate_profile()?,
+    };
+    let root = root.unwrap_or_else(crate::bands::renew_self::engine_source_root);
+    let declaration = crate::atoms::touch::load(&root, &profile);
+    println!("{}", crate::atoms::touch::check(&declaration, &path));
+    Ok(())
+}
+
 pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), String> {
     // Read routes share one invocation-local boundary, including their helpers.
     // Mixed command families are classified by their subcommand instead.
@@ -456,6 +493,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
         Some("explain" | "toolbelt" | "list-tools" | "validate-ladder" | "inspect-profile"
             | "plan-run" | "resolve-source" | "beam" | "xenia" | "subscription"
             | "homeconsole-arcadia-check" | "ledger") => true,
+        Some("touch") => matches!(args.get(1).map(String::as_str), Some("check")),
         Some("interactable" | "config-proposal") =>
             matches!(args.get(1).map(String::as_str), Some("list" | "inspect")),
         Some("capsule") => args.get(1).is_some_and(|arg| arg == "verify"),
@@ -471,6 +509,7 @@ pub(crate) fn run(args: Vec<String>, invocation: Invocation) -> Result<(), Strin
     let _run_id_guard = crate::receipts::RunIdGuard::enter(&run_id);
     let _receipt_scope = receipt_dir_arg(&args).map(|path| crate::receipts::ReceiptScopeGuard::enter(&path));
     match args.first().map(String::as_str) {
+        Some("touch") => touch_command(&args[1..]),
         Some("ledger") => ledger::command(&args[1..]),
         Some("interactable") | Some("config-proposal") => {
             interactable_command(&args[1..], Some(&invocation))

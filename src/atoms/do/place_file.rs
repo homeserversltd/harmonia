@@ -569,6 +569,7 @@ mod mutation {
             file.sync_all().map_err(|e| format!("xenia-update-sync-failed: {e}"))?;
             let old = std::ffi::CString::new(temp.as_os_str().as_bytes()).map_err(|_| "xenia-update-path-invalid")?;
             let new = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| "xenia-update-path-invalid")?;
+            crate::atoms::touch::record(path, None, false);
             if unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_EXCHANGE) } != 0 {
                 let error = std::io::Error::last_os_error();
                 if error.kind() == std::io::ErrorKind::NotFound { return Err("xenia-guest-not-installed".into()); }

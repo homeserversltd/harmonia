@@ -48,6 +48,9 @@ pub(crate) fn file_write(
     } else {
         None
     };
+    if options.write_bytes || options.mode.is_some() || options.uid.is_some() || options.gid.is_some() {
+        crate::atoms::touch::record(path, None, false);
+    }
     if options.write_bytes {
         atomic_file_write(path, bytes, options.mode, options.uid, options.gid)?;
     } else {
@@ -151,6 +154,7 @@ pub(crate) fn atomic_write_bytes_with_ownership(
             .unwrap_or_default()
             .as_nanos()
     ));
+    crate::atoms::touch::record(target, None, false);
     let result = (|| -> Result<(), String> {
         let mut file = OpenOptions::new()
             .create_new(true)

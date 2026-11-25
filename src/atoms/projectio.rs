@@ -402,6 +402,7 @@ fn strike_with_tracking(
 }
 
 pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
+    crate::atoms::touch::record(request.target, None, true);
     strike_with_tracking(request, None, None).result
 }
 
@@ -410,6 +411,7 @@ pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
 pub(crate) fn strike_if_current(
     request: Request<'_>, bytes: &[u8], metadata: &fs::Metadata,
 ) -> Result<Receipt, String> {
+    crate::atoms::touch::record(request.target, None, true);
     strike_with_tracking(request, Some(file_identity(metadata)), Some((bytes, metadata))).result
 }
 
@@ -505,6 +507,7 @@ pub(crate) fn create_absent(
         witness,
     } = request;
     let _witness = witness;
+    crate::atoms::touch::record(target, None, true);
     let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -866,6 +869,7 @@ pub(crate) fn write_engine_state(
     witness: EngineStateWitness,
 ) -> Result<Receipt, String> {
     let _witness = witness;
+    crate::atoms::touch::record(target, None, false);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| io_error("state-directory", parent, e))?;
     }

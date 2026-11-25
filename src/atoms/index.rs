@@ -17,6 +17,7 @@ pub mod health;
 pub mod package;
 pub mod projectio;
 pub mod systemd;
+pub(crate) mod touch;
 #[path = "tree-hash.rs"]
 pub(crate) mod tree_hash;
 #[path = "ask/index.rs"]

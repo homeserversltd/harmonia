@@ -338,6 +338,7 @@ pub(crate) fn run_profile_engine_with_projection(
     let mut active_projection = projection.clone();
     let mut standing_profile_debt_validated = false;
     let mut rerun_preflight_after_stage = false;
+    let mut touch_root = crate::bands::renew_self::engine_source_root();
     let apply = mode.is_software_apply();
     let invocation = mode.invocation();
     let run_started = Instant::now();
@@ -543,6 +544,7 @@ pub(crate) fn run_profile_engine_with_projection(
                     let use_standing_profile = standing_profile_debt_validated
                         && engine_content_seat_absent(&engine_source_root)?;
                     if use_standing_profile {
+                        touch_root = standing_profile_root.to_path_buf();
                         event(
                             &mut events,
                             "stage-profile-standing-source-selected",
@@ -661,6 +663,9 @@ pub(crate) fn run_profile_engine_with_projection(
                         active_projection = refreshed.clone();
                     }
                 }
+                // A renew-self re-exec starts a new press; earlier writes are not
+                // present in this process's collector. Load only after staging.
+                crate::atoms::touch::start(crate::atoms::touch::load(&touch_root, &active_profile.id));
                 crate::bands::compare::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,
