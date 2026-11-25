@@ -261,6 +261,46 @@ fn committed_documentation_source_sha(
         .map(str::to_owned)
 }
 
+/// None means no flat step was committed; Some(None) means it was refused.
+fn committed_sbin_source_sha(
+    dir: &Path,
+    receipt: &crate::atoms::r#do::transaction::TransactionReceipt,
+) -> Option<Option<String>> {
+    let read = || -> Result<Option<String>, std::io::Error> {
+        let modules = match receipt.member_modules.get("sbin") {
+            Some(modules) if modules.len() == 1 && modules[0] == "sbin" => modules,
+            _ => return Ok(None),
+        };
+        let module_dir = dir.join("modules").join(&modules[0]);
+        let bytes = fs::read(module_dir.join("sbin-source-sync.json"))?;
+        let source: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let command: serde_json::Value = match fs::read(module_dir.join("sbin-source-sync.command.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        if command.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+            || command.get("code").and_then(serde_json::Value::as_i64) != Some(0)
+        {
+            return Ok(None);
+        }
+        Ok(source.get("resolved_commit")
+            .and_then(serde_json::Value::as_str)
+            .filter(|sha| valid_lower_hex(sha, 40))
+            .map(str::to_owned))
+    };
+    match read() {
+        Ok(sha) => Some(sha),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(None),
+    }
+}
+
 /// Read Keyman's worn source from the committed sync step in its censused
 /// module, whose id differs between HomeServer and the other profiles.
 fn committed_keyman_source_sha(
@@ -632,16 +672,19 @@ pub(crate) fn committed_syzygy_mint_with_sudoers(
                         .then(|| receipt.source_head.clone()),
                     "transaction.source_head",
                 ),
-                "sbin" => (
-                    committed_routine_source_sha(
-                        dir,
-                        receipt,
-                        member,
-                        &["pull-repo"],
-                        "resolved_commit",
+                "sbin" => match committed_sbin_source_sha(dir, receipt) {
+                    Some(sha) => (sha, "modules.sbin.sbin-source-sync.json+command.json"),
+                    None => (
+                        committed_routine_source_sha(
+                            dir,
+                            receipt,
+                            member,
+                            &["pull-repo"],
+                            "resolved_commit",
+                        ),
+                        "routine-child.outputs.resolved_commit",
                     ),
-                    "routine-child.outputs.resolved_commit",
-                ),
+                },
                 "coronatio" | "arcadia" | "noesis" => (
                     committed_routine_source_sha(
                         dir,
