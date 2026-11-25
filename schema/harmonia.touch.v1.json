@@ -1,6 +1,6 @@
 {
   "schema": "harmonia.touch.v1",
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "role": "The touch declaration combines the shared base and the selected profile, and its base profile when it extends one, as the union of their allows and nevers. Paths and path patterns are absolute and begin with /; no .. segment or placeholder is permitted. A path containing a .. segment is undeclared regardless of its match; other paths are lexically normalized before matching. * matches one path segment and ** matches any depth. Never beats allow. A path with no matching allow row is undeclared, and an operation with no matching operation row is undeclared like a path. The package-upgrade operation means the package manager upgrading the installed set and its match is * only. A command operation matches the program as the step names it, an absolute path or a bare name. The shared/touch.json instance must include never; profile instances may omit it. The config.json owner-accept lane, when declared, writes one key at a time under HouseholdConfigLock.",
   "authority": {
     "owner": "harmonia",
@@ -127,6 +127,20 @@
         "note"
       ]
     },
+    "ClobberedRow": {
+      "fields": {
+        "path": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "note"
+      ]
+    },
     "Act": {
       "fields": {
         "name": {
@@ -153,6 +167,68 @@
       ]
     }
   },
+  "clobbered": [
+    {
+      "path": "/usr/local/bin/harmonia",
+      "note": "Harmonia engine binary"
+    },
+    {
+      "path": "/etc/systemd/system/harmonia.timer",
+      "note": "Harmonia timer unit"
+    },
+    {
+      "path": "/etc/systemd/system/harmonia.service",
+      "note": "Harmonia service unit"
+    },
+    {
+      "path": "/etc/appliance/ruyi.json",
+      "note": "Ruyi is clobbered every press as a known intended good"
+    },
+    {
+      "path": "/var/lib/harmonia/**",
+      "note": "Harmonia state and receipts"
+    },
+    {
+      "path": "/run/harmonia/*.lock",
+      "note": "Harmonia runtime locks"
+    },
+    {
+      "path": "/tmp/harmonia-external-release-*/**",
+      "note": "External release scratch"
+    },
+    {
+      "path": "/tmp/harmonia-pinned-release-*/**",
+      "note": "Pinned release scratch"
+    },
+    {
+      "path": "/tmp/harmonia-xenia-release-*/**",
+      "note": "Xenia release scratch"
+    },
+    {
+      "path": "/tmp/harmonia-release-probe-*/**",
+      "note": "Release probe scratch"
+    },
+    {
+      "path": "/tmp/harmonia-release-*/**",
+      "note": "Release scratch"
+    },
+    {
+      "path": "/tmp/harmonia-pinned-engine-*/**",
+      "note": "Pinned engine scratch"
+    },
+    {
+      "path": "/tmp/harmonia-module-observe-*/**",
+      "note": "Module observation scratch"
+    },
+    {
+      "path": "/tmp/harmonia-pinned-archive-*/**",
+      "note": "Pinned archive scratch"
+    },
+    {
+      "path": "/tmp/harmonia-xenia-stage-*/**",
+      "note": "Xenia staging scratch"
+    }
+  ],
   "acts": {
     "can": [
       {
