@@ -66,7 +66,7 @@
     {
       "path": "/etc/systemd/system/arcadia.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -78,7 +78,7 @@
     {
       "path": "/etc/systemd/timesyncd.conf.d/household.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -90,7 +90,7 @@
     {
       "path": "/etc/udev/rules.d/60-sunshine.rules",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -132,19 +132,19 @@
     {
       "path": "/home/owner/.config/retroarch/autoconfig/udev/Sony Interactive Entertainment DualSense Wireless Controller.cfg",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/home/owner/.config/retroarch/autoconfig/udev/Sunshine PS5 (virtual) pad.cfg",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/home/owner/.config/sunshine/sunshine.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -156,7 +156,7 @@
     {
       "path": "/home/owner/.config/systemd/user/sunshine.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -228,13 +228,13 @@
     {
       "path": "/usr/local/libexec/sway-seat/sway-seat-session",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/usr/local/libexec/sway-seat/sway-seat-wait-ready",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -246,7 +246,7 @@
     {
       "path": "/var/lib/harmonia/state/arcadia.sha",
       "lanes": [
-        "known-good"
+        "self"
       ]
     },
     {

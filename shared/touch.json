@@ -202,7 +202,7 @@
     {
       "path": "/opt/docs/mkdocs.yml",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -269,13 +269,13 @@
     {
       "path": "/var/lib/harmonia/state/documentation-docs-sweep.json",
       "lanes": [
-        "known-good"
+        "self"
       ]
     },
     {
       "path": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
       "lanes": [
-        "known-good"
+        "self"
       ]
     },
     {

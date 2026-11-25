@@ -17,13 +17,13 @@
     {
       "path": "/etc/chrony/chrony.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/chrony/conf.d/household.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -437,7 +437,7 @@
     {
       "path": "/etc/systemd/system/chrony-household-upstream.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -455,13 +455,13 @@
     {
       "path": "/etc/systemd/system/hold-port-forward@.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/systemd/system/homeserver-nas-open@.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -485,13 +485,13 @@
     {
       "path": "/etc/systemd/system/mnt-nas.mount",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/systemd/system/mnt-nas_backup.mount",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -545,7 +545,7 @@
     {
       "path": "/etc/systemd/system/transmissionVPN.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -575,7 +575,7 @@
     {
       "path": "/etc/udev/rules.d/99-rapl-permissions.rules",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -599,13 +599,13 @@
     {
       "path": "/opt/forgejo",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/opt/forgejo/forgejo",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -623,43 +623,43 @@
     {
       "path": "/opt/homeserver/php-fpm/current/fpm/pool.d/piwigo.conf",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/opt/homeserver/php-fpm/current/mods-available/piwigo.ini",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/opt/homeserver/postgresql/current/conf.d/ramdisk.conf",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/opt/homeserver/postgresql/current/conf.d/tuning.conf",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/opt/homeserver/postgresql/current/pg_hba.conf",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/opt/homeserver/postgresql/current/postgresql.conf",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
       "path": "/opt/yarr/yarr",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -726,7 +726,7 @@
       "kind": "unit",
       "match": "postgresql@.service",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {

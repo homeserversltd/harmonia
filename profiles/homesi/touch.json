@@ -54,7 +54,7 @@
     {
       "path": "/etc/chromium.d/user-flags",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -66,13 +66,13 @@
     {
       "path": "/etc/chromium/policies/managed/harmonia-chromium-bookmarks.json",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/chromium/policies/managed/harmonia-chromium-extensions.json",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -84,7 +84,7 @@
     {
       "path": "/etc/chromium/policies/recommended/harmonia-chromium-policy.json",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -96,7 +96,7 @@
     {
       "path": "/etc/nftables.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -114,13 +114,13 @@
     {
       "path": "/etc/samba/smb.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/systemd/system/noesis.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -138,19 +138,19 @@
     {
       "path": "/etc/systemd/timesyncd.conf.d/household.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/udev/rules.d/60-sunshine.rules",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/udev/rules.d/99-rapl-permissions.rules",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -186,7 +186,7 @@
     {
       "path": "/home/owner/.config/chromium-flags.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -384,7 +384,7 @@
     {
       "path": "/home/owner/.config/sunshine/sunshine.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -462,7 +462,7 @@
     {
       "path": "/home/owner/.config/systemd/user/hometv-sway-session.target.d/10-homesi-services.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -492,13 +492,13 @@
     {
       "path": "/home/owner/.config/systemd/user/screen-supervisor.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/home/owner/.config/systemd/user/sunshine@.service",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -594,7 +594,7 @@
     {
       "path": "/usr/lib/libreoffice/share/registry/dark-appearance.xcd",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
@@ -624,7 +624,7 @@
     {
       "path": "/var/lib/harmonia/state/noesis.sha",
       "lanes": [
-        "known-good"
+        "self"
       ]
     },
     {
@@ -675,7 +675,7 @@
       "kind": "unit",
       "match": "bluetooth.service",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {

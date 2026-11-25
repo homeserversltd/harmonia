@@ -5,7 +5,7 @@
     {
       "path": "/etc/chromium.d/user-flags",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -17,13 +17,13 @@
     {
       "path": "/etc/chromium/policies/managed/harmonia-chromium-bookmarks.json",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/chromium/policies/managed/harmonia-chromium-extensions.json",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -35,13 +35,13 @@
     {
       "path": "/etc/chromium/policies/recommended/harmonia-chromium-policy.json",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
       "path": "/etc/systemd/timesyncd.conf.d/household.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -59,7 +59,7 @@
     {
       "path": "/home/owner/.config/chromium-flags.conf",
       "lanes": [
-        "known-good"
+        "interactable"
       ]
     },
     {
@@ -437,7 +437,7 @@
     {
       "path": "/usr/lib/libreoffice/share/registry/dark-appearance.xcd",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     }
   ],
@@ -446,7 +446,7 @@
       "kind": "unit",
       "match": "bluetooth.service",
       "lanes": [
-        "interactable"
+        "known-good"
       ]
     },
     {
