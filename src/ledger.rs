@@ -738,18 +738,35 @@ pub(crate) struct RollbackPress {
     pub(crate) roots: Vec<PathBuf>,
 }
 
-pub(crate) fn rollback_begin(run_id: &str, roots: &[PathBuf]) -> Result<(), String> {
+pub(crate) struct RollbackNodeRow {
+    pub path: Vec<u8>, pub kind: String, pub mode: u32, pub uid: u32, pub gid: u32,
+    pub sha256: Option<Vec<u8>>, pub link: Option<Vec<u8>>,
+}
+pub(crate) struct RollbackRows {
+    pub roots: Vec<(Vec<u8>, String)>, pub nodes: Vec<RollbackNodeRow>,
+}
+
+pub(crate) fn rollback_begin(run_id: &str, rows: &RollbackRows, services: &[crate::atoms::ask::change_unit::ServiceStateSnapshot]) -> Result<(), String> {
     with_proposal_transaction(|connection| {
         connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS rollback_press (run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, start_ticks INTEGER, state TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS rollback_root (run_id TEXT NOT NULL, path BLOB NOT NULL, PRIMARY KEY(run_id,path));"
+            "CREATE TABLE IF NOT EXISTS rollback_press (run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, start_ticks INTEGER, state TEXT NOT NULL);"
         ).map_err(database_error)?;
         let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM rollback_press)", [], |row| row.get(0)).map_err(database_error)?;
         if present { return Err("rollback-shadow-record-present".into()); }
+        connection.execute_batch("DROP TABLE IF EXISTS rollback_root; DROP TABLE IF EXISTS rollback_node; DROP TABLE IF EXISTS rollback_service;
+            CREATE TABLE rollback_root (run_id TEXT NOT NULL, path BLOB NOT NULL, member TEXT NOT NULL, PRIMARY KEY(run_id,path));
+            CREATE TABLE rollback_node (run_id TEXT NOT NULL, path BLOB NOT NULL, kind TEXT NOT NULL, mode INTEGER NOT NULL, uid INTEGER NOT NULL, gid INTEGER NOT NULL, sha256 BLOB, link BLOB, PRIMARY KEY(run_id,path));
+            CREATE TABLE rollback_service (run_id TEXT NOT NULL, name TEXT NOT NULL, user INTEGER NOT NULL, target_user TEXT, enabled INTEGER NOT NULL, active INTEGER NOT NULL);").map_err(database_error)?;
         connection.execute("INSERT INTO rollback_press(run_id,pid,start_ticks,state) VALUES (?1,?2,?3,'building')",
             params![run_id, std::process::id(), crate::atoms::attest::convergence_receipts::current_process_start_ticks()]).map_err(database_error)?;
-        for path in roots {
-            connection.execute("INSERT INTO rollback_root(run_id,path) VALUES (?1,?2)", params![run_id,path.as_os_str().as_bytes()]).map_err(database_error)?;
+        for (path, member) in &rows.roots {
+            connection.execute("INSERT INTO rollback_root(run_id,path,member) VALUES (?1,?2,?3)", params![run_id,path,member]).map_err(database_error)?;
+        }
+        for node in &rows.nodes {
+            connection.execute("INSERT INTO rollback_node(run_id,path,kind,mode,uid,gid,sha256,link) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", params![run_id,node.path,node.kind,node.mode,node.uid,node.gid,node.sha256,node.link]).map_err(database_error)?;
+        }
+        for service in services {
+            connection.execute("INSERT INTO rollback_service(run_id,name,user,target_user,enabled,active) VALUES (?1,?2,?3,?4,?5,?6)", params![run_id,service.name,service.user,service.target_user,service.enabled,service.active]).map_err(database_error)?;
         }
         Ok(())
     })
@@ -765,10 +782,41 @@ pub(crate) fn rollback_mark(run_id: &str, state: &str) -> Result<(), String> {
 
 pub(crate) fn rollback_delete(run_id: &str) -> Result<(), String> {
     with_proposal_transaction(|connection| {
-        connection.execute("DELETE FROM rollback_root WHERE run_id=?1", [run_id]).map_err(database_error)?;
-        connection.execute("DELETE FROM rollback_press WHERE run_id=?1", [run_id]).map_err(database_error)?;
+        rollback_delete_on(connection, run_id)?;
         Ok(())
     })
+}
+
+fn rollback_delete_on(connection: &Connection, run_id: &str) -> Result<(), String> {
+    for table in ["rollback_node", "rollback_service", "rollback_root", "rollback_press"] {
+        let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0)).map_err(database_error)?;
+        if exists { connection.execute(&format!("DELETE FROM {table} WHERE run_id=?1"), [run_id]).map_err(database_error)?; }
+    }
+    Ok(())
+}
+
+pub(crate) fn rollback_takeover(observed: &RollbackPress) -> Result<Option<bool>, String> {
+    with_proposal_transaction(|connection| {
+        let same: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM rollback_press WHERE run_id=?1 AND pid=?2 AND start_ticks IS ?3 AND state='held')", params![observed.run_id,observed.pid,observed.start_ticks], |r| r.get(0)).map_err(database_error)?;
+        if !same { return Ok(None); }
+        let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='rollback_node')", [], |r| r.get(0)).map_err(database_error)?;
+        if !exists { return Ok(Some(false)); }
+        let nodes: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM rollback_node WHERE run_id=?1)", [&observed.run_id], |r| r.get(0)).map_err(database_error)?;
+        if !nodes { return Ok(Some(false)); }
+        connection.execute("UPDATE rollback_press SET pid=?1,start_ticks=?2 WHERE run_id=?3", params![std::process::id(),crate::atoms::attest::convergence_receipts::current_process_start_ticks(),observed.run_id]).map_err(database_error)?;
+        Ok(Some(true))
+    })
+}
+
+pub(crate) fn rollback_rows(run_id: &str) -> Result<(RollbackRows, Vec<crate::atoms::ask::change_unit::ServiceStateSnapshot>), String> {
+    let connection = reader()?.ok_or_else(|| "rollback database absent".to_string())?;
+    let mut query = connection.prepare("SELECT path,member FROM rollback_root WHERE run_id=?1").map_err(database_error)?;
+    let roots = query.query_map([run_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(database_error)?.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    let mut query = connection.prepare("SELECT path,kind,mode,uid,gid,sha256,link FROM rollback_node WHERE run_id=?1").map_err(database_error)?;
+    let nodes = query.query_map([run_id], |r| Ok(RollbackNodeRow { path:r.get(0)?,kind:r.get(1)?,mode:r.get(2)?,uid:r.get(3)?,gid:r.get(4)?,sha256:r.get(5)?,link:r.get(6)? })).map_err(database_error)?.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    let mut query = connection.prepare("SELECT name,user,target_user,enabled,active FROM rollback_service WHERE run_id=?1").map_err(database_error)?;
+    let services = query.query_map([run_id], |r| Ok(crate::atoms::ask::change_unit::ServiceStateSnapshot { name:r.get(0)?,user:r.get(1)?,target_user:r.get(2)?,enabled:r.get(3)?,active:r.get(4)? })).map_err(database_error)?.collect::<Result<Vec<_>,_>>().map_err(database_error)?;
+    Ok((RollbackRows { roots, nodes }, services))
 }
 
 pub(crate) fn rollback_clear_dead(
@@ -787,8 +835,7 @@ pub(crate) fn rollback_clear_dead(
             .collect::<Result<Vec<_>,_>>().map_err(database_error)?;
         drop(query);
         remove(&roots)?;
-        connection.execute("DELETE FROM rollback_root WHERE run_id=?1", [&observed.run_id]).map_err(database_error)?;
-        connection.execute("DELETE FROM rollback_press WHERE run_id=?1", [&observed.run_id]).map_err(database_error)?;
+        rollback_delete_on(connection, &observed.run_id)?;
         Ok(())
     })
 }

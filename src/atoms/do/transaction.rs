@@ -469,7 +469,7 @@ pub(crate) fn rolling_update_run(
         }
     };
     if apply {
-        if let Err(reason) = crate::atoms::r#do::ritual::recover_dead_shadow() {
+        if let Err(reason) = crate::atoms::r#do::ritual::recover_dead_shadow(mode.invocation(), &profile.id) {
             write_run_refusal_receipt(receipt_dir, profile, apply, &reason)?;
             return Err(reason);
         }

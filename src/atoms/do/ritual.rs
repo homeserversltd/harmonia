@@ -21,7 +21,7 @@ thread_local! {
 #[derive(Clone)]
 enum ShadowState {
     Idle,
-    Armed(Snapshot),
+    Armed(Snapshot, Vec<ServiceStateSnapshot>),
     Building,
     Built(Snapshot, bool), // owed until commit, skipped rollback, or clean rollback
     Refused(String),
@@ -36,9 +36,9 @@ fn shadow_name(root: &Path, building: bool) -> Result<PathBuf, String> {
     Ok(root.parent().ok_or_else(|| format!("rollback-shadow-invalid {}", root.display()))?.join(sibling))
 }
 
-pub(crate) fn arm_shadow(snapshot: &Snapshot) {
+pub(crate) fn arm_shadow(snapshot: &Snapshot, services: &[ServiceStateSnapshot]) {
     if !snapshot.roots.is_empty() {
-        SHADOW.with(|state| *state.borrow_mut() = ShadowState::Armed(snapshot.clone()));
+        SHADOW.with(|state| *state.borrow_mut() = ShadowState::Armed(snapshot.clone(), services.to_vec()));
     }
 }
 
@@ -156,14 +156,14 @@ pub(crate) fn authorize_shadow() -> Result<(), String> {
         let mut state = state.borrow_mut();
         match &*state {
             ShadowState::Refused(signal) => Err(signal.clone()),
-            ShadowState::Armed(_) => match std::mem::replace(&mut *state, ShadowState::Building) {
-                ShadowState::Armed(snapshot) => Ok(Some(snapshot)),
+            ShadowState::Armed(_, _) => match std::mem::replace(&mut *state, ShadowState::Building) {
+                ShadowState::Armed(snapshot, services) => Ok(Some((snapshot, services))),
                 _ => unreachable!(),
             },
             _ => Ok(None),
         }
     })?;
-    if let Some(snapshot) = snapshot {
+    if let Some((snapshot, services)) = snapshot {
         let result = (|| {
             let run_id = crate::receipts::active_run_id().ok_or_else(|| "rollback-shadow-record-failed: run id absent".to_string())?;
             let roots = snapshot.roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>();
@@ -172,7 +172,8 @@ pub(crate) fn authorize_shadow() -> Result<(), String> {
                 if crate::ledger::rollback_read()?.is_some() { return Err("rollback-shadow-record-present".into()); }
                 return Err(error);
             }
-            crate::ledger::rollback_begin(&run_id, &roots)?;
+            let rows = snapshot_rows(&snapshot)?;
+            crate::ledger::rollback_begin(&run_id, &rows, &services)?;
             if let Err((mut error, survives)) = build_shadows(&snapshot) {
                 if !survives {
                     if let Err(cleanup) = crate::ledger::rollback_delete(&run_id) {
@@ -227,14 +228,35 @@ pub(crate) fn remove_shadow_roots(roots: &[PathBuf]) -> Result<(), String> {
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
 
-pub(crate) fn recover_dead_shadow() -> Result<(), String> {
+pub(crate) fn recover_dead_shadow(key: Option<&InvocationKey>, profile_id: &str) -> Result<(), String> {
     let Some(press) = crate::ledger::rollback_read()? else { return Ok(()); };
     let live = super::convergence_lock::engine_run_lock_pid_is_live(press.pid)
         .map_err(|error| format!("rollback-shadow-cleanup-failed pid={}: {error}", press.pid))?;
     let ticks = crate::atoms::attest::convergence_receipts::process_start_ticks(press.pid);
     if live && (press.start_ticks.is_none() || ticks.is_none() || press.start_ticks == ticks) { return Ok(()); }
     match press.state.as_str() {
-        "held" => Err(format!("rollback-recovery-owed run_id={}", press.run_id)),
+        "held" => {
+            let owed = || format!("rollback-recovery-owed run_id={}", press.run_id);
+            let key = key.ok_or_else(owed)?;
+            match crate::ledger::rollback_takeover(&press)? {
+                None => return Ok(()),
+                Some(false) => return Err(owed()),
+                Some(true) => {},
+            }
+            let incomplete = |error: String| format!("rollback-recovery-incomplete run_id={}: {error}", press.run_id);
+            let (snapshot, services) = snapshot_from_rows(&press.run_id).map_err(&incomplete)?;
+            let mut restored = Vec::new();
+            let mut errors = Vec::new();
+            SHADOW.with(|state| *state.borrow_mut() = ShadowState::Restoring);
+            if let Err(error) = restore(&snapshot, key, &mut restored) { errors.push(error); }
+            if let Err(error) = restore_services(&services, key) { errors.push(format!("rollback-service-restore-failed: {error}")); }
+            SHADOW.with(|state| *state.borrow_mut() = ShadowState::Idle);
+            if !errors.is_empty() { return Err(incomplete(errors.join("; "))); }
+            remove_shadow_roots(&press.roots).map_err(&incomplete)?;
+            crate::ledger::rollback_delete(&press.run_id).map_err(&incomplete)?;
+            let _ = crate::deeds::record("transaction", profile_id, false, true, None, Some(&press.run_id), None, Some("transaction-killed-rolled-back"), Some(restored.len() as u64));
+            Ok(())
+        },
         "building" | "closing" => {
             crate::ledger::rollback_clear_dead(&press, remove_shadow_roots)
                 .map_err(|error| if error.starts_with("rollback-shadow-cleanup-failed") { error }
@@ -278,6 +300,38 @@ pub(crate) struct Snapshot {
     pub(crate) roots: Vec<Target>,
     nodes: Vec<Node>,
 }
+fn snapshot_rows(snapshot: &Snapshot) -> Result<crate::ledger::RollbackRows, String> {
+    let roots = snapshot.roots.iter().map(|root| (root.path.as_os_str().as_bytes().to_vec(), root.member.clone())).collect();
+    let nodes = snapshot.nodes.iter().map(|node| {
+        let (kind, sha256, link) = match &node.kind {
+            Kind::Missing => ("missing", None, None),
+            Kind::Dir => ("dir", None, None),
+            Kind::File(hash) => ("file", Some(hash.to_vec()), None),
+            Kind::Symlink(text) => ("link", None, Some(text.as_os_str().as_bytes().to_vec())),
+            Kind::Special => return Err(format!("rollback-shadow-special-file {}", node.path.display())),
+        };
+        Ok(crate::ledger::RollbackNodeRow { path: node.path.as_os_str().as_bytes().to_vec(), kind: kind.into(), mode: node.mode, uid: node.uid, gid: node.gid, sha256, link })
+    }).collect::<Result<Vec<_>, String>>()?;
+    Ok(crate::ledger::RollbackRows { roots, nodes })
+}
+
+fn snapshot_from_rows(run_id: &str) -> Result<(Snapshot, Vec<ServiceStateSnapshot>), String> {
+    use std::os::unix::ffi::OsStringExt;
+    let (rows, services) = crate::ledger::rollback_rows(run_id)?;
+    let roots = rows.roots.into_iter().map(|(path, member)| Target { path: PathBuf::from(std::ffi::OsString::from_vec(path)), member, module: String::new() }).collect();
+    let nodes = rows.nodes.into_iter().map(|row| {
+        let kind = match row.kind.as_str() {
+            "missing" => Kind::Missing,
+            "dir" => Kind::Dir,
+            "file" => Kind::File(row.sha256.ok_or_else(|| "rollback file hash absent".to_string())?.try_into().map_err(|_| "rollback file hash invalid".to_string())?),
+            "link" => Kind::Symlink(PathBuf::from(std::ffi::OsString::from_vec(row.link.ok_or_else(|| "rollback link absent".to_string())?))),
+            _ => return Err(format!("rollback node kind invalid: {}", row.kind)),
+        };
+        Ok(Node { path: PathBuf::from(std::ffi::OsString::from_vec(row.path)), kind, mode: row.mode, uid: row.uid, gid: row.gid })
+    }).collect::<Result<Vec<_>, String>>()?;
+    Ok((Snapshot { roots, nodes }, services))
+}
+
 pub(crate) fn validate_member_scoped_target(path: &Path, member: &str) -> Result<(), String> {
     if !path.is_absolute()
         || path

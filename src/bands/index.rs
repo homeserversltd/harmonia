@@ -658,7 +658,7 @@ pub(crate) fn run_profile_engine_with_projection(
                         }
                     }
                     if let Some(transaction) = value.sealed_projection.as_ref() {
-                        crate::atoms::r#do::ritual::arm_shadow(&transaction.sealed.snapshot);
+                        crate::atoms::r#do::ritual::arm_shadow(&transaction.sealed.snapshot, &transaction.sealed.services);
                     }
                 }
             }
