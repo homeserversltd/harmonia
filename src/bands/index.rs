@@ -329,6 +329,7 @@ pub(crate) fn run_profile_engine_with_projection(
     requested_latest_alias: Option<&Path>,
     materialize_on_stage: bool,
 ) -> Result<(), String> {
+    crate::atoms::touch::start();
     let _observation_guard = crate::deeds::ObservationGuard::enter(!mode.is_software_apply());
     let _config_lane = propose_edits::ConfigActiveLaneGuard::enter(
         context.map(|value| value.face.as_str()),
@@ -544,7 +545,9 @@ pub(crate) fn run_profile_engine_with_projection(
                     let use_standing_profile = standing_profile_debt_validated
                         && engine_content_seat_absent(&engine_source_root)?;
                     if use_standing_profile {
-                        touch_root = standing_profile_root.to_path_buf();
+                        if let Some(source_root) = standing_profile_root.parent().and_then(Path::parent) {
+                            touch_root = source_root.to_path_buf();
+                        }
                         event(
                             &mut events,
                             "stage-profile-standing-source-selected",
@@ -665,7 +668,7 @@ pub(crate) fn run_profile_engine_with_projection(
                 }
                 // A renew-self re-exec starts a new press; earlier writes are not
                 // present in this process's collector. Load only after staging.
-                crate::atoms::touch::start(crate::atoms::touch::load(&touch_root, &active_profile.id));
+                crate::atoms::touch::attach(crate::atoms::touch::load(&touch_root, &active_profile.id));
                 crate::bands::compare::execute_manifest_modules(
                     &active_profile,
                     receipt_dir,

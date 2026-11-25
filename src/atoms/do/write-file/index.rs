@@ -44,6 +44,7 @@ pub(crate) fn file_write(
                 backup.display()
             )
         })?;
+        crate::atoms::touch::record(backup, None, false);
         Some(backup.to_path_buf())
     } else {
         None

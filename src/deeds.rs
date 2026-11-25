@@ -38,7 +38,13 @@ impl ContextGuard {
             let context = Context {
                 run_id: run_id.map(str::to_owned).or_else(|| active.as_ref().and_then(|value| value.run_id.clone())),
                 module_id: module_id.map(str::to_owned).or_else(|| active.as_ref().and_then(|value| value.module_id.clone())),
-                step_id: active.as_ref().and_then(|value| value.step_id.clone()),
+                step_id: active.as_ref().and_then(|value| {
+                    if module_id.is_none() || module_id == value.module_id.as_deref() {
+                        value.step_id.clone()
+                    } else {
+                        None
+                    }
+                }),
                 started: Instant::now(),
                 duration_scope,
             };

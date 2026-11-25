@@ -637,8 +637,15 @@ pub fn check(declaration: &Declaration, path: &str) -> Value {
 #[derive(Debug)]
 struct Collector {
     declaration: Declaration,
-    undeclared: Vec<Value>,
-    seen_targets: HashSet<String>,
+    writes: Vec<Touch>,
+}
+
+#[derive(Debug)]
+struct Touch {
+    target: String,
+    module: Option<String>,
+    step: Option<String>,
+    owner_accept: bool,
 }
 
 static COLLECTOR: OnceLock<Mutex<Option<Collector>>> = OnceLock::new();
@@ -652,13 +659,18 @@ fn collector_lock() -> MutexGuard<'static, Option<Collector>> {
 }
 
 /// Start a fresh press. Starting again discards every prior target and receipt.
-pub fn start(declaration: Declaration) {
+pub fn start() {
     let mut state = collector_lock();
     *state = Some(Collector {
-        declaration,
-        undeclared: Vec::new(),
-        seen_targets: HashSet::new(),
+        declaration: Declaration::empty(LoadState::Absent, None, None, "", None),
+        writes: Vec::new(),
     });
+}
+
+pub fn attach(declaration: Declaration) {
+    if let Some(collector) = collector_lock().as_mut() {
+        collector.declaration = declaration;
+    }
 }
 
 fn is_within(path: &str, root: &str) -> bool {
@@ -683,11 +695,7 @@ fn intrinsic_self_target(path: &str) -> bool {
     normalize_absolute(&temp_root).is_some_and(|root| is_within(path, &root))
 }
 
-fn lane_hint(
-    declaration: &Declaration,
-    normalized_target: Option<&str>,
-    owner_accept: bool,
-) -> Option<&'static str> {
+fn lane_hint(normalized_target: Option<&str>, owner_accept: bool) -> Option<&'static str> {
     if let Some(normalized) = normalized_target {
         if intrinsic_self_target(normalized) {
             return Some("self");
@@ -708,34 +716,18 @@ fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool) {
     };
 
     let target = path.to_string_lossy().into_owned();
-    let normalized = normalize_absolute(&target);
-    let check_result = check(&collector.declaration, &target);
-    if check_result
-        .get("allowed")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return;
-    }
-
-    let dedupe_key = normalized.clone().unwrap_or_else(|| target.clone());
-    if !collector.seen_targets.insert(dedupe_key) {
-        return;
-    }
-
     let module =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(crate::deeds::active_module_id))
             .ok()
             .flatten();
     let active_step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(crate::deeds::active_step_id))
         .ok().flatten();
-    let hint = lane_hint(&collector.declaration, normalized.as_deref(), owner_accept);
-    collector.undeclared.push(json!({
-        "module": module,
-        "step": step.or(active_step.as_deref()),
-        "target": target,
-        "lane_hint": hint,
-    }));
+    collector.writes.push(Touch {
+        module,
+        step: step.map(str::to_owned).or(active_step),
+        target,
+        owner_accept,
+    });
 }
 
 /// Record is deliberately non-refusing and inactive until [`start`] is called.
@@ -751,12 +743,27 @@ pub fn receipt() -> Value {
     let Some(collector) = state.as_ref() else {
         return Value::Null;
     };
+    let mut seen_targets = HashSet::new();
+    let undeclared: Vec<Value> = collector.writes.iter().filter_map(|touch| {
+        let normalized = normalize_absolute(&touch.target);
+        let key = normalized.clone().unwrap_or_else(|| touch.target.clone());
+        if !seen_targets.insert(key) || check(&collector.declaration, &touch.target)
+            .get("allowed").and_then(Value::as_bool).unwrap_or(false) {
+            return None;
+        }
+        Some(json!({
+            "module": touch.module,
+            "step": touch.step,
+            "target": touch.target,
+            "lane_hint": lane_hint(normalized.as_deref(), touch.owner_accept),
+        }))
+    }).collect();
     json!({
         "declaration": collector.declaration.state.as_str(),
         "source": collector.declaration.source,
         "source_revision": collector.declaration.source_revision,
         "declared_count": collector.declaration.allow.len(),
         "hooked": HOOKED,
-        "undeclared": collector.undeclared,
+        "undeclared": undeclared,
     })
 }

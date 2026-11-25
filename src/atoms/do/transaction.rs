@@ -219,7 +219,8 @@ fn refresh_run_touch_after_rollback(receipt_dir: &Path) -> Result<(), String> {
     let mut run: serde_json::Value = serde_json::from_reader(
         fs::File::open(&path).map_err(|error| error.to_string())?,
     ).map_err(|error| error.to_string())?;
-    run["touch"] = crate::atoms::touch::receipt();
+    let object = run.as_object_mut().ok_or_else(|| "touch-refresh-run-receipt-not-object".to_string())?;
+    object.insert("touch".to_string(), crate::atoms::touch::receipt());
     write_json(&path, &run)
 }
 
@@ -664,7 +665,9 @@ pub(crate) fn rolling_update_run(
                     return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
                 }
                 if failure_receipt.is_ok() {
-                    let _ = refresh_run_touch_after_rollback(&effective_receipt_dir);
+                    if let Err(error) = refresh_run_touch_after_rollback(&effective_receipt_dir) {
+                        return_error.push_str(&format!("; touch-refresh-failed: {error}"));
+                    }
                 }
                 if let Err(write_error) = failure_receipt {
                     return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
@@ -720,7 +723,9 @@ pub(crate) fn rolling_update_run(
                 return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
             }
             if failure_receipt.is_ok() {
-                let _ = refresh_run_touch_after_rollback(&effective_receipt_dir);
+                if let Err(error) = refresh_run_touch_after_rollback(&effective_receipt_dir) {
+                    return_error.push_str(&format!("; touch-refresh-failed: {error}"));
+                }
             }
             if let Err(write_error) = failure_receipt {
                 return_error = format!(
@@ -755,7 +760,9 @@ pub(crate) fn rolling_update_run(
                 return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
             }
             if failure_receipt.is_ok() {
-                let _ = refresh_run_touch_after_rollback(&effective_receipt_dir);
+                if let Err(error) = refresh_run_touch_after_rollback(&effective_receipt_dir) {
+                    return_error.push_str(&format!("; touch-refresh-failed: {error}"));
+                }
             }
             if let Err(write_error) = failure_receipt {
                 return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
@@ -811,7 +818,9 @@ pub(crate) fn rolling_update_run(
                         return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
                     }
                     if failure_receipt.is_ok() {
-                        let _ = refresh_run_touch_after_rollback(&effective_receipt_dir);
+                        if let Err(error) = refresh_run_touch_after_rollback(&effective_receipt_dir) {
+                            return_error.push_str(&format!("; touch-refresh-failed: {error}"));
+                        }
                     }
                     if let Err(write_error) = failure_receipt {
                         return_error = format!(
@@ -850,7 +859,9 @@ pub(crate) fn rolling_update_run(
                 return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
             }
             if failure_receipt.is_ok() {
-                let _ = refresh_run_touch_after_rollback(&effective_receipt_dir);
+                if let Err(error) = refresh_run_touch_after_rollback(&effective_receipt_dir) {
+                    return_error.push_str(&format!("; touch-refresh-failed: {error}"));
+                }
             }
             if let Err(write_error) = failure_receipt {
                 return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
@@ -908,7 +919,9 @@ pub(crate) fn rolling_update_run(
                     return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
                 }
                 if failure_receipt.is_ok() {
-                    let _ = refresh_run_touch_after_rollback(&effective_receipt_dir);
+                    if let Err(error) = refresh_run_touch_after_rollback(&effective_receipt_dir) {
+                        return_error.push_str(&format!("; touch-refresh-failed: {error}"));
+                    }
                 }
                 if let Err(write_error) = failure_receipt {
                     return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));

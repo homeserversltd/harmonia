@@ -312,6 +312,7 @@ fn strike_with_tracking(
             .sync_all()
             .map_err(|e| io_error("backup-sync", backup_path, e))?;
         drop(backup);
+        crate::atoms::touch::record(backup_path, None, owner_accept);
         let target_dir = target
             .parent()
             .ok_or_else(|| format!("projectio-target-parent-missing {}", target.display()))?;
