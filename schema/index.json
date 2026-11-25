@@ -13,6 +13,10 @@
       "file": "schema/harmonia.module.ladder.v1.json",
       "schema_version": null
     },
+    "harmonia.touch.v1": {
+      "file": "schema/harmonia.touch.v1.json",
+      "schema_version": "1.0.0"
+    },
     "intents/": {
       "folder": "schema/intents",
       "schema_version": null

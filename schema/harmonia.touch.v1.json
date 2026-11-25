@@ -1,0 +1,131 @@
+{
+  "schema": "harmonia.touch.v1",
+  "schema_version": "1.0.0",
+  "role": "The touch declaration combines the shared base and the selected profile, and its base profile when it extends one, as the union of their allows and nevers. Paths and path patterns are absolute and begin with /; no .. segment or placeholder is permitted. A path containing a .. segment is undeclared regardless of its match; other paths are lexically normalized before matching. * matches one path segment and ** matches any depth. Never beats allow. A path with no matching allow row is undeclared, and an operation with no matching operation row is undeclared like a path. The shared/touch.json instance must include never; profile instances may omit it. The config.json owner-accept lane, when declared, writes one key at a time under HouseholdConfigLock.",
+  "authority": {
+    "owner": "harmonia",
+    "path": "schema/harmonia.touch.v1.json",
+    "grant": "Harmonia's own seat for its declared touch surface"
+  },
+  "evolution": {
+    "law": "additive-only",
+    "missing_field_semantics": "An absent optional profile, extends, never or note adds no declaration; undeclared paths and operations remain undeclared",
+    "unknown_fields_preserved": true
+  },
+  "fields": {
+    "schema": {
+      "type": "string",
+      "const": "harmonia.touch.v1"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "extends": {
+      "type": "string"
+    },
+    "allow": {
+      "type": "array",
+      "items": {
+        "type_ref": "Allow"
+      }
+    },
+    "never": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type_ref": "Operation"
+      }
+    }
+  },
+  "field_types": {
+    "schema": "string",
+    "profile": "string",
+    "extends": "string",
+    "allow": "array<Allow>",
+    "never": "array<path-pattern>",
+    "operations": "array<Operation>"
+  },
+  "required": [
+    "schema",
+    "allow",
+    "operations"
+  ],
+  "optional": [
+    "profile",
+    "extends",
+    "never"
+  ],
+  "types": {
+    "Allow": {
+      "fields": {
+        "path": {
+          "type": "string"
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "interactable",
+              "self",
+              "known-good"
+            ]
+          }
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "lanes"
+      ],
+      "optional": [
+        "note"
+      ]
+    },
+    "Operation": {
+      "fields": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "package",
+            "command",
+            "unit"
+          ]
+        },
+        "match": {
+          "type": "string"
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "interactable",
+              "self",
+              "known-good"
+            ]
+          }
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "match",
+        "lanes"
+      ],
+      "optional": [
+        "note"
+      ]
+    }
+  },
+  "canonical_bytes": "UTF-8 JSON, two-space indentation and one trailing LF"
+}
