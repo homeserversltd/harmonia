@@ -91,6 +91,7 @@ impl StampObservation {
 
     pub(crate) fn stamp_target(&self, member: &str) -> Option<&str> {
         if member == MEMBERS[8]
+            || self.member_mode(member) != "safe"
             || self.verdict.as_deref() != Some("VALID")
             || !self
                 .declared_members
@@ -109,6 +110,7 @@ impl StampObservation {
     pub(crate) fn seal_target(&self, member: &str) -> Option<&str> {
         let seal = self.fire_seal.as_ref()?;
         if member == MEMBERS[8]
+            || self.member_mode(member) != "safe"
             || seal.status != "VALID"
             || !self
                 .declared_members
