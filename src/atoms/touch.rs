@@ -727,10 +727,12 @@ fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool) {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(crate::deeds::active_module_id))
             .ok()
             .flatten();
+    let active_step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(crate::deeds::active_step_id))
+        .ok().flatten();
     let hint = lane_hint(&collector.declaration, normalized.as_deref(), owner_accept);
     collector.undeclared.push(json!({
         "module": module,
-        "step": step,
+        "step": step.or(active_step.as_deref()),
         "target": target,
         "lane_hint": hint,
     }));

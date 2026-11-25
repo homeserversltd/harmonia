@@ -48,16 +48,17 @@ pub(crate) fn file_write(
     } else {
         None
     };
-    if options.write_bytes || options.mode.is_some() || options.uid.is_some() || options.gid.is_some() {
-        crate::atoms::touch::record(path, None, false);
-    }
     if options.write_bytes {
         atomic_file_write(path, bytes, options.mode, options.uid, options.gid)?;
     } else {
         if let Some(mode) = options.mode {
             set_mode(path, mode)?;
+            crate::atoms::touch::record(path, None, false);
         }
         set_ownership(path, options.uid, options.gid)?;
+        if options.mode.is_none() && (options.uid.is_some() || options.gid.is_some()) {
+            crate::atoms::touch::record(path, None, false);
+        }
     }
     let _ = (authorization, invocation);
     Ok(FileWriteResult { backed_up })
@@ -109,6 +110,7 @@ fn atomic_file_write(
                 path.display()
             )
         })?;
+        crate::atoms::touch::record(path, None, false);
         let directory = OpenOptions::new()
             .read(true)
             .open(parent)
@@ -154,7 +156,6 @@ pub(crate) fn atomic_write_bytes_with_ownership(
             .unwrap_or_default()
             .as_nanos()
     ));
-    crate::atoms::touch::record(target, None, false);
     let result = (|| -> Result<(), String> {
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -169,6 +170,7 @@ pub(crate) fn atomic_write_bytes_with_ownership(
         if let Some(mode) = mode { managed_set_mode(&temp, mode)?; }
         managed_set_ownership(&temp, uid, gid)?;
         fs::rename(&temp, target).map_err(|e| format!("files-atomic-promote-failed {} -> {}: {e}", temp.display(), target.display()))?;
+        crate::atoms::touch::record(target, None, false);
         let directory = OpenOptions::new().read(true).open(parent)
             .map_err(|e| format!("files-parent-open-failed {}: {e}", parent.display()))?;
         directory.sync_all().map_err(|e| format!("files-parent-sync-failed {}: {e}", parent.display()))?;

@@ -657,7 +657,8 @@ pub(crate) fn rolling_update_run(
                 }
                 return Err(return_error);
             };
-            let failure_receipt = write_transaction_failure_run_receipt(
+            // Write run.json after rollback so touch includes rollback writes.
+            let failure_receipt = || write_transaction_failure_run_receipt(
                 &effective_receipt_dir,
                 profile,
                 module_root,
@@ -705,7 +706,7 @@ pub(crate) fn rolling_update_run(
             ) {
                 return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
             }
-            if let Err(write_error) = failure_receipt {
+            if let Err(write_error) = failure_receipt() {
                 return_error = format!(
                     "{return_error}; transaction-failure-receipt-write-failed: {write_error}"
                 );
@@ -747,7 +748,7 @@ pub(crate) fn rolling_update_run(
                 if let Err(error) =
                     crate::atoms::r#do::transaction::apply_projection(&mut txn, child, key)
                 {
-                    let failure_receipt = write_transaction_failure_run_receipt(
+                    let failure_receipt = || write_transaction_failure_run_receipt(
                         &effective_receipt_dir,
                         profile,
                         module_root,
@@ -790,7 +791,7 @@ pub(crate) fn rolling_update_run(
                     ) {
                         return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
                     }
-                    if let Err(write_error) = failure_receipt {
+                    if let Err(write_error) = failure_receipt() {
                         return_error = format!(
                             "{return_error}; transaction-failure-receipt-write-failed: {write_error}"
                         );
@@ -834,7 +835,7 @@ pub(crate) fn rolling_update_run(
         let receipt = match crate::atoms::r#do::transaction::commit_projection(&mut txn) {
             Ok(receipt) => receipt,
             Err(error) => {
-                let failure_receipt = write_transaction_failure_run_receipt(
+                let failure_receipt = || write_transaction_failure_run_receipt(
                     &effective_receipt_dir,
                     profile,
                     module_root,
@@ -881,7 +882,7 @@ pub(crate) fn rolling_update_run(
                 ) {
                     return_error.push_str(&format!("; rollback-incomplete: rollback-receipt-write-failed: {write_error}"));
                 }
-                if let Err(write_error) = failure_receipt {
+                if let Err(write_error) = failure_receipt() {
                     return_error.push_str(&format!("; transaction-failure-receipt-write-failed: {write_error}"));
                 }
                 return Err(return_error);

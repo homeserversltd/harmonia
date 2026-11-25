@@ -241,6 +241,7 @@ fn strike_with_tracking(
     request: Request<'_>,
     expected_target_identity: Option<FileIdentity>,
     expected_preimage: Option<(&[u8], &fs::Metadata)>,
+    owner_accept: bool,
 ) -> StrikeAttempt {
     let Request {
         target,
@@ -352,6 +353,7 @@ fn strike_with_tracking(
             }
             fs::rename(&temp_path, target).map_err(|e| io_error("rename", target, e))?;
             target_replaced = true;
+            crate::atoms::touch::record(target, None, owner_accept);
             target_identity = fs::symlink_metadata(target)
                 .ok()
                 .map(|metadata| file_identity(&metadata));
@@ -402,8 +404,7 @@ fn strike_with_tracking(
 }
 
 pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
-    crate::atoms::touch::record(request.target, None, true);
-    strike_with_tracking(request, None, None).result
+    strike_with_tracking(request, None, None, true).result
 }
 
 /// Keep a caller's read/modify/write bound to its observed preimage inside the
@@ -411,8 +412,7 @@ pub(crate) fn strike(request: Request<'_>) -> Result<Receipt, String> {
 pub(crate) fn strike_if_current(
     request: Request<'_>, bytes: &[u8], metadata: &fs::Metadata,
 ) -> Result<Receipt, String> {
-    crate::atoms::touch::record(request.target, None, true);
-    strike_with_tracking(request, Some(file_identity(metadata)), Some((bytes, metadata))).result
+    strike_with_tracking(request, Some(file_identity(metadata)), Some((bytes, metadata)), true).result
 }
 
 fn stat_at_nofollow(directory: &File, name: &std::ffi::CString) -> Result<libc::stat, std::io::Error> {
@@ -507,7 +507,6 @@ pub(crate) fn create_absent(
         witness,
     } = request;
     let _witness = witness;
-    crate::atoms::touch::record(target, None, true);
     let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -614,6 +613,7 @@ pub(crate) fn create_absent(
                 return Err(io_error("absent-promote-noreplace", target, error));
             }
             promoted = true;
+            crate::atoms::touch::record(target, None, true);
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -869,7 +869,6 @@ pub(crate) fn write_engine_state(
     witness: EngineStateWitness,
 ) -> Result<Receipt, String> {
     let _witness = witness;
-    crate::atoms::touch::record(target, None, false);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| io_error("state-directory", parent, e))?;
     }
@@ -916,7 +915,7 @@ pub(crate) fn write_engine_state(
         gid: metadata.gid(),
         backup_path: &backup,
         witness: OwnerAcceptance(()),
-    }, Some(original_identity), None);
+    }, Some(original_identity), None, false);
     match attempt.result {
         Ok(receipt) => {
             remove_engine_state_backup(&backup)?;

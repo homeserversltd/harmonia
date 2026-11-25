@@ -14,12 +14,17 @@ thread_local! {
 struct Context {
     run_id: Option<String>,
     module_id: Option<String>,
+    step_id: Option<String>,
     started: Instant,
     duration_scope: &'static str,
 }
 
 pub(crate) fn active_module_id() -> Option<String> {
     ACTIVE_CONTEXT.with(|active| active.borrow().as_ref().and_then(|context| context.module_id.clone()))
+}
+
+pub(crate) fn active_step_id() -> Option<String> {
+    ACTIVE_CONTEXT.with(|active| active.borrow().as_ref().and_then(|context| context.step_id.clone()))
 }
 
 /// Invocation-local identities and elapsed time, released on every return.
@@ -33,11 +38,24 @@ impl ContextGuard {
             let context = Context {
                 run_id: run_id.map(str::to_owned).or_else(|| active.as_ref().and_then(|value| value.run_id.clone())),
                 module_id: module_id.map(str::to_owned).or_else(|| active.as_ref().and_then(|value| value.module_id.clone())),
+                step_id: active.as_ref().and_then(|value| value.step_id.clone()),
                 started: Instant::now(),
                 duration_scope,
             };
             Self(active.replace(context))
         })
+    }
+}
+
+impl ContextGuard {
+    pub(crate) fn enter_step(module_id: &str, step_id: &str) -> Self {
+        let guard = Self::enter(None, Some(module_id), "step-elapsed");
+        ACTIVE_CONTEXT.with(|active| {
+            if let Some(context) = active.borrow_mut().as_mut() {
+                context.step_id = Some(step_id.to_owned());
+            }
+        });
+        guard
     }
 }
 
