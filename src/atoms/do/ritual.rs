@@ -783,7 +783,9 @@ pub(crate) fn seal_projection(
     let mut rollback_plan = plan.clone();
     rollback_plan.targets.retain(|target| safe_modules.contains(&target.module));
     rollback_plan.services.retain(|service| safe_modules.contains(&service.module));
-    let sudoers_targets = rollback_plan
+    // All planned sudoers names are excluded from supplemental preimages,
+    // including names owned by developer-mode modules.
+    let sudoers_targets = plan
         .targets
         .iter()
         .filter(|target| target.member == "sudoers")
