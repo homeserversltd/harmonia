@@ -341,11 +341,7 @@ fn seed_perspective_for_with_harmonia_sha(
     validate_row(&row)?;
     let mut self_row = serde_json::to_value(row).map_err(|error| error.to_string())?;
     DeclaredServices::read().apply_to(&mut self_row);
-    self_row["fire_seal"] = crate::atoms::ask::collective_stamp::current_with_fire_seal()
-        .fire_seal
-        .as_ref()
-        .map(crate::atoms::ask::collective_stamp::FireSealObservation::ruyi_value)
-        .unwrap_or(Value::Null);
+    self_row["fire_seal"] = Value::Null;
     if !caduceus_sha_present {
         self_row["caduceus_sha"] = Value::Null;
     }
@@ -393,11 +389,6 @@ fn refresh_self_row_from_beam_observation(
     harmonia_sha: Option<&str>,
 ) -> Value {
     let mut row = row;
-    row["fire_seal"] = crate::atoms::ask::collective_stamp::current_with_fire_seal()
-        .fire_seal
-        .as_ref()
-        .map(crate::atoms::ask::collective_stamp::FireSealObservation::ruyi_value)
-        .unwrap_or(Value::Null);
     for (field, value) in [
         ("harmonia_rustc_version", compiled_rustc_version()),
         ("rustc_installed", installed_rustc_version()),
