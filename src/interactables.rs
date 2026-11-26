@@ -2654,7 +2654,8 @@ fn run_toolchain_ratchet(
         let receipt_dir = PathBuf::from(format!(
             "/var/lib/harmonia/receipts/toolchain-ratchet-{timestamp}"
         ));
-        if let Err(error) = fs::create_dir_all(&receipt_dir) {
+        let engine_witness = crate::atoms::projectio::engine_state_witness();
+        if let Err(error) = crate::atoms::projectio::engine_make_dir(&engine_witness, &receipt_dir) {
             let failure = format!("toolchain-ratchet-receipt-dir-failed: {error}");
             receipt["first_missing_signal"] = serde_json::json!(failure);
             let rollback = restore_rustup_default(
@@ -3003,8 +3004,15 @@ fn run_dns_record(
         .unwrap_or_else(|| Path::new("."))
         .join("interactable-candidates")
         .join(format!("{}.conf", item.id));
-    fs::create_dir_all(scratch.parent().unwrap()).map_err(|e| e.to_string())?;
-    fs::write(&scratch, &candidate)
+    let engine_witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::engine_make_dir(&engine_witness, scratch.parent().unwrap())
+        .map_err(|e| e.to_string())?;
+    match crate::atoms::projectio::act_scratch_remove(&engine_witness, &scratch) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(format!("dns-record-candidate-write-failed: {e}")),
+    }
+    crate::atoms::projectio::act_scratch_write_new(&engine_witness, &scratch, &candidate, 0o644)
         .map_err(|e| format!("dns-record-candidate-write-failed: {e}"))?;
     #[cfg(any(test, feature = "test-facade"))]
     let check_program = env::var("HARMONIA_UNBOUND_CHECKCONF")
@@ -3016,6 +3024,11 @@ fn run_dns_record(
         &[scratch.to_string_lossy().into_owned()],
         Duration::from_secs(10),
     );
+    match crate::atoms::projectio::act_scratch_remove(&engine_witness, &scratch) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(format!("dns-record-candidate-write-failed: {e}")),
+    }
     let mut receipt = serde_json::json!({
         "schema": crate::atoms::ask::mint_seats::DNS_RECORD_RECEIPT,
         "ok": false, "id": item.id, "hostname": item.evidence.get("hostname"),
