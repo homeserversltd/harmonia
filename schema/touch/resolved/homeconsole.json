@@ -1,0 +1,867 @@
+{
+  "clobbered": [
+    {
+      "module": null,
+      "note": "Ruyi is clobbered every press as a known intended good",
+      "path": "/etc/appliance/ruyi.json",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia service unit",
+      "path": "/etc/systemd/system/harmonia.service",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia timer unit",
+      "path": "/etc/systemd/system/harmonia.timer",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia runtime locks",
+      "path": "/run/harmonia/*.lock",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "External release scratch",
+      "path": "/tmp/harmonia-external-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Module observation scratch",
+      "path": "/tmp/harmonia-module-observe-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned archive scratch",
+      "path": "/tmp/harmonia-pinned-archive-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned engine scratch",
+      "path": "/tmp/harmonia-pinned-engine-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned release scratch",
+      "path": "/tmp/harmonia-pinned-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Release scratch",
+      "path": "/tmp/harmonia-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Release probe scratch",
+      "path": "/tmp/harmonia-release-probe-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Xenia release scratch",
+      "path": "/tmp/harmonia-xenia-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Xenia staging scratch",
+      "path": "/tmp/harmonia-xenia-stage-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia engine binary",
+      "path": "/usr/local/bin/harmonia",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia state and receipts",
+      "path": "/var/lib/harmonia/**",
+      "step": null,
+      "tool": null
+    }
+  ],
+  "hotfix": [
+    {
+      "module": "grub-branding",
+      "path": "/boot/grub/grub.cfg",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "grub-branding",
+      "path": "/boot/grub/themes/**",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "arcadia-gui-runtime",
+      "path": "/opt/arcadia/source",
+      "step": "arcadia-gui-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "arcadia-gui-runtime",
+      "path": "/opt/arcadia/source/**",
+      "step": "arcadia-gui-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source",
+      "step": "caduceus-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source/**",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source/**",
+      "step": "caduceus-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/docs",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/docs/**",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "mkdocs",
+      "path": "/opt/docs/mkdocs.yml",
+      "step": "mkdocs-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/source",
+      "step": "documentation-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/source/**",
+      "step": "documentation-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "hermes-agent-console",
+      "path": "/opt/hermes/hermes-agent",
+      "step": "hermes-agent-maintenance-converge",
+      "tool": "hermes-maintenance.converge"
+    },
+    {
+      "module": "hermes-agent-console",
+      "path": "/opt/hermes/hermes-agent/**",
+      "step": "hermes-agent-maintenance-converge",
+      "tool": "hermes-maintenance.converge"
+    },
+    {
+      "module": "keyman",
+      "path": "/opt/keyman/source",
+      "step": "keyman-source",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "keyman",
+      "path": "/opt/keyman/source/**",
+      "step": "keyman-source",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "sbin",
+      "path": "/opt/sbin/source",
+      "step": "sbin-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "sbin",
+      "path": "/opt/sbin/source/**",
+      "step": "sbin-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/bin/agathodaimon",
+      "step": "agathodaimon-front-door-link",
+      "tool": "files.symlink-converge"
+    },
+    {
+      "module": "arcadia-gui-runtime",
+      "path": "/usr/local/bin/arcadia",
+      "step": "arcadia-gui-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/usr/local/bin/caduceus",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "rust-build-toolchain",
+      "path": "/usr/local/bin/cargo",
+      "step": "rust-wrapper-shims",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "hermes-seat",
+      "path": "/usr/local/bin/hermes",
+      "step": "hermes-platform-session-wrapper",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "local-ai-runtime",
+      "path": "/usr/local/bin/llama-cli",
+      "step": "local-ai-cli-link",
+      "tool": "files.symlink-converge"
+    },
+    {
+      "module": "local-ai-runtime",
+      "path": "/usr/local/bin/llama-server",
+      "step": "local-ai-server-link",
+      "tool": "files.symlink-converge"
+    },
+    {
+      "module": "rust-build-toolchain",
+      "path": "/usr/local/bin/rustc",
+      "step": "rust-wrapper-shims",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "screen-supervisor",
+      "path": "/usr/local/libexec/sway-seat/sway-seat-screen-supervisor",
+      "step": "screen-supervisor",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway-seat",
+      "path": "/usr/local/libexec/sway-seat/sway-seat-session",
+      "step": "sway-seat-session-helper",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway-seat",
+      "path": "/usr/local/libexec/sway-seat/sway-seat-wait-ready",
+      "step": "sway-seat-readiness-helper",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/sbin/agathodaimon",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/sbin/agathodaimon/**",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "homeconsole-sway-session",
+      "path": "/usr/share/wayland-sessions/homeconsole-sway.desktop",
+      "step": "homeconsole-sway-desktop-entry",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/caduceus/venv",
+      "step": "caduceus-venv-converge",
+      "tool": "venv.converge"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/caduceus/venv/**",
+      "step": "caduceus-venv-converge",
+      "tool": "venv.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/var/lib/caduceus/venv/lib/python3.14/site-packages/caduceus-staff.pth",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/var/lib/harmonia/harmonia.sqlite3",
+      "step": "observe-login-shell",
+      "tool": "command.propose"
+    },
+    {
+      "module": "arcadia-gui-runtime",
+      "path": "/var/lib/harmonia/state/arcadia.sha",
+      "step": "arcadia-gui-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "documentation",
+      "path": "/var/lib/harmonia/state/documentation-docs-sweep.json",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "keyman",
+      "path": "/vault/keyman/keyman",
+      "step": "keyman-rust-release",
+      "tool": "release-binary.install"
+    }
+  ],
+  "interactable": [
+    {
+      "module": "grub-branding",
+      "path": "/etc/default/grub",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "homeconsole-netplan",
+      "path": "/etc/netplan/00-installer-config.yaml",
+      "step": "homeconsole-netplan-wired-dhcp",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "homeconsole-sddm-autologin",
+      "path": "/etc/sddm.conf.d/10-homeconsole-autologin.conf",
+      "step": "homeconsole-sddm-autologin-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sudoers",
+      "path": "/etc/sudoers.d/caduceus-*",
+      "step": "sudoers-converge",
+      "tool": "files.validated-sudoers-converge"
+    },
+    {
+      "module": "arcadia-gui-runtime",
+      "path": "/etc/systemd/system/arcadia.service",
+      "step": "arcadia-gui-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "homeconsole-update-runtime",
+      "path": "/etc/systemd/system/harmonia-homeconsole.service",
+      "step": "retire-harmonia-homeconsole-service",
+      "tool": "systemd.disable-stop-remove"
+    },
+    {
+      "module": "homeconsole-update-runtime",
+      "path": "/etc/systemd/system/harmonia-homeconsole.timer",
+      "step": "retire-harmonia-homeconsole-timer",
+      "tool": "systemd.disable-stop-remove"
+    },
+    {
+      "module": "homeconsole-update-runtime",
+      "path": "/etc/systemd/system/harmonia-homeserver.service",
+      "step": "retire-harmonia-homeserver-service",
+      "tool": "systemd.disable-stop-remove"
+    },
+    {
+      "module": "homeconsole-update-runtime",
+      "path": "/etc/systemd/system/harmonia-homeserver.timer",
+      "step": "retire-harmonia-homeserver-timer",
+      "tool": "systemd.disable-stop-remove"
+    },
+    {
+      "module": "homeconsole-update-runtime",
+      "path": "/etc/systemd/system/harmonia-tv.service",
+      "step": "retire-harmonia-tv-service",
+      "tool": "systemd.disable-stop-remove"
+    },
+    {
+      "module": "homeconsole-update-runtime",
+      "path": "/etc/systemd/system/harmonia-tv.timer",
+      "step": "retire-harmonia-tv-timer",
+      "tool": "systemd.disable-stop-remove"
+    },
+    {
+      "module": "mkdocs",
+      "path": "/etc/systemd/system/mkdocs.service",
+      "step": "mkdocs-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "homeconsole-network",
+      "path": "/etc/systemd/system/systemd-networkd-wait-online.service.d/10-no-wait.conf",
+      "step": "homeconsole-network-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "household-time",
+      "path": "/etc/systemd/timesyncd.conf.d/household.conf",
+      "step": "household-time-timesyncd-gateway",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "sway-seat",
+      "path": "/etc/tmpfiles.d/sway-seat.conf",
+      "step": "sway-seat-runtime-tmpfiles",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sunshine",
+      "path": "/etc/udev/rules.d/60-sunshine.rules",
+      "step": "sunshine-device-access",
+      "tool": "files.converge"
+    },
+    {
+      "module": "hermes-sway-config",
+      "path": "/home/hermes/.config/sway/config",
+      "step": "hermes-sway-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "hermes-cua-driver-service",
+      "path": "/home/hermes/.config/systemd/user/cua-driver.service",
+      "step": "hermes-cua-driver-user-unit",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "hermes-gateway-service",
+      "path": "/home/hermes/.config/systemd/user/hermes-gateway.service",
+      "step": "hermes-gateway-user-unit",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "hermes-sway-seat",
+      "path": "/home/hermes/.config/systemd/user/sway-seat.service",
+      "step": "hermes-sway-user-unit",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "hermes-sway-seat",
+      "path": "/home/hermes/.config/systemd/user/wayvnc-seat.service",
+      "step": "hermes-wayvnc-user-unit",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "hermes-wayvnc-config",
+      "path": "/home/hermes/.config/wayvnc/config",
+      "step": "hermes-wayvnc-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "hermes-agent-console",
+      "path": "/home/hermes/.local/bin/hermes",
+      "step": "hermes-agent-maintenance-converge",
+      "tool": "hermes-maintenance.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.aliases",
+      "step": "compile-aliases",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.bash-preexec.sh",
+      "step": "compile-bash-preexec",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.bashrc",
+      "step": "compile-bashrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "retroarch-input",
+      "path": "/home/owner/.config/retroarch/autoconfig/udev/Sony Interactive Entertainment DualSense Wireless Controller.cfg",
+      "step": "retroarch-input-mappings",
+      "tool": "files.converge"
+    },
+    {
+      "module": "retroarch-input",
+      "path": "/home/owner/.config/retroarch/autoconfig/udev/Sunshine PS5 (virtual) pad.cfg",
+      "step": "retroarch-input-mappings",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sunshine",
+      "path": "/home/owner/.config/sunshine/sunshine.conf",
+      "step": "sunshine-user-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway-seat-arch-config",
+      "path": "/home/owner/.config/sway/config",
+      "step": "arch-owner-sway-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sunshine",
+      "path": "/home/owner/.config/systemd/user/sunshine.service",
+      "step": "sunshine-owner-unit",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway-seat",
+      "path": "/home/owner/.config/systemd/user/sway-seat.service",
+      "step": "sway-seat-owner-unit",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway-seat",
+      "path": "/home/owner/.config/systemd/user/wayvnc-seat.service",
+      "step": "sway-seat-owner-wayvnc-unit",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway-seat-arch-wayvnc-config",
+      "path": "/home/owner/.config/wayvnc/config",
+      "step": "arch-owner-wayvnc-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.enhanced_less_config",
+      "step": "compile-enhanced-less-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.functions",
+      "step": "compile-functions",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.gitconfig",
+      "step": "compile-gitconfig",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.inputrc",
+      "step": "compile-inputrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.lesskey",
+      "step": "compile-lesskey",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.nanorc",
+      "step": "compile-nanorc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.profile",
+      "step": "compile-profile",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.tmux.conf",
+      "step": "compile-tmux",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.zshenv",
+      "step": "compile-zshenv",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.zshrc",
+      "step": "compile-zshrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "root-profile",
+      "path": "/root/.bashrc",
+      "step": "compile-bashrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "root-profile",
+      "path": "/root/.profile",
+      "step": "compile-profile",
+      "tool": "files.compile-fragments"
+    }
+  ],
+  "operations": [
+    {
+      "kind": "command",
+      "match": "/home/hermes/.local/bin/hermes",
+      "module": "hermes-agent-console",
+      "step": "hermes-agent-maintenance-converge"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/chsh",
+      "module": "dot-files",
+      "step": "observe-login-shell"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/env",
+      "module": "household-time",
+      "step": "household-time-peer-state"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "caduceus",
+      "step": "caduceus-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "documentation",
+      "step": "documentation-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "keyman",
+      "step": "keyman-source"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "sbin",
+      "step": "sbin-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/grub-mkconfig",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "caduceus",
+      "step": "caduceus-owner-group"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "caduceus",
+      "step": "caduceus-staff-module-path"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "sunshine",
+      "step": "owner-desktop-streaming-services"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-agent-console",
+      "step": "hermes-agent-user-daemon-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-cua-driver-service",
+      "step": "hermes-cua-driver-user-daemon-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-cua-driver-service",
+      "step": "hermes-cua-driver-user-restart"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-gateway-service",
+      "step": "hermes-gateway-user-daemon-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-gateway-service",
+      "step": "hermes-gateway-user-restart"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-sway-seat",
+      "step": "hermes-sway-user-daemon-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-sway-seat",
+      "step": "hermes-sway-user-restart"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-sway-seat",
+      "step": "hermes-wayvnc-user-daemon-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "hermes-sway-seat",
+      "step": "hermes-wayvnc-user-restart"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "mkdocs",
+      "step": "mkdocs-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "sway-seat",
+      "step": "sway-seat-user-manager-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-analyze",
+      "module": "mkdocs",
+      "step": "mkdocs-unit-valid"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/update-grub",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/local/bin/caduceus",
+      "module": "household-time",
+      "step": "household-time-peer-state"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/sbin/grub-mkconfig",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/sbin/update-grub",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "package-upgrade",
+      "match": "*",
+      "module": "system-packages",
+      "step": "system-packages-upgrade"
+    },
+    {
+      "kind": "unit",
+      "match": "arcadia.service",
+      "module": "arcadia-gui-runtime",
+      "step": "arcadia-gui-service-runtime"
+    },
+    {
+      "kind": "unit",
+      "match": "caduceus.service",
+      "module": "caduceus",
+      "step": "caduceus-service-runtime"
+    },
+    {
+      "kind": "unit",
+      "match": "harmonia-homeconsole.service",
+      "module": "homeconsole-update-runtime",
+      "step": "retire-harmonia-homeconsole-service"
+    },
+    {
+      "kind": "unit",
+      "match": "harmonia-homeconsole.timer",
+      "module": "homeconsole-update-runtime",
+      "step": "retire-harmonia-homeconsole-timer"
+    },
+    {
+      "kind": "unit",
+      "match": "harmonia-homeserver.service",
+      "module": "homeconsole-update-runtime",
+      "step": "retire-harmonia-homeserver-service"
+    },
+    {
+      "kind": "unit",
+      "match": "harmonia-homeserver.timer",
+      "module": "homeconsole-update-runtime",
+      "step": "retire-harmonia-homeserver-timer"
+    },
+    {
+      "kind": "unit",
+      "match": "harmonia-tv.service",
+      "module": "homeconsole-update-runtime",
+      "step": "retire-harmonia-tv-service"
+    },
+    {
+      "kind": "unit",
+      "match": "harmonia-tv.timer",
+      "module": "homeconsole-update-runtime",
+      "step": "retire-harmonia-tv-timer"
+    },
+    {
+      "kind": "unit",
+      "match": "hermes-gateway.service",
+      "module": "hermes-agent-console",
+      "step": "hermes-agent-gateway-restart"
+    },
+    {
+      "kind": "unit",
+      "match": "systemd-timesyncd.service",
+      "module": "household-time",
+      "step": "household-time-enable-timesyncd"
+    }
+  ],
+  "profile": "homeconsole",
+  "schema": "harmonia.touch.resolved.v1"
+}

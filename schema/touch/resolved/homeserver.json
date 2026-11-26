@@ -1,0 +1,1353 @@
+{
+  "clobbered": [
+    {
+      "module": null,
+      "note": "Ruyi is clobbered every press as a known intended good",
+      "path": "/etc/appliance/ruyi.json",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia service unit",
+      "path": "/etc/systemd/system/harmonia.service",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia timer unit",
+      "path": "/etc/systemd/system/harmonia.timer",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia runtime locks",
+      "path": "/run/harmonia/*.lock",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "External release scratch",
+      "path": "/tmp/harmonia-external-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Module observation scratch",
+      "path": "/tmp/harmonia-module-observe-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned archive scratch",
+      "path": "/tmp/harmonia-pinned-archive-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned engine scratch",
+      "path": "/tmp/harmonia-pinned-engine-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned release scratch",
+      "path": "/tmp/harmonia-pinned-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Release scratch",
+      "path": "/tmp/harmonia-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Release probe scratch",
+      "path": "/tmp/harmonia-release-probe-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Xenia release scratch",
+      "path": "/tmp/harmonia-xenia-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Xenia staging scratch",
+      "path": "/tmp/harmonia-xenia-stage-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia engine binary",
+      "path": "/usr/local/bin/harmonia",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia state and receipts",
+      "path": "/var/lib/harmonia/**",
+      "step": null,
+      "tool": null
+    }
+  ],
+  "hotfix": [
+    {
+      "module": "grub-branding",
+      "path": "/boot/grub/grub.cfg",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "grub-branding",
+      "path": "/boot/grub/themes/**",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source",
+      "step": "caduceus-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source/**",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source/**",
+      "step": "caduceus-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "coronatio",
+      "path": "/opt/coronatio/source",
+      "step": "coronatio-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "coronatio",
+      "path": "/opt/coronatio/source/**",
+      "step": "coronatio-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/docs",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/docs/**",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "mkdocs",
+      "path": "/opt/docs/mkdocs.yml",
+      "step": "mkdocs-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/source",
+      "step": "documentation-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/source/**",
+      "step": "documentation-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "forgejo",
+      "path": "/opt/forgejo",
+      "step": "forgejo-sshd-safe-metadata",
+      "tool": "files.metadata"
+    },
+    {
+      "module": "forgejo",
+      "path": "/opt/forgejo/forgejo",
+      "step": "forgejo-sshd-safe-metadata",
+      "tool": "files.metadata"
+    },
+    {
+      "module": "harmonia",
+      "path": "/opt/harmonia/source",
+      "step": "harmonia-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "harmonia",
+      "path": "/opt/harmonia/source/**",
+      "step": "harmonia-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "piwigo",
+      "path": "/opt/homeserver/php-fpm/current/fpm/conf.d/20-piwigo.ini",
+      "step": "piwigo-php-modules-enable",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "piwigo",
+      "path": "/opt/homeserver/php-fpm/current/fpm/pool.d/piwigo.conf",
+      "step": "piwigo-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "piwigo",
+      "path": "/opt/homeserver/php-fpm/current/mods-available/piwigo.ini",
+      "step": "piwigo-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "postgres",
+      "path": "/opt/homeserver/postgresql/current/conf.d/ramdisk.conf",
+      "step": "postgres-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "postgres",
+      "path": "/opt/homeserver/postgresql/current/conf.d/tuning.conf",
+      "step": "postgres-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "postgres",
+      "path": "/opt/homeserver/postgresql/current/pg_hba.conf",
+      "step": "postgres-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "postgres",
+      "path": "/opt/homeserver/postgresql/current/postgresql.conf",
+      "step": "postgres-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "keyman",
+      "path": "/opt/keyman/source",
+      "step": "keyman-source",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "keyman",
+      "path": "/opt/keyman/source/**",
+      "step": "keyman-source",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "sbin",
+      "path": "/opt/sbin/source",
+      "step": "sbin-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "sbin",
+      "path": "/opt/sbin/source/**",
+      "step": "sbin-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "yarr",
+      "path": "/opt/yarr/yarr",
+      "step": "yarr-release-binary",
+      "tool": "release-binary.install"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/bin/agathodaimon",
+      "step": "agathodaimon-front-door-link",
+      "tool": "files.symlink-converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/usr/local/bin/caduceus",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "coronatio",
+      "path": "/usr/local/bin/coronatio",
+      "step": "coronatio-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/bin/linker",
+      "step": "linker-front-door-link",
+      "tool": "files.symlink-converge"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/sbin/agathodaimon",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/sbin/agathodaimon/**",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "synapse",
+      "path": "/usr/share/harmonia/matrix/postgres.sql",
+      "step": "synapse-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/caduceus/venv",
+      "step": "caduceus-venv-converge",
+      "tool": "venv.converge"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/caduceus/venv/**",
+      "step": "caduceus-venv-converge",
+      "tool": "venv.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/var/lib/harmonia/harmonia.sqlite3",
+      "step": "observe-login-shell",
+      "tool": "command.propose"
+    },
+    {
+      "module": "documentation",
+      "path": "/var/lib/harmonia/state/documentation-docs-sweep.json",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "xenia",
+      "path": "/var/lib/xenia",
+      "step": "xenia-converge",
+      "tool": "xenia.converge"
+    },
+    {
+      "module": "xenia",
+      "path": "/var/lib/xenia/**",
+      "step": "xenia-converge",
+      "tool": "xenia.converge"
+    },
+    {
+      "module": "keyman",
+      "path": "/vault/keyman/keyman",
+      "step": "keyman-rust-release",
+      "tool": "release-binary.install"
+    }
+  ],
+  "interactable": [
+    {
+      "module": "samba",
+      "path": "/etc/avahi/hosts",
+      "step": "samba-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "samba",
+      "path": "/etc/avahi/services/homeserver.service",
+      "step": "samba-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "household-time",
+      "path": "/etc/chrony/chrony.conf",
+      "step": "household-time-chrony-lan-policy",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "household-time",
+      "path": "/etc/chrony/conf.d/household.conf",
+      "step": "household-time-chrony-lan-policy",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "grub-branding",
+      "path": "/etc/default/grub",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "tailscale",
+      "path": "/etc/default/tailscaled",
+      "step": "tailscale-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "firewall",
+      "path": "/etc/default/unbound",
+      "step": "firewall-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "element",
+      "path": "/etc/element-web/config.json",
+      "step": "element-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "synapse",
+      "path": "/etc/logrotate.d/matrix-synapse",
+      "step": "synapse-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "synapse",
+      "path": "/etc/matrix-synapse/homeserver.yaml",
+      "step": "synapse-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "synapse",
+      "path": "/etc/matrix-synapse/log.yaml",
+      "step": "synapse-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "firewall",
+      "path": "/etc/nftables.conf",
+      "step": "firewall-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/conf.d/00-hestia-http.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "element",
+      "path": "/etc/nginx/conf.d/agathodaimon-agora-home-arpa.conf",
+      "step": "element-hestia-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "calibreweb",
+      "path": "/etc/nginx/conf.d/agathodaimon-books-home-arpa.conf",
+      "step": "calibreweb-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "woodpecker",
+      "path": "/etc/nginx/conf.d/agathodaimon-ci-home-arpa.conf",
+      "step": "woodpecker-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/conf.d/agathodaimon-docs-home-arpa.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "filebrowser",
+      "path": "/etc/nginx/conf.d/agathodaimon-files-home-arpa.conf",
+      "step": "filebrowser-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "forgejo",
+      "path": "/etc/nginx/conf.d/agathodaimon-git-home-arpa.conf",
+      "step": "forgejo-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/conf.d/agathodaimon-home-arpa.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "jellyfin",
+      "path": "/etc/nginx/conf.d/agathodaimon-jellyfin-home-arpa.conf",
+      "step": "jellyfin-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "synapse",
+      "path": "/etc/nginx/conf.d/agathodaimon-matrix-home-arpa.conf",
+      "step": "synapse-hestia-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "navidrome",
+      "path": "/etc/nginx/conf.d/agathodaimon-music-home-arpa.conf",
+      "step": "navidrome-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "piwigo",
+      "path": "/etc/nginx/conf.d/agathodaimon-photos-home-arpa.conf",
+      "step": "piwigo-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "yarr",
+      "path": "/etc/nginx/conf.d/agathodaimon-rss-home-arpa.conf",
+      "step": "yarr-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "searx",
+      "path": "/etc/nginx/conf.d/agathodaimon-search-home-arpa.conf",
+      "step": "searx-hestia-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "transmission",
+      "path": "/etc/nginx/conf.d/agathodaimon-transmission-home-arpa.conf",
+      "step": "transmission-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "vaultwarden",
+      "path": "/etc/nginx/conf.d/agathodaimon-vault-home-arpa.conf",
+      "step": "vaultwarden-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/hestia/notes/cache-static.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/hestia/notes/cors-echo.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/hestia/notes/cors-open.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/hestia/notes/upload-stream.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/hestia/templates/php.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/hestia/templates/static.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/nginx.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-calibre-web",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "element",
+      "path": "/etc/nginx/sites-available/homeserver-element",
+      "step": "element-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-filebrowser",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-forgejo",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-jellyfin",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-main",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "synapse",
+      "path": "/etc/nginx/sites-available/homeserver-matrix",
+      "step": "synapse-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-mkdocs",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-navidrome",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-piwigo",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "searx",
+      "path": "/etc/nginx/sites-available/homeserver-searxng",
+      "step": "searx-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-transmission",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-vaultwarden",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-woodpecker",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-available/homeserver-yarr",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-calibre-web",
+      "step": "enable-homeserver-calibre-web",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-element",
+      "step": "enable-homeserver-element",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-filebrowser",
+      "step": "enable-homeserver-filebrowser",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-forgejo",
+      "step": "enable-homeserver-forgejo",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-jellyfin",
+      "step": "enable-homeserver-jellyfin",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-main",
+      "step": "enable-homeserver-main",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-matrix",
+      "step": "enable-homeserver-matrix",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-mkdocs",
+      "step": "enable-homeserver-mkdocs",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-navidrome",
+      "step": "enable-homeserver-navidrome",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-piwigo",
+      "step": "enable-homeserver-piwigo",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-searxng",
+      "step": "enable-homeserver-searxng",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-transmission",
+      "step": "enable-homeserver-transmission",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-vaultwarden",
+      "step": "enable-homeserver-vaultwarden",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-woodpecker",
+      "step": "enable-homeserver-woodpecker",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/sites-enabled/homeserver-yarr",
+      "step": "enable-homeserver-yarr",
+      "tool": "files.validated-symlink"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/snippets/hestia/proxy.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/snippets/hestia/tls.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/nginx/ssl_params.conf",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "searx",
+      "path": "/etc/searxng/settings.yml",
+      "step": "searx-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "sudoers",
+      "path": "/etc/sudoers.d/caduceus-*",
+      "step": "sudoers-converge",
+      "tool": "files.validated-sudoers-converge"
+    },
+    {
+      "module": "transmission",
+      "path": "/etc/sysctl.d/60-udpbuffer.conf",
+      "step": "transmission-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "firewall",
+      "path": "/etc/sysctl.d/70-homeserver-ipforward.conf",
+      "step": "firewall-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "calibreweb",
+      "path": "/etc/systemd/system/calibre-simple-watch.service",
+      "step": "calibreweb-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "calibreweb",
+      "path": "/etc/systemd/system/calibre-web.service",
+      "step": "calibreweb-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "household-time",
+      "path": "/etc/systemd/system/chrony-household-upstream.service",
+      "step": "household-time-chrony-lan-policy",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "filebrowser",
+      "path": "/etc/systemd/system/filebrowser.service",
+      "step": "filebrowser-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "forgejo",
+      "path": "/etc/systemd/system/forgejo.service",
+      "step": "forgejo-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "transmission-staff-units",
+      "path": "/etc/systemd/system/hold-port-forward@.service",
+      "step": "transmission-staff-units-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nas-units",
+      "path": "/etc/systemd/system/homeserver-nas-open@.service",
+      "step": "nas-units-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "jellyfin",
+      "path": "/etc/systemd/system/jellyfin.service",
+      "step": "jellyfin-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "firewall",
+      "path": "/etc/systemd/system/kea-dhcp4-server.service.d/override.conf",
+      "step": "firewall-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "synapse",
+      "path": "/etc/systemd/system/matrix-synapse.service.d/10-harmonia.conf",
+      "step": "synapse-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "mkdocs",
+      "path": "/etc/systemd/system/mkdocs.service",
+      "step": "mkdocs-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nas-units",
+      "path": "/etc/systemd/system/mnt-nas.mount",
+      "step": "nas-units-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nas-units",
+      "path": "/etc/systemd/system/mnt-nas_backup.mount",
+      "step": "nas-units-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "navidrome",
+      "path": "/etc/systemd/system/navidrome.service",
+      "step": "navidrome-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "firewall",
+      "path": "/etc/systemd/system/nftables.service",
+      "step": "firewall-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "nginx",
+      "path": "/etc/systemd/system/nginx.service",
+      "step": "nginx-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "piwigo",
+      "path": "/etc/systemd/system/php-fpm.service",
+      "step": "piwigo-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "postgres",
+      "path": "/etc/systemd/system/postgresql.service",
+      "step": "postgres-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "searx",
+      "path": "/etc/systemd/system/searxng.service",
+      "step": "searx-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "firewall",
+      "path": "/etc/systemd/system/systemd-networkd-wait-online.service.d/10-no-wait.conf",
+      "step": "firewall-networkd-wait-online-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "transmission",
+      "path": "/etc/systemd/system/transmissionPIA.service",
+      "step": "transmission-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "transmission-staff-units",
+      "path": "/etc/systemd/system/transmissionVPN.service",
+      "step": "transmission-staff-units-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "vaultwarden",
+      "path": "/etc/systemd/system/vaultwarden.service",
+      "step": "vaultwarden-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "woodpecker",
+      "path": "/etc/systemd/system/woodpecker-agent.service",
+      "step": "woodpecker-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "woodpecker",
+      "path": "/etc/systemd/system/woodpecker-server.service",
+      "step": "woodpecker-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "yarr",
+      "path": "/etc/systemd/system/yarr.service",
+      "step": "yarr-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "udev",
+      "path": "/etc/udev/rules.d/99-rapl-permissions.rules",
+      "step": "udev-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "firewall",
+      "path": "/etc/unbound/unbound.conf",
+      "step": "firewall-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "element",
+      "path": "/etc/unbound/unbound.conf.d/matrix.conf",
+      "step": "element-managed-files",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.aliases",
+      "step": "compile-aliases",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.bash-preexec.sh",
+      "step": "compile-bash-preexec",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.bashrc",
+      "step": "compile-bashrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.enhanced_less_config",
+      "step": "compile-enhanced-less-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.functions",
+      "step": "compile-functions",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.gitconfig",
+      "step": "compile-gitconfig",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.inputrc",
+      "step": "compile-inputrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.lesskey",
+      "step": "compile-lesskey",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.nanorc",
+      "step": "compile-nanorc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.profile",
+      "step": "compile-profile",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.tmux.conf",
+      "step": "compile-tmux",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.zshenv",
+      "step": "compile-zshenv",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.zshrc",
+      "step": "compile-zshrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "root-profile",
+      "path": "/root/.bashrc",
+      "step": "compile-bashrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "root-profile",
+      "path": "/root/.profile",
+      "step": "compile-profile",
+      "tool": "files.compile-fragments"
+    }
+  ],
+  "operations": [
+    {
+      "kind": "command",
+      "match": "/usr/bin/chsh",
+      "module": "dot-files",
+      "step": "observe-login-shell"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/env",
+      "module": "household-time",
+      "step": "household-time-resolve"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "caduceus",
+      "step": "caduceus-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "documentation",
+      "step": "documentation-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "harmonia",
+      "step": "harmonia-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "keyman",
+      "step": "keyman-source"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "sbin",
+      "step": "sbin-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/grub-mkconfig",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "adblock",
+      "step": "adblock-blocklist-current"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "caduceus",
+      "step": "caduceus-owner-group"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "caduceus",
+      "step": "caduceus-staff-module-path"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "synapse",
+      "step": "synapse-substrate-converge"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "calibreweb",
+      "step": "calibreweb-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "filebrowser",
+      "step": "filebrowser-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "firewall",
+      "step": "firewall-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "forgejo",
+      "step": "forgejo-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "jellyfin",
+      "step": "jellyfin-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "mkdocs",
+      "step": "mkdocs-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "navidrome",
+      "step": "navidrome-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "nginx",
+      "step": "nginx-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "piwigo",
+      "step": "piwigo-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "postgres",
+      "step": "postgres-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "searx",
+      "step": "searx-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "synapse",
+      "step": "synapse-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "transmission",
+      "step": "transmission-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "transmission-staff-units",
+      "step": "transmission-staff-units-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "vaultwarden",
+      "step": "vaultwarden-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "woodpecker",
+      "step": "woodpecker-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "yarr",
+      "step": "yarr-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-analyze",
+      "module": "forgejo",
+      "step": "forgejo-unit-valid"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-analyze",
+      "module": "mkdocs",
+      "step": "mkdocs-unit-valid"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-analyze",
+      "module": "navidrome",
+      "step": "navidrome-unit-valid"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-analyze",
+      "module": "vaultwarden",
+      "step": "vaultwarden-unit-valid"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-analyze",
+      "module": "yarr",
+      "step": "yarr-unit-valid"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-tmpfiles",
+      "module": "nas-units",
+      "step": "nas-units-mountpoints-ready"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/update-grub",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/local/bin/caduceus",
+      "module": "household-time",
+      "step": "household-time-resolve"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/sbin/grub-mkconfig",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/sbin/update-grub",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "package-upgrade",
+      "match": "*",
+      "module": "system-packages",
+      "step": "system-packages-upgrade"
+    },
+    {
+      "kind": "unit",
+      "match": "caduceus.service",
+      "module": "caduceus",
+      "step": "caduceus-service-runtime"
+    },
+    {
+      "kind": "unit",
+      "match": "chrony.service",
+      "module": "household-time",
+      "step": "household-time-restart-chrony"
+    },
+    {
+      "kind": "unit",
+      "match": "coronatio.service",
+      "module": "coronatio",
+      "step": "coronatio-service-runtime"
+    },
+    {
+      "kind": "unit",
+      "match": "postgresql.service",
+      "module": "system-packages",
+      "step": "system-packages-restart-postgresql"
+    },
+    {
+      "kind": "unit",
+      "match": "postgresql@.service",
+      "module": "postgres",
+      "step": "postgres-distro-instance-mask"
+    },
+    {
+      "kind": "unit",
+      "match": "yarr.service",
+      "module": "yarr",
+      "step": "yarr-release-binary"
+    }
+  ],
+  "profile": "homeserver",
+  "schema": "harmonia.touch.resolved.v1"
+}

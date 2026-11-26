@@ -1,3 +1,6 @@
+#[path = "build/touch_pool.rs"]
+mod touch_pool;
+
 use std::env;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -94,6 +97,7 @@ fn main() {
         panic!("HARMONIA_COMPONENT must be exactly harmonia or harmonia-monad; got {component}");
     }
     println!("cargo:rustc-env=HARMONIA_COMPONENT={component}");
+    touch_pool::generate(&component);
 
     println!("cargo:rerun-if-env-changed=HARMONIA_BUILD_ENV_SHA");
     match env::var("HARMONIA_BUILD_ENV_SHA") {

@@ -1,0 +1,951 @@
+{
+  "clobbered": [
+    {
+      "module": null,
+      "note": "Ruyi is clobbered every press as a known intended good",
+      "path": "/etc/appliance/ruyi.json",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia service unit",
+      "path": "/etc/systemd/system/harmonia.service",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia timer unit",
+      "path": "/etc/systemd/system/harmonia.timer",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia runtime locks",
+      "path": "/run/harmonia/*.lock",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "External release scratch",
+      "path": "/tmp/harmonia-external-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Module observation scratch",
+      "path": "/tmp/harmonia-module-observe-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned archive scratch",
+      "path": "/tmp/harmonia-pinned-archive-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned engine scratch",
+      "path": "/tmp/harmonia-pinned-engine-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Pinned release scratch",
+      "path": "/tmp/harmonia-pinned-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Release scratch",
+      "path": "/tmp/harmonia-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Release probe scratch",
+      "path": "/tmp/harmonia-release-probe-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Xenia release scratch",
+      "path": "/tmp/harmonia-xenia-release-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Xenia staging scratch",
+      "path": "/tmp/harmonia-xenia-stage-*/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia engine binary",
+      "path": "/usr/local/bin/harmonia",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia state and receipts",
+      "path": "/var/lib/harmonia/**",
+      "step": null,
+      "tool": null
+    }
+  ],
+  "hotfix": [
+    {
+      "module": "grub-branding",
+      "path": "/boot/grub/grub.cfg",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "grub-branding",
+      "path": "/boot/grub/themes/**",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source",
+      "step": "caduceus-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source/**",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/opt/caduceus/source/**",
+      "step": "caduceus-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/docs",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/docs/**",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "mkdocs",
+      "path": "/opt/docs/mkdocs.yml",
+      "step": "mkdocs-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/source",
+      "step": "documentation-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "documentation",
+      "path": "/opt/docs/source/**",
+      "step": "documentation-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "keyman",
+      "path": "/opt/keyman/source",
+      "step": "keyman-source",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "keyman",
+      "path": "/opt/keyman/source/**",
+      "step": "keyman-source",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "sbin",
+      "path": "/opt/sbin/source",
+      "step": "sbin-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "sbin",
+      "path": "/opt/sbin/source/**",
+      "step": "sbin-source-sync",
+      "tool": "git-artifact.sync"
+    },
+    {
+      "module": "kde-look",
+      "path": "/usr/lib/libreoffice/share/registry/dark-appearance.xcd",
+      "step": "libreoffice-appearance-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/bin/agathodaimon",
+      "step": "agathodaimon-front-door-link",
+      "tool": "files.symlink-converge"
+    },
+    {
+      "module": "caduceus",
+      "path": "/usr/local/bin/caduceus",
+      "step": "caduceus-service-runtime",
+      "tool": "service-runtime.converge"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/sbin/agathodaimon",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "sbin",
+      "path": "/usr/local/sbin/agathodaimon/**",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/caduceus/venv",
+      "step": "caduceus-venv-converge",
+      "tool": "venv.converge"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/caduceus/venv/**",
+      "step": "caduceus-venv-converge",
+      "tool": "venv.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/var/lib/harmonia/harmonia.sqlite3",
+      "step": "observe-login-shell",
+      "tool": "command.propose"
+    },
+    {
+      "module": "documentation",
+      "path": "/var/lib/harmonia/state/documentation-docs-sweep.json",
+      "step": "documentation-docs-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "sbin",
+      "path": "/var/lib/harmonia/state/sbin-source-shelf-sweep.json",
+      "step": "sbin-source-shelf-sweep",
+      "tool": "files.source-shelf-sweep"
+    },
+    {
+      "module": "keyman",
+      "path": "/vault/keyman/keyman",
+      "step": "keyman-rust-release",
+      "tool": "release-binary.install"
+    }
+  ],
+  "interactable": [
+    {
+      "module": "chromium",
+      "path": "/etc/chromium.d/user-flags",
+      "step": "chromium-policy-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "chromium",
+      "path": "/etc/chromium/policies/managed/arch-tv-chromium-policy.json",
+      "step": "retired-mandatory-policy-cleanup",
+      "tool": "files.remove"
+    },
+    {
+      "module": "chromium",
+      "path": "/etc/chromium/policies/managed/harmonia-chromium-bookmarks.json",
+      "step": "chromium-policy-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "chromium",
+      "path": "/etc/chromium/policies/managed/harmonia-chromium-extensions.json",
+      "step": "chromium-policy-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "chromium",
+      "path": "/etc/chromium/policies/managed/laptop-chromium-policy.json",
+      "step": "retired-mandatory-policy-cleanup",
+      "tool": "files.remove"
+    },
+    {
+      "module": "chromium",
+      "path": "/etc/chromium/policies/recommended/harmonia-chromium-policy.json",
+      "step": "chromium-policy-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "grub-branding",
+      "path": "/etc/default/grub",
+      "step": "grub-branding-theme",
+      "tool": "grub.apply-theme"
+    },
+    {
+      "module": "sudoers",
+      "path": "/etc/sudoers.d/caduceus-*",
+      "step": "sudoers-converge",
+      "tool": "files.validated-sudoers-converge"
+    },
+    {
+      "module": "mkdocs",
+      "path": "/etc/systemd/system/mkdocs.service",
+      "step": "mkdocs-product-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "household-time",
+      "path": "/etc/systemd/timesyncd.conf.d/household.conf",
+      "step": "household-time-timesyncd-gateway",
+      "tool": "files.managed-files"
+    },
+    {
+      "module": "bluetooth-audio",
+      "path": "/etc/wireplumber/wireplumber.conf.d/51-hdmi-first.conf",
+      "step": "hdmi-first-config",
+      "tool": "files.converge"
+    },
+    {
+      "module": "xdg-user-settings",
+      "path": "/etc/xdg/menus/applications.menu",
+      "step": "kde-root-menu",
+      "tool": "files.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.aliases",
+      "step": "compile-aliases",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.bash-preexec.sh",
+      "step": "compile-bash-preexec",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.bashrc",
+      "step": "compile-bashrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "chromium",
+      "path": "/home/owner/.config/chromium-flags.conf",
+      "step": "chromium-flags-file",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/dolphinrc",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "dunst",
+      "path": "/home/owner/.config/dunst/dunstrc",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "gtk-theme",
+      "path": "/home/owner/.config/gtk-3.0/settings.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "gtk-theme",
+      "path": "/home/owner/.config/gtk-4.0/settings.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate-externaltoolspluginrc",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Clang%20Format%20Full%20File.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Clang%20Format%20Selected%20Text.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Compile%20and%20Run%20cpp.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Go%20Fmt%20Full%20File.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/GoImports%20Full%20File.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Google%20Selected%20Text.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Insert%20UUID.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/JSON%20Format%20Full%20File.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Prettier%20Format%20Current%20File.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Qt%20Quick%202%20Preview%20%28qmlscene%29.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Run%20Shell%20Script.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Rust%20Fmt%20Full%20File.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Search%20KDE%20API.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/Search%20Qt%20API.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/XML%20Format%20Full%20File.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/git%20blame.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/git-cola.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kate/externaltools/gitk.ini",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/katerc",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/katevirc",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "xdg-user-settings",
+      "path": "/home/owner/.config/kde-mimeapps.list",
+      "step": "kde-and-associations",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/kdeglobals",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kitty",
+      "path": "/home/owner/.config/kitty/kitty.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kitty",
+      "path": "/home/owner/.config/kitty/theme.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.config/konsolerc",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "xdg-user-settings",
+      "path": "/home/owner/.config/mimeapps.list",
+      "step": "kde-and-associations",
+      "tool": "files.converge"
+    },
+    {
+      "module": "screenshot",
+      "path": "/home/owner/.config/satty/config.toml",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "screenshot",
+      "path": "/home/owner/.config/swappy/config",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/conf.d/60-waybar-floats.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/conf.d/autostart.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/conf.d/bindings.conf",
+      "step": "desktop-bindings",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/conf.d/input.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/conf.d/look.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/conf.d/output.conf",
+      "step": "desktop-output",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/conf.d/windows.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/sway/config",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/systemd/user/graphical-session.target.d/10-hometv-sway-environment.conf",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/systemd/user/hometv-sway-environment.service",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/systemd/user/hometv-sway-session.target",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "waybar",
+      "path": "/home/owner/.config/systemd/user/hs-blueman-applet.service",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "dunst",
+      "path": "/home/owner/.config/systemd/user/hs-dunst.service",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "waybar",
+      "path": "/home/owner/.config/systemd/user/hs-nm-applet.service",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "waybar",
+      "path": "/home/owner/.config/systemd/user/hs-waybar.service",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "waybar",
+      "path": "/home/owner/.config/waybar/badge-state.css",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "waybar",
+      "path": "/home/owner/.config/waybar/style.css",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "waybar",
+      "path": "/home/owner/.config/waybar/waybar.conf",
+      "step": "desktop-status-values",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/wofi/config",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "sway",
+      "path": "/home/owner/.config/wofi/style.css",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "xdg-user-settings",
+      "path": "/home/owner/.config/xdg-desktop-portal/sway-portals.conf",
+      "step": "portal",
+      "tool": "files.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.enhanced_less_config",
+      "step": "compile-enhanced-less-config",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.functions",
+      "step": "compile-functions",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.gitconfig",
+      "step": "compile-gitconfig",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.inputrc",
+      "step": "compile-inputrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.lesskey",
+      "step": "compile-lesskey",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "xdg-user-settings",
+      "path": "/home/owner/.local/share/applications/mimeapps.list",
+      "step": "kde-and-associations",
+      "tool": "files.converge"
+    },
+    {
+      "module": "xdg-user-settings",
+      "path": "/home/owner/.local/share/applications/org.kde.kate.desktop",
+      "step": "kde-and-associations",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.local/share/dolphin/view_properties/global/.directory",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.local/share/konsole/HomeTV.profile",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.local/share/user-places.xbel",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "kde-look",
+      "path": "/home/owner/.local/state/dolphinstaterc",
+      "step": "managed-files",
+      "tool": "files.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.nanorc",
+      "step": "compile-nanorc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.profile",
+      "step": "compile-profile",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.tmux.conf",
+      "step": "compile-tmux",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.zshenv",
+      "step": "compile-zshenv",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/home/owner/.zshrc",
+      "step": "compile-zshrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "chromium",
+      "path": "/home/owner/firefox/distribution/policies.json",
+      "step": "retired-mandatory-policy-cleanup",
+      "tool": "files.remove"
+    },
+    {
+      "module": "desktop-config-payload",
+      "path": "/home/owner/omp.json",
+      "step": "prompt",
+      "tool": "files.converge"
+    },
+    {
+      "module": "root-profile",
+      "path": "/root/.bashrc",
+      "step": "compile-bashrc",
+      "tool": "files.compile-fragments"
+    },
+    {
+      "module": "root-profile",
+      "path": "/root/.profile",
+      "step": "compile-profile",
+      "tool": "files.compile-fragments"
+    }
+  ],
+  "operations": [
+    {
+      "kind": "command",
+      "match": "/usr/bin/chsh",
+      "module": "dot-files",
+      "step": "observe-login-shell"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/env",
+      "module": "household-time",
+      "step": "household-time-peer-state"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "caduceus",
+      "step": "caduceus-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "documentation",
+      "step": "documentation-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "keyman",
+      "step": "keyman-source"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/git",
+      "module": "sbin",
+      "step": "sbin-source-sync"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/grub-mkconfig",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "caduceus",
+      "step": "caduceus-owner-group"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "caduceus",
+      "step": "caduceus-staff-module-path"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
+      "module": "sbin",
+      "step": "settings-window-relaunch"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "dunst",
+      "step": "user-daemon-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "mkdocs",
+      "step": "mkdocs-systemd-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemctl",
+      "module": "waybar",
+      "step": "user-daemon-reload"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/systemd-analyze",
+      "module": "mkdocs",
+      "step": "mkdocs-unit-valid"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/update-grub",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/local/bin/caduceus",
+      "module": "household-time",
+      "step": "household-time-peer-state"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/sbin/grub-mkconfig",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/sbin/update-grub",
+      "module": "grub-branding",
+      "step": "grub-branding-theme"
+    },
+    {
+      "kind": "package-upgrade",
+      "match": "*",
+      "module": "system-packages",
+      "step": "system-packages-upgrade"
+    },
+    {
+      "kind": "unit",
+      "match": "bluetooth.service",
+      "module": "bluetooth-audio",
+      "step": "bluetooth-service-enable-now"
+    },
+    {
+      "kind": "unit",
+      "match": "caduceus.service",
+      "module": "caduceus",
+      "step": "caduceus-service-runtime"
+    },
+    {
+      "kind": "unit",
+      "match": "systemd-timesyncd.service",
+      "module": "household-time",
+      "step": "household-time-enable-timesyncd"
+    },
+    {
+      "kind": "unit",
+      "match": "systemd-timesyncd.service",
+      "module": "household-time",
+      "step": "household-time-restart-timesyncd"
+    }
+  ],
+  "profile": "hometv",
+  "schema": "harmonia.touch.resolved.v1"
+}
