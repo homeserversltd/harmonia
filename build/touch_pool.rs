@@ -106,12 +106,29 @@ fn module_list(root: &Path, profile: &Value) -> Result<Vec<(String, bool)>> {
         if !base_profile["extends"].is_null() {
             return Err("profile-extends-chain-refused".into());
         }
+        if base_profile.get("excludes").is_some() {
+            return Err("profile-extends-exclude-without-extends".into());
+        }
+        let base_modules = strings(&base_profile["modules"]);
+        let overlay_modules = strings(&profile["modules"]);
         let excludes: BTreeSet<_> = strings(&profile["excludes"]).into_iter().collect();
-        for m in strings(&base_profile["modules"]) {
+        for excluded in &excludes {
+            if overlay_modules.contains(excluded) || !base_modules.contains(excluded) {
+                return Err(format!("profile-extends-exclude-invalid module={excluded}"));
+            }
+        }
+        for module in &base_modules {
+            if overlay_modules.contains(module) {
+                return Err(format!("profile-extends-duplicate-module module={module}"));
+            }
+        }
+        for m in base_modules {
             if !excludes.contains(&m) {
                 modules.push((m, true));
             }
         }
+    } else if profile.get("excludes").is_some() {
+        return Err("profile-extends-exclude-without-extends".into());
     }
     modules.extend(strings(&profile["modules"]).into_iter().map(|m| (m, false)));
     Ok(modules)
