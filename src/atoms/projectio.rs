@@ -1155,14 +1155,198 @@ pub(crate) fn act_create(
     })
 }
 
+/// A scratch name belongs to the act, not to the touch collector.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) enum ScratchWitness<'a> {
+    KnownGood(&'a crate::atoms::comparison::ActionAuthorization),
+    Engine(&'a EngineStateWitness),
+}
+#[allow(dead_code)]
+impl<'a> From<&'a crate::atoms::comparison::ActionAuthorization> for ScratchWitness<'a> {
+    fn from(w: &'a crate::atoms::comparison::ActionAuthorization) -> Self { Self::KnownGood(w) }
+}
+#[allow(dead_code)]
+impl<'a> From<&'a EngineStateWitness> for ScratchWitness<'a> {
+    fn from(w: &'a EngineStateWitness) -> Self { Self::Engine(w) }
+}
+#[allow(dead_code)]
+impl ScratchWitness<'_> {
+    fn hold(self) { match self { Self::KnownGood(w) => { let _ = w; }, Self::Engine(w) => { let _ = w; } } }
+}
+
+// Create each missing rung separately: partial success must not lose its touch.
+fn make_directories(path: &Path, record: bool) -> std::io::Result<Vec<PathBuf>> {
+    check_act_path(path)?;
+    if path.as_os_str().is_empty() { return Ok(Vec::new()); }
+    let mut missing = Vec::new();
+    for p in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+        match fs::metadata(p) {
+            Ok(m) if m.is_dir() => break,
+            Ok(_) => return Err(std::io::Error::new(std::io::ErrorKind::NotADirectory, "projectio-parent-not-directory")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(p.to_path_buf()),
+            Err(e) => return Err(e),
+        }
+    }
+    let mut made = Vec::new();
+    for p in missing.iter().rev() {
+        match fs::create_dir(p) {
+            Ok(()) => {
+                if record { crate::atoms::touch::record_made_directory(p, "self"); }
+                made.push(p.clone());
+                if !fs::metadata(p).is_ok_and(|m| m.is_dir()) { return Err(act_mismatch("make-dir", p)); }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && fs::metadata(p).is_ok_and(|m| m.is_dir()) => {},
+            Err(e) => return Err(e),
+        }
+    }
+    if !fs::metadata(path).is_ok_and(|m| m.is_dir()) { return Err(act_mismatch("make-dir", path)); }
+    Ok(made)
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_scratch_make_dir<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    w.into().hold(); make_directories(path, false)
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_make_dir_new<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> {
+    w.into().hold(); check_act_path(path)?; fs::create_dir(path)?;
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) { return Err(act_mismatch("make-dir", path)); }
+    Ok(())
+}
+fn set_act_mode(path: &Path, mode: u32, record: bool) -> std::io::Result<()> {
+    check_act_path(path)?;
+    let before = fs::symlink_metadata(path)?;
+    if before.file_type().is_symlink() { return Err(std::io::Error::other(format!("projectio-mode-symlink-refused {}", path.display()))); }
+    let changed = before.mode() & 0o7777 != mode & 0o7777;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    if record && changed { crate::atoms::touch::record_lane(path, "self"); }
+    if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && m.mode() & 0o7777 == mode & 0o7777) { return Err(act_mismatch("mode", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_mode<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, mode: u32) -> std::io::Result<()> {
+    w.into().hold(); set_act_mode(path, mode, false)
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_chown<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    w.into().hold(); check_act_path(path)?;
+    let before = fs::symlink_metadata(path)?;
+    if before.file_type().is_symlink() { return Err(std::io::Error::other(format!("projectio-owner-symlink-refused {}", path.display()))); }
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    if unsafe { libc::lchown(c.as_ptr(), uid, gid) } != 0 { return Err(std::io::Error::last_os_error()); }
+    if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && (uid == !0 || m.uid() == uid) && (gid == !0 || m.gid() == gid)) { return Err(act_mismatch("owner", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_write_new<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    w.into().hold(); check_act_path(path)?;
+    let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
+    f.write_all(bytes)?; f.set_permissions(fs::Permissions::from_mode(mode))?; f.sync_all()?;
+    if !file_readback(path, bytes, mode) { return Err(act_mismatch("write", path)); }
+    Ok(())
+}
+fn file_readback(path: &Path, bytes: &[u8], mode: u32) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.mode() & 0o7777 == mode & 0o7777)
+        && fs::read(path).is_ok_and(|b| b == bytes)
+}
+fn remove_act(path: &Path, kind: u8, record: bool) -> std::io::Result<()> {
+    check_act_path(path)?;
+    let result = match kind {
+        0 => fs::remove_file(path),
+        1 => fs::remove_dir(path),
+        _ => { let m = fs::symlink_metadata(path)?; if m.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) } },
+    };
+    // remove_dir_all may have removed part of the tree before failing.
+    if kind == 2 && result.is_err() && record { crate::atoms::touch::record_lane(path, "self"); }
+    result?;
+    if record { crate::atoms::touch::record_lane(path, "self"); }
+    if !matches!(fs::symlink_metadata(path), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("remove", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_remove<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> { w.into().hold(); remove_act(path, 0, false) }
+#[allow(dead_code)]
+pub(crate) fn act_scratch_remove_dir<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> { w.into().hold(); remove_act(path, 1, false) }
+#[allow(dead_code)]
+pub(crate) fn act_scratch_remove_tree<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> { w.into().hold(); remove_act(path, 2, false) }
+
+#[allow(dead_code)]
+pub(crate) fn engine_make_dir(_w: &EngineStateWitness, path: &Path) -> std::io::Result<()> { make_directories(path, true).map(|_| ()) }
+#[allow(dead_code)]
+pub(crate) fn engine_mode(_w: &EngineStateWitness, path: &Path, mode: u32) -> std::io::Result<()> { set_act_mode(path, mode, true) }
+
+// Write and sync an unrecorded sibling, then make the fully formed inode visible.
+fn engine_write(target: &Path, bytes: &[u8], mode: u32, exclusive: bool) -> std::io::Result<()> {
+    check_act_path(target)?;
+    if !exclusive { cleanup_stale_temporaries_for_target(target).map_err(std::io::Error::other)?; }
+    let parent = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("target");
+    let (mut temp, temp_path) = create_temp(parent, name).map_err(std::io::Error::other)?;
+    let result = (|| {
+        temp.write_all(bytes)?;
+        temp.set_permissions(fs::Permissions::from_mode(mode))?;
+        temp.sync_all()?;
+        if exclusive { renameat2_raw(&temp_path, target, libc::RENAME_NOREPLACE)?; }
+        else { fs::rename(&temp_path, target)?; }
+        crate::atoms::touch::record_lane(target, "self");
+        File::open(parent)?.sync_all()?;
+        if !file_readback(target, bytes, mode) { return Err(act_mismatch("write", target)); }
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temp_path); }
+    result
+}
+#[allow(dead_code)]
+pub(crate) fn engine_create_new(_w: &EngineStateWitness, target: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> { engine_write(target, bytes, mode, true) }
+#[allow(dead_code)]
+pub(crate) fn engine_put(_w: &EngineStateWitness, target: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> { engine_write(target, bytes, mode, false) }
+#[allow(dead_code)]
+pub(crate) fn engine_open_lock(_w: &EngineStateWitness, path: &Path) -> std::io::Result<File> {
+    check_act_path(path)?;
+    let (file, created) = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(f) => (f, true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (OpenOptions::new().write(true).custom_flags(libc::O_NOFOLLOW).open(path)?, false),
+        Err(e) => return Err(e),
+    };
+    if created { crate::atoms::touch::record_lane(path, "self"); }
+    let opened = file.metadata()?;
+    if !opened.is_file() || !fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && file_identity(&m) == file_identity(&opened)) { return Err(act_mismatch("lock", path)); }
+    Ok(file)
+}
+#[allow(dead_code)]
+pub(crate) fn engine_rename(_w: &EngineStateWitness, from: &Path, to: &Path, scratch_from: bool, scratch_to: bool) -> std::io::Result<()> {
+    check_act_path(from)?; check_act_path(to)?;
+    let before = fs::symlink_metadata(from)?;
+    fs::rename(from, to)?;
+    if !scratch_to { crate::atoms::touch::record_lane(to, "self"); }
+    if !scratch_from { crate::atoms::touch::record_lane(from, "self"); }
+    if !fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) || !matches!(fs::symlink_metadata(from), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("rename", to)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn engine_remove(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 0, !scratch) }
+#[allow(dead_code)]
+pub(crate) fn engine_remove_if(_w: &EngineStateWitness, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> {
+    check_act_path(path)?;
+    if fs::read(path)? != expected { return Err(std::io::Error::other(format!("projectio-remove-if-refused {}", path.display()))); }
+    remove_act(path, 0, !scratch)
+}
+#[allow(dead_code)]
+pub(crate) fn engine_remove_dir(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 1, !scratch) }
+#[allow(dead_code)]
+pub(crate) fn engine_remove_tree(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 2, !scratch) }
+
 /// Replace engine-maintained state through the Projectio membrane.
 pub(crate) fn write_engine_state(
     target: &Path,
     desired_bytes: &[u8],
     witness: EngineStateWitness,
 ) -> Result<Receipt, String> {
+    check_act_path(target).map_err(|e| e.to_string())?;
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| io_error("state-directory", parent, e))?;
+        engine_make_dir(&witness, parent).map_err(|e| io_error("state-directory", parent, e))?;
     }
     cleanup_stale_temporaries_for_target(target)?;
 
@@ -1172,6 +1356,7 @@ pub(crate) fn write_engine_state(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             match OpenOptions::new().write(true).create_new(true).open(target) {
                 Ok(file) => {
+                    crate::atoms::touch::record_lane(target, "self");
                     drop(file);
                     target_was_created = true;
                     fs::symlink_metadata(target).map_err(|e| io_error("state-stat", target, e))?
