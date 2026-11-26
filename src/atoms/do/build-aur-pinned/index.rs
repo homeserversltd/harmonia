@@ -564,6 +564,9 @@ pub(crate) fn current_pkg_tar(build_dir: &Path, package: &str) -> Result<Option<
 }
 
 pub(crate) fn prepare_build_dir_for_builder(authorization: &ActionAuthorization, build_dir: &Path, builder: &str) -> Result<(), String> {
+    // The copy-tree act carries links; do not let them reach makepkg even
+    // when no ownership change is needed for a non-root builder.
+    refuse_build_symlinks(build_dir)?;
     if unsafe { libc::geteuid() } != 0 || builder == "current-user" {
         return Ok(());
     }
@@ -575,6 +578,16 @@ pub(crate) fn prepare_build_dir_for_builder(authorization: &ActionAuthorization,
     let uid = unsafe { (*passwd).pw_uid };
     let gid = unsafe { (*passwd).pw_gid };
     chown_recursive(authorization, build_dir, uid, gid)
+}
+fn refuse_build_symlinks(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| format!("aur-build-dir-chown-failed {}: {e}", path.display()))?;
+    if metadata.file_type().is_symlink() { return Err(format!("aur-build-dir-chown-failed {}: symlink refused", path.display())); }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            refuse_build_symlinks(&entry.map_err(|e| e.to_string())?.path())?;
+        }
+    }
+    Ok(())
 }
 pub(crate) fn copy_dir(authorization: &ActionAuthorization, src: &Path, dst: &Path) -> Result<(), String> {
     projectio::act_scratch_copy_tree(authorization, src, dst).map_err(|e| format!("aur-source-copy-failed: {e}"))
