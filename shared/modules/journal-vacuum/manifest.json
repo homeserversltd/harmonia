@@ -1,0 +1,26 @@
+{
+  "schema": "harmonia.module.ladder.v1",
+  "id": "journal-vacuum",
+  "title": "Journal upkeep",
+  "summary": "Keeps the operating system journal within its declared 300M through the appliance staff.",
+  "category": "known-good",
+  "version": "1.0.0",
+  "ladder": [
+    {
+      "step_id": "journal-vacuum-current",
+      "tool": "command",
+      "permutation": "act",
+      "args": {
+        "program": "/usr/bin/python3",
+        "args": ["/usr/local/sbin/agathodaimon/cli.py", "appliance", "journal-vacuum", "converge"],
+        "timeout_secs": 120,
+        "observation": {
+          "program": "/usr/bin/python3",
+          "args": ["/usr/local/sbin/agathodaimon/cli.py", "appliance", "journal-vacuum", "verify"],
+          "expected_exit_code": 0
+        }
+      },
+      "on_failure": "stop"
+    }
+  ]
+}

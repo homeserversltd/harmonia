@@ -33,7 +33,8 @@
     "documentation",
     "mkdocs",
     "root-profile",
-    "dot-files"
+    "dot-files",
+    "journal-vacuum"
   ],
   "identity": "hometv",
   "module_spine_entered": "profiles/hometv/modules"

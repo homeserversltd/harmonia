@@ -864,6 +864,12 @@
     {
       "kind": "command",
       "match": "/usr/bin/python3",
+      "module": "journal-vacuum",
+      "step": "journal-vacuum-current"
+    },
+    {
+      "kind": "command",
+      "match": "/usr/bin/python3",
       "module": "sbin",
       "step": "settings-window-relaunch"
     },
