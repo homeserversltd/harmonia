@@ -1303,6 +1303,12 @@ pub(crate) fn engine_create_new(_w: &EngineStateWitness, target: &Path, bytes: &
 #[allow(dead_code)]
 pub(crate) fn engine_put(_w: &EngineStateWitness, target: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> { engine_write(target, bytes, mode, false) }
 #[allow(dead_code)]
+pub(crate) fn engine_put_owned(_w: &EngineStateWitness, target: &Path, bytes: &[u8], mode: u32, uid: u32, gid: u32) -> std::io::Result<()> {
+    check_act_path(target)?;
+    cleanup_stale_temporaries_for_target(target).map_err(std::io::Error::other)?;
+    put_file(target, bytes, mode, Some(uid), Some(gid), false, Some("self"))
+}
+#[allow(dead_code)]
 pub(crate) fn engine_open_lock(_w: &EngineStateWitness, path: &Path) -> std::io::Result<File> {
     check_act_path(path)?;
     let (file, created) = match OpenOptions::new().write(true).create_new(true).open(path) {
@@ -1401,7 +1407,7 @@ fn read_regular(path: &Path) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
 }
 
 #[allow(dead_code)]
-fn put_file(target: &Path, bytes: &[u8], mode: u32, uid: Option<u32>, gid: Option<u32>, exclusive: bool, record: bool) -> std::io::Result<()> {
+fn put_file(target: &Path, bytes: &[u8], mode: u32, uid: Option<u32>, gid: Option<u32>, exclusive: bool, record: Option<&'static str>) -> std::io::Result<()> {
     check_act_path(target)?;
     let parent = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("target");
@@ -1418,7 +1424,7 @@ fn put_file(target: &Path, bytes: &[u8], mode: u32, uid: Option<u32>, gid: Optio
         let staged = temp.metadata()?;
         if exclusive { renameat2_raw(&temp_path, target, libc::RENAME_NOREPLACE)?; }
         else { fs::rename(&temp_path, target)?; }
-        if record { crate::atoms::touch::record_lane(target, "known-good"); }
+        if let Some(lane) = record { crate::atoms::touch::record_lane(target, lane); }
         File::open(parent)?.sync_all()?;
         let (actual, metadata) = read_regular(target)?;
         if actual != bytes || file_identity(&metadata) != file_identity(&staged)
@@ -1446,7 +1452,7 @@ pub(crate) fn act_put(_auth: &crate::atoms::comparison::ActionAuthorization, tar
         .ok_or_else(|| std::io::Error::other("projectio-put-absent-needs-mode"))?;
     let uid = uid.unwrap_or_else(|| existing.as_ref().map(|m| m.uid()).unwrap_or_else(|| unsafe { libc::geteuid() }));
     let gid = gid.unwrap_or_else(|| existing.as_ref().map(|m| m.gid()).unwrap_or_else(|| unsafe { libc::getegid() }));
-    put_file(target, bytes, mode, Some(uid), Some(gid), existing.is_none(), true)
+    put_file(target, bytes, mode, Some(uid), Some(gid), existing.is_none(), Some("known-good"))
 }
 
 #[allow(dead_code)]
@@ -1460,7 +1466,7 @@ pub(crate) fn act_copy(auth: &crate::atoms::comparison::ActionAuthorization, sou
 pub(crate) fn act_scratch_copy<'a>(w: impl Into<ScratchWitness<'a>>, source: &Path, target: &Path, mode: Option<u32>) -> std::io::Result<()> {
     w.into().hold(); check_act_path(source)?; check_act_path(target)?;
     let (bytes, metadata) = read_regular(source)?;
-    put_file(target, &bytes, mode.unwrap_or(metadata.mode() & 0o7777), None, None, true, false)
+    put_file(target, &bytes, mode.unwrap_or(metadata.mode() & 0o7777), None, None, true, None)
 }
 
 /// A tree promoted later by act_rename records only the promoted root.
