@@ -715,7 +715,7 @@ fn prune_retired_module_dirs(
         {
             continue;
         }
-        let restoration_testimony = crate::tools::files::remove_dir_capture(&module_path)?;
+        let _restoration_testimony = crate::tools::files::remove_dir_capture(&module_path)?;
         crate::tools::comparison::execute(
             "molt-retired-tree-remove",
             || Ok(fs::symlink_metadata(&module_path).is_ok()),
