@@ -547,8 +547,7 @@ mod mutation {
         ownership: DeclaredOwnership,
         observation: &PlaceFileObservation,
     ) -> Result<PlaceFileMovement, String> {
-        use std::io::Write;
-        use std::os::unix::io::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
         let parent = path.parent().ok_or("xenia-guest-not-installed")?;
         let name = path.file_name().ok_or("xenia-guest-not-installed")?.to_string_lossy();
         let temp = parent.join(format!(".{name}.xenia-update-{}-{}", std::process::id(),
@@ -557,18 +556,21 @@ mod mutation {
         let mut exchanged = false;
         let mut candidate_identity = None;
         let result = (|| -> Result<(), String> {
-            // R5-0d held-fd exception: guest-writable Xenia seats require fd-anchored metadata.
-            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)
+            let seat = std::fs::OpenOptions::new().read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(parent).map_err(|e| format!("xenia-update-temp-create-failed: {e}"))?;
+            let temp_name = temp.file_name().ok_or("xenia-guest-not-installed")?;
+            let file = crate::atoms::projectio::act_at_create_new(authorization, &seat, temp_name, 0o600, None)
                 .map_err(|e| format!("xenia-update-temp-create-failed: {e}"))?;
             let m = file.metadata().map_err(|e| e.to_string())?;
             candidate_identity = Some((m.dev(), m.ino()));
-            file.write_all(bytes).map_err(|e| format!("xenia-update-temp-write-failed: {e}"))?;
+            crate::atoms::projectio::act_fd_write(authorization, &file, bytes, None)
+                .map_err(|e| format!("xenia-update-temp-write-failed: {e}"))?;
             let uid = ownership.uid.ok_or("xenia-update-owner-missing")?;
             let gid = ownership.gid.ok_or("xenia-update-group-missing")?;
-            if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-                return Err(format!("xenia-update-owner-failed: {}", std::io::Error::last_os_error()));
-            }
-            file.set_permissions(std::fs::Permissions::from_mode(mode.ok_or("xenia-update-mode-missing")?))
+            crate::atoms::projectio::act_fd_owner(authorization, &file, uid, gid, None)
+                .map_err(|e| format!("xenia-update-owner-failed: {e}"))?;
+            crate::atoms::projectio::act_fd_mode(authorization, &file, mode.ok_or("xenia-update-mode-missing")?, None)
                 .map_err(|e| format!("xenia-update-mode-failed: {e}"))?;
             file.sync_all().map_err(|e| format!("xenia-update-sync-failed: {e}"))?;
             if let Err(error) = crate::atoms::projectio::act_exchange_files(authorization, &temp, path) {

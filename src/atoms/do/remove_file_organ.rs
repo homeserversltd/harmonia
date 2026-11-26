@@ -290,7 +290,8 @@ mod receipt {
         apply: bool,
         outcome: &FileRemovalOutcome,
     ) -> Result<(), String> {
-        fs::create_dir_all(receipt_dir).map_err(|error| error.to_string())?;
+        crate::atoms::projectio::engine_make_dir(&crate::atoms::projectio::engine_state_witness(), receipt_dir)
+            .map_err(|error| error.to_string())?;
         let receipt = receipt_dir.join(if receipt_name.ends_with(".json") {
             receipt_name.to_string()
         } else {
