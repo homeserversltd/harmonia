@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    os::unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt}},
+    os::unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt, PermissionsExt}},
     path::{Path, PathBuf},
 };
 
@@ -1153,8 +1153,7 @@ pub(crate) fn restore(
                         if fs::symlink_metadata(&n.path).is_err() { crate::atoms::projectio::rollback_make_dir(&witness, &n.path).map_err(|e| e.to_string())?; }
                         let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
                         if m.mode() & 0o700 != 0o700 {
-                            let directory = fs::File::from(open_dir_nofollow(root, &n.path)?);
-                            crate::atoms::projectio::act_fd_mode(&witness, &directory, (m.mode() & 0o7777) | 0o700, Some(&n.path)).map_err(|e| e.to_string())?;
+                            fs::set_permissions(&n.path, fs::Permissions::from_mode((m.mode() & 0o7777) | 0o700)).map_err(|e| e.to_string())?;
                         }
                     },
                     Kind::File(hash) => comparison_authorized_write(n, root, hash, &witness)?,
@@ -1191,8 +1190,7 @@ pub(crate) fn restore(
                 if !m.file_type().is_dir() { return Err("not a directory".into()); }
                 restore_owner(&witness, &n.path, n.uid, n.gid)?;
                 if m.mode() & 0o7777 != n.mode & 0o7777 {
-                    let directory = fs::File::from(open_dir_nofollow(root, &n.path)?);
-                    crate::atoms::projectio::act_fd_mode(&witness, &directory, n.mode & 0o7777, Some(&n.path)).map_err(|e| e.to_string())?;
+                    fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777)).map_err(|e| e.to_string())?;
                 }
                 Ok(())
             });
