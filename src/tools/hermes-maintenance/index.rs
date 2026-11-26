@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -596,7 +596,7 @@ pub(crate) fn execute_step_with_outputs(
     let initial_slot = std::cell::RefCell::new(None::<Observation>);
     let movement_slot = std::cell::RefCell::new(None::<Movement>);
     let source_skipped = std::cell::RefCell::new(Vec::<String>::new());
-    let run = crate::atoms::declaration::execute(
+    let run = crate::atoms::declaration::execute_once(
         "hermes-maintenance",
         "converge",
         || {
@@ -628,6 +628,43 @@ pub(crate) fn execute_step_with_outputs(
                 &request,
                 observation,
             )?;
+            let mut movement = movement;
+            let post = {
+                let mut binding = binding_slot.borrow_mut();
+                crate::atoms::ask::hermes_maintenance::observe(&request, &mut binding, &mut source_skipped.borrow_mut())
+            }.and_then(|after| {
+                if apply && after.changed {
+                    Err("converge-act-did-not-converge".to_string())
+                } else {
+                    Ok(())
+                }
+            });
+            if let Err(mut error) = post {
+                if movement.ok {
+                    let rollback = movement.snapshot.clone()
+                        .ok_or_else(|| "rollback-snapshot-missing".to_string())
+                        .and_then(|snapshot| restore_snapshot(&authorization, &snapshot, &mut movement));
+                    match rollback {
+                        Ok(()) => {
+                            movement.ok = false;
+                            movement.changed = false;
+                            movement.stage = "rolled-back".into();
+                            movement.error = Some("post-update-observation-failed; rollback=pre-sha-and-launcher-restored-runnable".into());
+                            movement.post_sha = git_text(&observation.source_root, &["rev-parse", "HEAD"]).ok();
+                            error = format!("failed-stage=post-update-observation rollback=pre-sha-and-launcher-restored-runnable; original={error}");
+                        }
+                        Err(debt) => {
+                            movement.ok = false;
+                            movement.changed = false;
+                            movement.stage = "rollback-refused-debt".into();
+                            movement.error = Some(format!("rollback-refused-debt={debt}"));
+                            error = format!("failed-stage=post-update-observation rollback-refused-debt={debt}; original={error}");
+                        }
+                    }
+                }
+                *movement_slot.borrow_mut() = Some(movement);
+                return Err(error);
+            }
             *movement_slot.borrow_mut() = Some(movement.clone());
             Ok(movement)
         },
@@ -738,33 +775,8 @@ pub(crate) fn execute_step_with_outputs(
         Err(original_error) => {
             let initial = initial_slot.borrow().clone();
             let mut movement = movement_slot.borrow().clone();
-            let mut error = original_error;
+            let error = original_error;
             if let (Some(initial), Some(movement)) = (initial.as_ref(), movement.as_mut()) {
-                if movement.ok {
-                    let rollback = movement
-                        .snapshot
-                        .clone()
-                        .ok_or_else(|| "rollback-snapshot-missing".to_string())
-                        .and_then(|snapshot| restore_snapshot(&snapshot, movement));
-                    match rollback {
-                        Ok(()) => {
-                            movement.ok = false;
-                            movement.changed = false;
-                            movement.stage = "rolled-back".into();
-                            movement.error = Some("post-update-observation-failed; rollback=pre-sha-and-launcher-restored-runnable".into());
-                            movement.post_sha =
-                                git_text(&initial.source_root, &["rev-parse", "HEAD"]).ok();
-                            error = format!("failed-stage=post-update-observation rollback=pre-sha-and-launcher-restored-runnable; original={error}");
-                        }
-                        Err(debt) => {
-                            movement.ok = false;
-                            movement.changed = false;
-                            movement.stage = "rollback-refused-debt".into();
-                            movement.error = Some(format!("rollback-refused-debt={debt}"));
-                            error = format!("failed-stage=post-update-observation rollback-refused-debt={debt}; original={error}");
-                        }
-                    }
-                }
                 crate::atoms::attest::hermes_maintenance::receipt(
                     &request,
                     initial,
@@ -1043,7 +1055,7 @@ pub(crate) fn observe(
 }
 
 pub(crate) fn apply(
-    _authorization: &ActionAuthorization,
+    authorization: &ActionAuthorization,
     _invocation: &InvocationKey,
     _software: &SoftwareApplyAuthorization,
     request: &Request,
@@ -1389,7 +1401,7 @@ pub(crate) fn apply(
             return Ok(movement);
         }
         movement.movement = "rolled-back-after-native-update-failure".into();
-        let rollback_result = restore_snapshot(&snapshot, &mut movement);
+        let rollback_result = restore_snapshot(authorization, &snapshot, &mut movement);
         movement.post_sha = git_text(&observed.source_root, &["rev-parse", "HEAD"]).ok();
         movement.config_sha256_after = hash_optional_file(&owner.hermes_home.join("config.yaml"))
             .ok()
@@ -1843,6 +1855,7 @@ fn preserve_post_update_worktree(
 }
 
 fn restore_snapshot(
+    authorization: &ActionAuthorization,
     snapshot: &RollbackSnapshot,
     movement: &mut Movement,
 ) -> Result<(), String> {
@@ -1972,7 +1985,7 @@ fn restore_snapshot(
         if updater_is_live(&snapshot.source_root, &owner)? {
             return Err("native-updater-live-retry".into());
         }
-        let restored = restore_launcher(launcher, &directory, owner.uid)?;
+        let restored = restore_launcher(authorization, launcher, &directory, owner.uid)?;
         if restored != launcher.bytes {
             return Err(format!(
                 "rollback-launcher-byte-readback-mismatch-{}",
@@ -1994,6 +2007,7 @@ fn restore_snapshot(
 }
 
 fn restore_launcher(
+    authorization: &ActionAuthorization,
     snapshot: &LauncherSnapshot,
     directory: &LauncherDirectorySnapshot,
     owner_uid: u32,
@@ -2011,15 +2025,14 @@ fn restore_launcher(
         now_nanos()?,
         basename.to_string_lossy()
     ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(snapshot.mode)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&temp)
+    let parent = OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&directory.path)
+        .map_err(|error| format!("rollback-launcher-temp-create-failed: {error}"))?;
+    let file = projectio::act_at_create_new(&witness, &parent, temp.file_name().ok_or("rollback-launcher-basename-missing")?, snapshot.mode, None)
         .map_err(|error| format!("rollback-launcher-temp-create-failed: {error}"))?;
     let write_result = (|| -> Result<(), String> {
-        file.write_all(&snapshot.bytes)
+        projectio::act_fd_write(&witness, &file, &snapshot.bytes, None)
             .map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
         if (metadata.uid(), metadata.gid()) != (snapshot.uid, snapshot.gid) {
@@ -2042,7 +2055,7 @@ fn restore_launcher(
         let _ = projectio::act_scratch_remove(&witness, &temp);
         return Err("rollback-launcher-target-changed-before-promote".into());
     }
-    fs::rename(&temp, &snapshot.path).map_err(|error| {
+    projectio::act_rename(authorization, &temp, &snapshot.path, true, false).map_err(|error| {
         let _ = projectio::act_scratch_remove(&witness, &temp);
         format!("rollback-launcher-atomic-rename-failed: {error}")
     })?;
@@ -2436,15 +2449,14 @@ fn atomic_write_owned(
         std::process::id(),
         now_nanos()?
     ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&temp)
+    let parent_fd = OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
+        .map_err(|error| format!("native-receipt-temp-create-failed: {error}"))?;
+    let file = projectio::act_at_create_new(&witness, &parent_fd, temp.file_name().ok_or("native-receipt-temp-name-missing")?, mode, None)
         .map_err(|error| format!("native-receipt-temp-create-failed: {error}"))?;
     let result = (|| -> Result<(), String> {
-        file.write_all(bytes).map_err(|error| error.to_string())?;
+        projectio::act_fd_write(&witness, &file, bytes, None).map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
         if (metadata.uid(), metadata.gid()) != (uid, gid) {
@@ -3482,14 +3494,14 @@ fn write_isolated_owner_file(
     bytes: &[u8],
     owner: &OwnerContext,
 ) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
+    let parent = path.parent().ok_or("isolated-native-facts-parent-missing")?;
+    let directory = OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
         .map_err(|error| format!("isolated-native-facts-create-failed: {error}"))?;
-    file.write_all(bytes)
+    let file = projectio::act_at_create_new(witness, &directory, path.file_name().ok_or("isolated-native-facts-name-missing")?, 0o600, None)
+        .map_err(|error| format!("isolated-native-facts-create-failed: {error}"))?;
+    projectio::act_fd_write(witness, &file, bytes, None)
         .map_err(|error| format!("isolated-native-facts-write-failed: {error}"))?;
     file.sync_all()
         .map_err(|error| format!("isolated-native-facts-sync-failed: {error}"))?;
