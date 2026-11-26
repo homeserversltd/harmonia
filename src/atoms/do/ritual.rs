@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    os::unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt, PermissionsExt}},
+    os::unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt}},
     path::{Path, PathBuf},
 };
 
@@ -101,8 +101,7 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), (String, bool)> {
                     Kind::Symlink(target) => {
                         crate::atoms::projectio::act_scratch_symlink(&witness, target, &destination).map_err(|e| e.to_string())?;
                         if node.path == root.path { made.push((root.path.clone(), building.clone())); }
-                        let c = std::ffi::CString::new(destination.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-                        if unsafe { libc::lchown(c.as_ptr(), node.uid, node.gid) } != 0 { return Err(format!("rollback-shadow-build-failed {}: {}", destination.display(), std::io::Error::last_os_error())); }
+                        crate::atoms::projectio::act_scratch_link_owner(&witness, &destination, node.uid, node.gid).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
                     },
                     Kind::File(hash) => {
                         hard_link_nofollow(&root.path, &node.path, &destination).map_err(|e| format!("rollback-shadow-link-failed {}: {e}", node.path.display()))?;
@@ -1153,7 +1152,7 @@ pub(crate) fn restore(
                         if fs::symlink_metadata(&n.path).is_err() { crate::atoms::projectio::rollback_make_dir(&witness, &n.path).map_err(|e| e.to_string())?; }
                         let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
                         if m.mode() & 0o700 != 0o700 {
-                            fs::set_permissions(&n.path, fs::Permissions::from_mode((m.mode() & 0o7777) | 0o700)).map_err(|e| e.to_string())?;
+                            crate::atoms::projectio::rollback_mode(&witness, &n.path, (m.mode() & 0o7777) | 0o700).map_err(|e| e.to_string())?;
                         }
                     },
                     Kind::File(hash) => comparison_authorized_write(n, root, hash, &witness)?,
@@ -1190,7 +1189,7 @@ pub(crate) fn restore(
                 if !m.file_type().is_dir() { return Err("not a directory".into()); }
                 restore_owner(&witness, &n.path, n.uid, n.gid)?;
                 if m.mode() & 0o7777 != n.mode & 0o7777 {
-                    fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777)).map_err(|e| e.to_string())?;
+                    crate::atoms::projectio::rollback_mode(&witness, &n.path, n.mode & 0o7777).map_err(|e| e.to_string())?;
                 }
                 Ok(())
             });
