@@ -1285,7 +1285,12 @@ pub(crate) fn run_apt_command(
             Ok(bytes) => bytes,
             Err(error) => return synthetic(&format!("apt preferences generation failed: {error}")),
         };
-        if let Err(error) = fs::write(&pref, bytes) {
+        if let Err(error) = projectio::act_scratch_remove(&witness, &pref) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return synthetic(&format!("apt preferences write failed: {error}"));
+            }
+        }
+        if let Err(error) = projectio::act_scratch_write_new(&witness, &pref, &bytes, 0o644) {
             return synthetic(&format!("apt preferences write failed: {error}"));
         }
         created = true;
