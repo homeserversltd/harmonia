@@ -505,7 +505,8 @@ fn resolve_slot_with_credential_source_and_target(
             .map(|d| d.as_nanos())
             .unwrap_or_default()
     ));
-    std::fs::create_dir_all(&dir)
+    let witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::act_scratch_make_dir(&witness, &dir)
         .map_err(|_| SlotResolutionError::new("beam-flag-unresolvable", "absent"))?;
     let listing_path = dir.join("listing");
     let listing_url = format!("{api}?limit=50&page=1");
@@ -527,7 +528,7 @@ fn resolve_slot_with_credential_source_and_target(
             .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
         if status != 404 {
             if !(200..300).contains(&status) {
-                let _ = std::fs::remove_dir_all(&dir);
+                let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &dir);
                 return Err(SlotResolutionError::new("beam-flag-unresolvable", credential_state));
             }
             let release: ForgejoRelease = serde_json::from_slice(&std::fs::read(&listing_path).map_err(|_| {
@@ -545,7 +546,7 @@ fn resolve_slot_with_credential_source_and_target(
             let status = fetch_flag(&listing_url, &listing_path, token)
                 .map_err(|signal| SlotResolutionError::new(signal, credential_state))?;
             if !(200..300).contains(&status) {
-                let _ = std::fs::remove_dir_all(&dir);
+                let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &dir);
                 return Err(SlotResolutionError::new(
                     "beam-flag-unresolvable",
                     credential_state,
@@ -597,7 +598,7 @@ fn resolve_slot_with_credential_source_and_target(
             continue;
         }
         if !(200..300).contains(&status) {
-            let _ = std::fs::remove_dir_all(&dir);
+            let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &dir);
             return Err(SlotResolutionError::with_malformed_flags(
                 "beam-flag-unresolvable",
                 credential_state,
@@ -639,7 +640,7 @@ fn resolve_slot_with_credential_source_and_target(
             selected = Some((source_sha.to_owned(), flag.flagged_at, flag.env_sha));
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &dir);
     let Some((version, flagged_at, env_sha)) = selected else {
         return Err(SlotResolutionError::with_malformed_flags(
             "beam-flag-absent",

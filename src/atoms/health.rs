@@ -1,5 +1,5 @@
 use crate::CmdResult;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -97,6 +97,7 @@ fn run_probe(request: &ProbeRequest<'_>) -> ProbeRun {
         "--max-time".into(),
         request.timeout_secs.to_string(),
     ];
+    let witness = crate::atoms::projectio::engine_state_witness();
     let temp_path = request.expected_contains.and_then(|_| {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -107,7 +108,7 @@ fn run_probe(request: &ProbeRequest<'_>) -> ProbeRun {
                 "harmonia-health-probe-{}-{stamp}-{attempt}",
                 std::process::id()
             ));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            match crate::atoms::projectio::act_scratch_write_new(&witness, &path, b"", 0o644) {
                 Ok(_) => Some(path),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
                 Err(_) => None,
@@ -142,7 +143,7 @@ fn run_probe(request: &ProbeRequest<'_>) -> ProbeRun {
     );
     let (stdout, stderr, expected_matched, read_ok) = if let Some(path) = temp_path {
         let body = fs::read(&path);
-        let _ = fs::remove_file(&path);
+        let _ = crate::atoms::projectio::act_scratch_remove(&witness, &path);
         match body {
             Ok(body) => {
                 let expected_matched = body_contains(&body, request.expected_contains);
