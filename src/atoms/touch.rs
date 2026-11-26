@@ -634,10 +634,6 @@ pub fn receipt() -> Value {
             collector.press_declared.iter().any(|(declared, _lane)| target == declared));
         let directory_allowed = touch.made_directory && normalized.as_ref().is_some_and(|target| {
             collector.declaration.allow.iter().any(|row| made_directory_ancestor(target, &row.pattern))
-                || collector.press_declared.iter().any(|(declared, _lane)| {
-                    target == "/" || target == declared || declared.strip_prefix(target)
-                        .is_some_and(|suffix| suffix.starts_with('/'))
-                })
         });
         if press_allowed || directory_allowed || check(&collector.declaration, &touch.target)
             .get("allowed").and_then(Value::as_bool).unwrap_or(false) {
