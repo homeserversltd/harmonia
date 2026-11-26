@@ -93,12 +93,26 @@ pub(crate) fn cargo_build_and_stamp(
         }
         let owner = std::fs::metadata(artifact).map_err(|e| format!("build-crate-artifact-metadata-failed: {e}"))?;
         let stamp = artifact.with_file_name(format!("{artifact_name}.source-build-sha"));
-        projectio::act_put(authorization, &stamp, format!("{source_build_sha}\n").as_bytes(), Some(0o644), Some(owner.uid()), Some(owner.gid()))
-            .map_err(|error| format!("build-crate-source-head-stamp-write-failed: {error}"))?;
         let environment_stamp =
             artifact.with_file_name(format!("{artifact_name}.build-environment-sha"));
-        projectio::act_put(authorization, &environment_stamp, format!("{environment_sha}\n").as_bytes(), Some(0o644), Some(owner.uid()), Some(owner.gid()))
-            .map_err(|error| format!("build-crate-environment-stamp-write-failed: {error}"))?;
+        for (path, value, signal) in [
+            (&stamp, source_build_sha, "build-crate-source-head-stamp-write-failed"),
+            (&environment_stamp, environment_sha, "build-crate-environment-stamp-write-failed"),
+        ] {
+            let bytes = format!("{value}\n");
+            if scratch {
+                match projectio::act_scratch_remove(authorization, path) {
+                    Ok(()) => (),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(format!("{signal}: {error}")),
+                }
+                projectio::act_scratch_write_new(authorization, path, bytes.as_bytes(), 0o644)
+                    .map_err(|error| format!("{signal}: {error}"))?;
+            } else {
+                projectio::act_put(authorization, path, bytes.as_bytes(), Some(0o644), Some(owner.uid()), Some(owner.gid()))
+                    .map_err(|error| format!("{signal}: {error}"))?;
+            }
+        }
     }
     Ok(observation)
 }

@@ -367,23 +367,42 @@ mod mutation {
             if !atoms::file_sha256(&bytes).eq_ignore_ascii_case(&expected_sha) {
                 return Err("candidate-sha256-mismatch".into());
             }
+            let new_pin = PinnedArtifact {
+                version: version.clone(), path: install_path.display().to_string(),
+                sha256: expected_sha.clone(), policy: "known-good".to_string(),
+                source: value_arg_string(args, "--source"),
+            };
+            let pin_matches = |pin: &Option<PinnedArtifact>| pin.as_ref().is_some_and(|pin| {
+                pin.version == new_pin.version && pin.path == new_pin.path
+                    && pin.sha256 == new_pin.sha256 && pin.policy == new_pin.policy
+                    && pin.source == new_pin.source
+            });
             let run = comparison::execute_once(
                 "aur-bless",
-                || fs::read(&install_path).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "aur-bless-install-absent-refused".to_string() } else { format!("aur-bless-install-read-failed: {e}") }),
-                |installed| if installed == &bytes { comparison::DiffDecision::Empty } else { comparison::DiffDecision::Different },
-                |authorization, _| {
-                    let backup_path = install_path.with_extension("harmonia-prev");
-                    if backup_path.exists() { projectio::act_scratch_remove(&authorization, &backup_path).map_err(|e| format!("backup-failed {}: {e}", backup_path.display()))?; }
-                    projectio::act_scratch_copy(&authorization, &install_path, &backup_path, None)
-                        .map_err(|e| format!("backup-failed {}: {e}", backup_path.display()))?;
-                    projectio::act_put(&authorization, &install_path, &bytes, Some(0o755), None, None)
-                        .map_err(|e| format!("install-failed {}: {e}", install_path.display()))?;
-                    lock.artifacts.insert(name.clone(), PinnedArtifact {
-                        version: version.clone(), path: install_path.display().to_string(),
-                        sha256: expected_sha.clone(), policy: "known-good".to_string(),
-                        source: value_arg_string(args, "--source"),
-                    });
-                    write_pinned_lock(lock_path, &lock)
+                || {
+                    let metadata = fs::symlink_metadata(&install_path).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "aur-bless-install-absent-refused".to_string() } else { format!("aur-bless-install-read-failed: {e}") })?;
+                    if !metadata.is_file() { return Err("aur-bless-install-not-regular".to_string()); }
+                    let installed = fs::read(&install_path).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "aur-bless-install-absent-refused".to_string() } else { format!("aur-bless-install-read-failed: {e}") })?;
+                    Ok((installed, metadata.permissions().mode() & 0o7777, old.clone()))
+                },
+                |(installed, mode, pin)| if installed != &bytes || *mode != 0o755 || !pin_matches(pin) { comparison::DiffDecision::Different } else { comparison::DiffDecision::Empty },
+                |authorization, (installed, mode, pin)| {
+                    if installed != &bytes {
+                        let backup_path = install_path.with_extension("harmonia-prev");
+                        if backup_path.exists() { projectio::act_scratch_remove(&authorization, &backup_path).map_err(|e| format!("backup-failed {}: {e}", backup_path.display()))?; }
+                        projectio::act_scratch_copy(&authorization, &install_path, &backup_path, None)
+                            .map_err(|e| format!("backup-failed {}: {e}", backup_path.display()))?;
+                        projectio::act_put(&authorization, &install_path, &bytes, Some(0o755), None, None)
+                            .map_err(|e| format!("install-failed {}: {e}", install_path.display()))?;
+                    } else if *mode != 0o755 {
+                        projectio::act_mode(&authorization, &install_path, 0o755)
+                            .map_err(|e| format!("install-mode-failed {}: {e}", install_path.display()))?;
+                    }
+                    if !pin_matches(pin) {
+                        lock.artifacts.insert(name.clone(), new_pin.clone());
+                        write_pinned_lock(lock_path, &lock)?;
+                    }
+                    Ok(())
                 },
             )?;
             changed = matches!(run, comparison::ComparisonRun::Moved { .. });
