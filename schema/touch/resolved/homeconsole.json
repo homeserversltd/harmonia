@@ -362,10 +362,22 @@
       "tool": "grub.apply-theme"
     },
     {
+      "module": "household-time",
+      "path": "/etc/localtime",
+      "step": "household-time-peer-state",
+      "tool": "household-time.watch-and-set"
+    },
+    {
       "module": "homeconsole-netplan",
       "path": "/etc/netplan/00-installer-config.yaml",
       "step": "homeconsole-netplan-wired-dhcp",
       "tool": "files.compile-fragments"
+    },
+    {
+      "module": "dot-files",
+      "path": "/etc/passwd",
+      "step": "observe-login-shell",
+      "tool": "command.propose"
     },
     {
       "module": "homeconsole-sddm-autologin",

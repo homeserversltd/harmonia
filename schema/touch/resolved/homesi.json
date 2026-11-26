@@ -374,6 +374,12 @@
       "tool": "files.converge"
     },
     {
+      "module": "household-time",
+      "path": "/etc/localtime",
+      "step": "household-time-peer-state",
+      "tool": "household-time.watch-and-set"
+    },
+    {
       "module": "model-shelf",
       "path": "/etc/nftables.conf",
       "step": "model-shelf-config",
@@ -384,6 +390,12 @@
       "path": "/etc/nginx/sites-enabled/homesi-face",
       "step": "web-front-nginx-managed-files",
       "tool": "files.converge"
+    },
+    {
+      "module": "dot-files",
+      "path": "/etc/passwd",
+      "step": "observe-login-shell",
+      "tool": "command.propose"
     },
     {
       "module": "qdrant",

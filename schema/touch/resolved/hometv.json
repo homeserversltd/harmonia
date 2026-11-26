@@ -308,6 +308,18 @@
       "tool": "grub.apply-theme"
     },
     {
+      "module": "household-time",
+      "path": "/etc/localtime",
+      "step": "household-time-peer-state",
+      "tool": "household-time.watch-and-set"
+    },
+    {
+      "module": "dot-files",
+      "path": "/etc/passwd",
+      "step": "observe-login-shell",
+      "tool": "command.propose"
+    },
+    {
       "module": "sudoers",
       "path": "/etc/sudoers.d/caduceus-*",
       "step": "sudoers-converge",

@@ -782,6 +782,12 @@
       "tool": "files.converge"
     },
     {
+      "module": "dot-files",
+      "path": "/etc/passwd",
+      "step": "observe-login-shell",
+      "tool": "command.propose"
+    },
+    {
       "module": "searx",
       "path": "/etc/searxng/settings.yml",
       "step": "searx-managed-files",

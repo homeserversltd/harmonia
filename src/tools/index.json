@@ -530,7 +530,7 @@
             }
           ],
           "placement": "ProposeEdits",
-          "touches": {"paths": [{"fixed": "/var/lib/harmonia/harmonia.sqlite3"}], "operations": [{"kind": "command", "arg": "program"}]}
+          "touches": {"paths": [{"fixed": "/var/lib/harmonia/harmonia.sqlite3"}, {"fixed": "/etc/passwd"}], "operations": [{"kind": "command", "arg": "program"}]}
         },
         {
           "name": "act",
@@ -1264,7 +1264,7 @@
             }
           ],
           "placement": "RestartServices",
-          "touches": {"paths": [{"arg": "state_path"}], "operations": [{"kind": "command", "fixed": "/usr/local/bin/caduceus"}, {"kind": "command", "fixed": "/usr/bin/env"}]}
+          "touches": {"paths": [{"arg": "state_path"}, {"fixed": "/etc/localtime"}], "operations": [{"kind": "command", "fixed": "/usr/local/bin/caduceus"}, {"kind": "command", "fixed": "/usr/bin/env"}]}
         }
       ]
     },
