@@ -1907,14 +1907,15 @@ where
             ),
         });
     }
-    if candidates.is_empty() {
-        return Ok(SudoersPruneResult {
-            ok: true,
-            changed: false,
-            message: "applied planned-prunes=none; no-unlink; visudo-not-needed".into(),
-        });
-    }
-
+    let run = crate::atoms::comparison::execute_once(
+        "validated-sudoers-prune",
+        || Ok::<_, String>(planned.clone()),
+        |observed| if observed.is_empty() {
+            crate::atoms::comparison::DiffDecision::Empty
+        } else {
+            crate::atoms::comparison::DiffDecision::Different
+        },
+        |witness, _observed| {
     let (receipt_path, receipt_dir) = create_sudoers_prune_receipt_dir(module_dir, target_root)?;
     for (index, candidate) in candidates.iter_mut().enumerate() {
         candidate.backup_file = format!("pruned-{index:04}.bin");
@@ -1956,22 +1957,19 @@ where
         )
     })?;
 
-    if !candidates.is_empty() {
-        crate::atoms::r#do::ritual::authorize_shadow()?;
-    }
     let mut removed = Vec::new();
     for index in 0..candidates.len() {
         let unlink_result = {
             let candidate = &candidates[index];
             verify_sudoers_candidate_unchanged(&target_dir, candidate)
-                .and_then(|name| unlink_sudoers_name(&target_dir, &name))
+                .and_then(|_name| unlink_sudoers_name(&witness, &target_dir, target_root, candidate))
         };
         if let Err(error) = unlink_result {
             let failed_path = target_root
                 .join(&candidates[index].name)
                 .display()
                 .to_string();
-            let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+            let restorations = restore_sudoers_candidates(&witness, &target_dir, target_root, &candidates, &removed);
             apply_sudoers_restoration_states(&mut candidates, &restorations);
             let receipt_error = write_sudoers_prune_manifest(
                 &receipt_dir,
@@ -1999,7 +1997,7 @@ where
         candidates[index].final_detail = None;
     }
     if let Err(error) = sync_directory(&target_dir) {
-        let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+        let restorations = restore_sudoers_candidates(&witness, &target_dir, target_root, &candidates, &removed);
         apply_sudoers_restoration_states(&mut candidates, &restorations);
         let receipt_error = write_sudoers_prune_manifest(
             &receipt_dir,
@@ -2061,7 +2059,7 @@ where
         "command_receipt_error": validation_receipt.as_ref().err(),
     });
     if !validation.ok || !validation.stderr.is_empty() || validation_receipt.is_err() {
-        let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+        let restorations = restore_sudoers_candidates(&witness, &target_dir, target_root, &candidates, &removed);
         apply_sudoers_restoration_states(&mut candidates, &restorations);
         let status = if validation_receipt.is_err() {
             "validation-receipt-write-failed-restored"
@@ -2104,7 +2102,7 @@ where
         Some(&validation_value),
         &[],
     ) {
-        let restorations = restore_sudoers_candidates(&target_dir, &candidates, &removed);
+        let restorations = restore_sudoers_candidates(&witness, &target_dir, target_root, &candidates, &removed);
         apply_sudoers_restoration_states(&mut candidates, &restorations);
         let recovery_receipt = write_sudoers_prune_manifest(
             &receipt_dir,
@@ -2137,6 +2135,16 @@ where
             receipt_path.display()
         ),
     })
+        },
+    )?;
+    match run {
+        crate::atoms::comparison::ComparisonRun::Current { .. } => Ok(SudoersPruneResult {
+            ok: true,
+            changed: false,
+            message: "applied planned-prunes=none; no-unlink; visudo-not-needed".into(),
+        }),
+        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2515,27 +2523,14 @@ fn write_private_receipt_file(
     bytes: &[u8],
     create_new: bool,
 ) -> Result<(), String> {
-    let name_c = CString::new(name)
-        .map_err(|_| "validated-sudoers-prune-receipt-name-invalid".to_string())?;
     let witness = crate::atoms::projectio::engine_state_witness();
     let record = receipt_path.join(name);
-    let flags = libc::O_WRONLY
-        | libc::O_CLOEXEC
-        | libc::O_NOFOLLOW
-        | if create_new {
-            libc::O_CREAT | libc::O_EXCL
-        } else {
-            libc::O_TRUNC
-        };
-    let mut file = if create_new {
+    let file = if create_new {
         crate::atoms::projectio::act_at_create_new(&witness, directory, OsStr::new(name), 0o600, Some(&record))
-            .map_err(|error| format!("openat {name}: {error}"))?
     } else {
-        let fd = unsafe { libc::openat(directory.as_raw_fd(), name_c.as_ptr(), flags, 0o600) };
-        if fd < 0 { return Err(format!("openat {name}: {}", std::io::Error::last_os_error())); }
-        unsafe { fs::File::from_raw_fd(fd) }
-    };
-    file.write_all(bytes)
+        crate::atoms::projectio::act_at_open_write(&witness, directory, OsStr::new(name))
+    }.map_err(|error| format!("openat {name}: {error}"))?;
+    crate::atoms::projectio::act_fd_write(&witness, &file, bytes, Some(&record))
         .map_err(|error| format!("write {name}: {error}"))?;
     crate::atoms::projectio::act_fd_owner(&witness, &file, 0, 0, Some(&record))
         .and_then(|()| crate::atoms::projectio::act_fd_mode(&witness, &file, 0o600, Some(&record)))
@@ -2752,23 +2747,29 @@ fn same_candidate_stat(stat: &libc::stat, candidate: &SudoersPruneCandidate) -> 
 }
 
 #[cfg(target_os = "linux")]
-fn unlink_sudoers_name(directory: &fs::File, name: &CString) -> Result<(), String> {
-    if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    Ok(())
+fn unlink_sudoers_name(
+    witness: &crate::atoms::comparison::ActionAuthorization,
+    directory: &fs::File,
+    target_root: &Path,
+    candidate: &SudoersPruneCandidate,
+) -> Result<(), String> {
+    let record = target_root.join(&candidate.name);
+    crate::atoms::projectio::act_at_unlink(witness, directory, &candidate.name, false, Some(&record))
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "linux")]
 fn restore_sudoers_candidates(
+    witness: &crate::atoms::comparison::ActionAuthorization,
     directory: &fs::File,
+    target_root: &Path,
     candidates: &[SudoersPruneCandidate],
     removed: &[usize],
 ) -> Vec<SudoersRestoreOutcome> {
     let mut outcomes = removed
         .iter()
         .rev()
-        .map(|index| restore_sudoers_candidate(directory, &candidates[*index], *index))
+        .map(|index| restore_sudoers_candidate(witness, directory, target_root, &candidates[*index], *index))
         .collect::<Vec<_>>();
     if let Err(error) = sync_directory(directory) {
         for outcome in &mut outcomes {
@@ -2783,61 +2784,32 @@ fn restore_sudoers_candidates(
 
 #[cfg(target_os = "linux")]
 fn restore_sudoers_candidate(
+    witness: &crate::atoms::comparison::ActionAuthorization,
     directory: &fs::File,
+    target_root: &Path,
     candidate: &SudoersPruneCandidate,
     index: usize,
 ) -> SudoersRestoreOutcome {
-    let name_c = match CString::new(candidate.name.as_bytes()) {
-        Ok(name) => name,
-        Err(error) => {
-            return SudoersRestoreOutcome {
-                index,
-                name: candidate.display_name.clone(),
-                restored: false,
-                detail: format!("restore-name-invalid={error}"),
-            }
-        }
-    };
-    let fd = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            name_c.as_ptr(),
-            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        return SudoersRestoreOutcome {
+    let record = target_root.join(&candidate.name);
+    let mut file = match crate::atoms::projectio::act_at_create_new(
+        witness, directory, &candidate.name, 0o600, Some(&record),
+    ) {
+        Ok(file) => file,
+        Err(error) => return SudoersRestoreOutcome {
             index,
             name: candidate.display_name.clone(),
             restored: false,
-            detail: format!("restore-open-failed={}", std::io::Error::last_os_error()),
-        };
-    }
-    let mut file = unsafe { fs::File::from_raw_fd(fd) };
+            detail: format!("restore-open-failed={error}"),
+        },
+    };
     let created = fstat_fd(file.as_raw_fd()).ok();
     let attempt = (|| -> Result<(), String> {
-        file.write_all(&candidate.bytes)
+        crate::atoms::projectio::act_fd_write(witness, &file, &candidate.bytes, Some(&record))
             .map_err(|error| format!("restore-write-failed={error}"))?;
-        if unsafe {
-            libc::fchown(
-                file.as_raw_fd(),
-                candidate.uid as libc::uid_t,
-                candidate.gid as libc::gid_t,
-            )
-        } != 0
-        {
-            return Err(format!(
-                "restore-owner-failed={}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        if unsafe { libc::fchmod(file.as_raw_fd(), candidate.mode as libc::mode_t) } != 0 {
-            return Err(format!(
-                "restore-mode-failed={}",
-                std::io::Error::last_os_error()
-            ));
-        }
+        crate::atoms::projectio::act_fd_owner(witness, &file, candidate.uid, candidate.gid, Some(&record))
+            .map_err(|error| format!("restore-owner-failed={error}"))?;
+        crate::atoms::projectio::act_fd_mode(witness, &file, candidate.mode, Some(&record))
+            .map_err(|error| format!("restore-mode-failed={error}"))?;
         file.sync_all()
             .map_err(|error| format!("restore-sync-failed={error}"))?;
         file.seek(SeekFrom::Start(0))
@@ -2875,8 +2847,8 @@ fn restore_sudoers_candidate(
                         .then_some(())
                 })
                 .and_then(|()| {
-                    (unsafe { libc::unlinkat(directory.as_raw_fd(), name_c.as_ptr(), 0) } == 0)
-                        .then_some("partial-restore-removed")
+                    crate::atoms::projectio::act_at_unlink(witness, directory, &candidate.name, false, Some(&record))
+                        .is_ok().then_some("partial-restore-removed")
                 })
                 .unwrap_or("partial-restore-cleanup-not-proven");
             SudoersRestoreOutcome {
