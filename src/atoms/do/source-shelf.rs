@@ -67,6 +67,15 @@ fn remove_tree(
     path: &Path,
     scratch: bool,
 ) -> Result<(), String> {
+    // The old remove-file policy refused symlinks and other non-file collisions.
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+        Ok(metadata) if !metadata.file_type().is_dir() && !metadata.file_type().is_file() => {
+            return Err("remove-file-collision-refused".into());
+        }
+        Ok(_) => {}
+    }
     let result = if scratch {
         crate::atoms::projectio::act_scratch_remove_tree(authorization, path)
     } else {
@@ -3011,11 +3020,10 @@ fn source_shelf_sweep_with_fault(
                     }
                 }
                 for parent in [shelf_parent, request.launcher_target_root.as_path()] {
-                    if let Err(error) = crate::atoms::r#do::symlink_converge::sync_parent(
-                        authorization,
-                        invocation,
-                        parent,
-                    ) {
+                    if let Err(error) = fs::canonicalize(parent)
+                        .and_then(|resolved| crate::atoms::projectio::act_sync(authorization, &resolved))
+                        .map_err(|error| error.to_string())
+                    {
                         cleanup_errors.push(error);
                     }
                 }
