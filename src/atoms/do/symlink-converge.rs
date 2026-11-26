@@ -148,7 +148,7 @@ fn promote_staged_symlink(
             .unwrap_or(false);
     if !prior_matches || !directory_still_empty {
         let rollback = check_rename_paths(candidate, target)
-            .and_then(|_| projectio::act_exchange_back(authorization, candidate, target).map_err(|e| e.to_string()))
+            .and_then(|_| projectio::act_exchange_back(authorization, candidate, target, false).map_err(|e| e.to_string()))
             .and_then(|_| receipt(authorization, invocation, format!("exchanged {} {}", candidate.display(), target.display())))
             .map_err(|error| format!("symlink-converge-exchange-failed {}: {error}", target.display()));
         if rollback.is_ok() {

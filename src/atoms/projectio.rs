@@ -173,13 +173,13 @@ pub(crate) fn act_link_promote(
 }
 
 pub(crate) fn act_exchange_back(
-    _authorization: &crate::atoms::comparison::ActionAuthorization, candidate: &Path, target: &Path,
+    _authorization: &crate::atoms::comparison::ActionAuthorization, candidate: &Path, target: &Path, scratch: bool,
 ) -> std::io::Result<()> {
     check_act_path(candidate)?;
     check_act_path(target)?;
     renameat2_raw(candidate, target, libc::RENAME_EXCHANGE)?;
     let matches = fs::symlink_metadata(candidate).is_ok() && fs::symlink_metadata(target).is_ok();
-    crate::atoms::touch::record_lane(target, "known-good");
+    if !scratch { crate::atoms::touch::record_lane(target, "known-good"); }
     if !matches { return Err(act_mismatch("link", target)); }
     Ok(())
 }

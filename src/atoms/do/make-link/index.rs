@@ -119,9 +119,9 @@ fn converge_with_scratch(
     }
     if std::env::var_os("HARMONIA_MAKE_LINK_FAIL_AFTER_ACTION").is_some() {
         let rb = if before == "absent" {
-            projectio::act_remove(authorization, link, false).map_err(|e| e.to_string())
+            projectio::act_remove(authorization, link, scratch).map_err(|e| e.to_string())
         } else {
-            checked_exchange_paths(&c, link).and_then(|_| projectio::act_exchange_back(authorization, &c, link).map_err(|e| e.to_string()))
+            checked_exchange_paths(&c, link).and_then(|_| projectio::act_exchange_back(authorization, &c, link, scratch).map_err(|e| e.to_string()))
         };
         if rb.is_ok() {
             let cleanup = if before == "directory" {
