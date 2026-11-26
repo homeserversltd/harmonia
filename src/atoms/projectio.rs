@@ -1525,6 +1525,40 @@ pub(crate) fn act_scratch_chown<'a>(w: impl Into<ScratchWitness<'a>>, path: &Pat
     if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && (uid == !0 || m.uid() == uid) && (gid == !0 || m.gid() == gid)) { return Err(act_mismatch("owner", path)); }
     Ok(())
 }
+/// Change the owner of the scratch link itself, never its target.
+#[allow(dead_code)]
+pub(crate) fn act_scratch_link_owner<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    w.into().hold();
+    check_act_path(path)?;
+    let before = fs::symlink_metadata(path)?;
+    if !before.file_type().is_symlink() { return Err(std::io::Error::other(format!("projectio-owner-not-symlink-refused {}", path.display()))); }
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    if unsafe { libc::lchown(c.as_ptr(), uid, gid) } != 0 { return Err(std::io::Error::last_os_error()); }
+    if !fs::symlink_metadata(path).is_ok_and(|after| after.file_type().is_symlink()
+        && after.dev() == before.dev() && after.ino() == before.ino()
+        && (uid == !0 || after.uid() == uid) && (gid == !0 || after.gid() == gid)) {
+        return Err(act_mismatch("link-owner", path));
+    }
+    Ok(())
+}
+
+/// Restore a mode under the sealed rollback witness, recording real changes.
+#[allow(dead_code)]
+pub(crate) fn rollback_mode(_w: &RollbackWitness, path: &Path, mode: u32) -> std::io::Result<()> {
+    check_act_path(path)?;
+    let before = fs::symlink_metadata(path)?;
+    if before.file_type().is_symlink() { return Err(std::io::Error::other(format!("projectio-mode-symlink-refused {}", path.display()))); }
+    let changed = before.mode() & 0o7777 != mode & 0o7777;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    let matches = fs::symlink_metadata(path).is_ok_and(|after| !after.file_type().is_symlink()
+        && after.dev() == before.dev() && after.ino() == before.ino()
+        && after.mode() & 0o7777 == mode & 0o7777);
+    if changed { crate::atoms::touch::record_lane(path, "known-good"); }
+    if !matches { return Err(act_mismatch("mode", path)); }
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub(crate) fn act_scratch_write_new<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
     w.into().hold(); check_act_path(path)?;
