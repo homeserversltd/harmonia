@@ -189,6 +189,14 @@
       "note": "Harmonia state and receipts"
     },
     {
+      "path": "/etc/harmonia/profiles",
+      "note": "Harmonia's molted profile tree"
+    },
+    {
+      "path": "/etc/harmonia/profiles/**",
+      "note": "Harmonia's molted profile tree"
+    },
+    {
       "path": "/run/harmonia/*.lock",
       "note": "Harmonia runtime locks"
     },

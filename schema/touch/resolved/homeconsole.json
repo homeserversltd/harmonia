@@ -9,6 +9,20 @@
     },
     {
       "module": null,
+      "note": "Harmonia's molted profile tree",
+      "path": "/etc/harmonia/profiles",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
+      "note": "Harmonia's molted profile tree",
+      "path": "/etc/harmonia/profiles/**",
+      "step": null,
+      "tool": null
+    },
+    {
+      "module": null,
       "note": "Harmonia service unit",
       "path": "/etc/systemd/system/harmonia.service",
       "step": null,
