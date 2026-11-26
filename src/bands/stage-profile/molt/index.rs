@@ -1653,13 +1653,7 @@ fn replace_export_directory_entry(
                     &output_observed,
                 )?;
                 verify_absent(&output_observed)?;
-                use std::os::unix::fs::OpenOptionsExt;
-                let parent = output_observed.parent().ok_or_else(|| "molt-export-directory-parent-missing".to_string())?;
-                let name = output_observed.file_name().ok_or_else(|| "molt-export-directory-name-missing".to_string())?;
-                let parent_fd = fs::OpenOptions::new().read(true)
-                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                    .open(parent).map_err(|error| format!("molt-export-directory-parent-open-failed {}: {error}", parent.display()))?;
-                crate::atoms::projectio::act_at_make_dir(&authorization, &parent_fd, name, 0o755, Some(&output_observed)).map_err(|error| {
+                fs::create_dir(&output_observed).map_err(|error| {
                     format!(
                         "molt-export-directory-create-failed {}: {error}",
                         output_observed.display()
