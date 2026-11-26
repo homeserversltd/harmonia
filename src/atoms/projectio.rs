@@ -1155,12 +1155,27 @@ pub(crate) fn act_create(
     })
 }
 
+#[allow(dead_code)]
+pub(crate) struct RollbackWitness(());
+
+/// Only a sealed Snapshot mints one, so a failed observation never does.
+#[allow(dead_code)]
+pub(crate) fn rollback_witness(
+    _sealed: &crate::atoms::r#do::ritual::Snapshot,
+    _key: &crate::atoms::r#do::InvocationKey,
+) -> RollbackWitness { RollbackWitness(()) }
+
 /// A scratch name belongs to the act, not to the touch collector.
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum ScratchWitness<'a> {
     KnownGood(&'a crate::atoms::comparison::ActionAuthorization),
     Engine(&'a EngineStateWitness),
+    Rollback(&'a RollbackWitness),
+}
+#[allow(dead_code)]
+impl<'a> From<&'a RollbackWitness> for ScratchWitness<'a> {
+    fn from(w: &'a RollbackWitness) -> Self { Self::Rollback(w) }
 }
 #[allow(dead_code)]
 impl<'a> From<&'a crate::atoms::comparison::ActionAuthorization> for ScratchWitness<'a> {
@@ -1172,7 +1187,7 @@ impl<'a> From<&'a EngineStateWitness> for ScratchWitness<'a> {
 }
 #[allow(dead_code)]
 impl ScratchWitness<'_> {
-    fn hold(self) { match self { Self::KnownGood(w) => { let _ = w; }, Self::Engine(w) => { let _ = w; } } }
+    fn hold(self) { match self { Self::KnownGood(w) => { let _ = w; }, Self::Engine(w) => { let _ = w; }, Self::Rollback(w) => { let _ = w; } } }
 }
 
 /// A caller's authority accompanies held-descriptor mutations.
@@ -1182,6 +1197,11 @@ pub(crate) enum PenWitness<'a> {
     Owner(&'a OwnerAcceptance),
     Engine(&'a EngineStateWitness),
     KnownGood(&'a crate::atoms::comparison::ActionAuthorization),
+    Rollback(&'a RollbackWitness),
+}
+#[allow(dead_code)]
+impl<'a> From<&'a RollbackWitness> for PenWitness<'a> {
+    fn from(w: &'a RollbackWitness) -> Self { Self::Rollback(w) }
 }
 #[allow(dead_code)]
 impl<'a> From<&'a OwnerAcceptance> for PenWitness<'a> {
@@ -1202,6 +1222,7 @@ impl PenWitness<'_> {
             Self::Owner(w) => { let _ = w; "interactable" },
             Self::Engine(w) => { let _ = w; "self" },
             Self::KnownGood(w) => { let _ = w; "known-good" },
+            Self::Rollback(w) => { let _ = w; "known-good" },
         }
     }
 }
@@ -1630,6 +1651,117 @@ fn put_file(target: &Path, bytes: &[u8], mode: u32, uid: Option<u32>, gid: Optio
     if result.is_err() { let _ = fs::remove_file(&temp_path); }
     result
 }
+
+// Unlike create_dir_all, each successful mkdir is recorded before readback.
+#[allow(dead_code)]
+fn witnessed_directories(path: &Path, lane: &'static str) -> std::io::Result<()> {
+    check_act_path(path)?;
+    let mut missing = Vec::new();
+    for p in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+        match fs::symlink_metadata(p) {
+            Ok(m) if m.is_dir() => break,
+            Ok(_) => return Err(std::io::Error::other(format!("projectio-parent-not-directory {}", p.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(p.to_path_buf()),
+            Err(e) => return Err(e),
+        }
+    }
+    for p in missing.iter().rev() {
+        match fs::create_dir(p) {
+            Ok(()) => crate::atoms::touch::record_made_directory(p, lane),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) => continue,
+            Err(e) => return Err(e),
+        }
+        if !fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) { return Err(act_mismatch("make-dir", p)); }
+    }
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) { return Err(act_mismatch("make-dir", path)); }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn rollback_put(_w: &RollbackWitness, target: &Path, bytes: &[u8], mode: u32, uid: u32, gid: u32) -> std::io::Result<()> {
+    check_act_path(target)?;
+    put_file(target, bytes, mode, Some(uid), Some(gid), false, Some("known-good"))
+}
+#[allow(dead_code)]
+pub(crate) fn rollback_remove(_w: &RollbackWitness, path: &Path, scratch: bool) -> std::io::Result<()> {
+    check_act_path(path)?;
+    fs::remove_file(path)?;
+    if !scratch { crate::atoms::touch::record_lane(path, "known-good"); }
+    if !matches!(fs::symlink_metadata(path), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("remove", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn rollback_make_dir(_w: &RollbackWitness, path: &Path) -> std::io::Result<()> { witnessed_directories(path, "known-good") }
+
+#[allow(dead_code)]
+pub(crate) fn rollback_symlink(w: &RollbackWitness, text: &Path, path: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    check_act_path(path)?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let temp = loop {
+        let sequence = ENGINE_STATE_BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(".projectio-link-{}-{sequence}", std::process::id()));
+        check_act_path(&temp)?;
+        match std::os::unix::fs::symlink(text, &temp) {
+            Ok(()) => break temp,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let result = (|| {
+        let c = std::ffi::CString::new(temp.as_os_str().as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        if unsafe { libc::lchown(c.as_ptr(), uid, gid) } != 0 { return Err(std::io::Error::last_os_error()); }
+        let staged = fs::symlink_metadata(&temp)?;
+        if !staged.file_type().is_symlink() || (uid != !0 && staged.uid() != uid) || (gid != !0 && staged.gid() != gid) || fs::read_link(&temp)? != text { return Err(act_mismatch("symlink-stage", &temp)); }
+        fs::rename(&temp, path)?;
+        crate::atoms::touch::record_lane(path, "known-good");
+        let actual = fs::symlink_metadata(path)?;
+        if !actual.file_type().is_symlink() || file_identity(&actual) != file_identity(&staged) || (uid != !0 && actual.uid() != uid) || (gid != !0 && actual.gid() != gid) || fs::read_link(path)? != text { return Err(act_mismatch("symlink", path)); }
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temp); }
+    let _ = w;
+    result
+}
+#[allow(dead_code)]
+pub(crate) fn rollback_rename(_w: &RollbackWitness, from: &Path, to: &Path, scratch_from: bool, scratch_to: bool) -> std::io::Result<()> {
+    check_act_path(from)?; check_act_path(to)?;
+    let before = fs::symlink_metadata(from)?;
+    if fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) { return Ok(()); }
+    fs::rename(from, to)?;
+    if !scratch_to { crate::atoms::touch::record_lane(to, "known-good"); }
+    if !scratch_from { crate::atoms::touch::record_lane(from, "known-good"); }
+    if !fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) || !matches!(fs::symlink_metadata(from), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("rename", to)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn owner_make_dir(_w: &OwnerAcceptance, path: &Path) -> std::io::Result<()> { witnessed_directories(path, "interactable") }
+#[allow(dead_code)]
+pub(crate) fn owner_mode(_w: &OwnerAcceptance, path: &Path, mode: u32) -> std::io::Result<()> {
+    check_act_path(path)?;
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path)?;
+    let before = file.metadata()?;
+    let changed = before.mode() & 0o7777 != mode & 0o7777;
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+    if changed { crate::atoms::touch::record_lane(path, "interactable"); }
+    if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && file_identity(&m) == file_identity(&before) && m.mode() & 0o7777 == mode & 0o7777) { return Err(act_mismatch("mode", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn owner_chown(_w: &OwnerAcceptance, path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    check_act_path(path)?;
+    let before = fs::symlink_metadata(path)?;
+    if before.file_type().is_symlink() { return Err(std::io::Error::other(format!("projectio-owner-symlink-refused {}", path.display()))); }
+    let changed = (uid != !0 && before.uid() != uid) || (gid != !0 && before.gid() != gid);
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    if unsafe { libc::lchown(c.as_ptr(), uid, gid) } != 0 { return Err(std::io::Error::last_os_error()); }
+    if changed { crate::atoms::touch::record_lane(path, "interactable"); }
+    if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && file_identity(&m) == file_identity(&before) && (uid == !0 || m.uid() == uid) && (gid == !0 || m.gid() == gid)) { return Err(act_mismatch("owner", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn owner_remove_if_current(_w: &OwnerAcceptance, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> { remove_if_claimed(path, expected, scratch, "interactable") }
 
 #[allow(dead_code)]
 pub(crate) fn act_put(_auth: &crate::atoms::comparison::ActionAuthorization, target: &Path, bytes: &[u8], mode: Option<u32>, uid: Option<u32>, gid: Option<u32>) -> std::io::Result<()> {
