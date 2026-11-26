@@ -588,9 +588,18 @@ fn interactable_run(
         }
     }
     let directory = Path::new("/var/lib/harmonia/receipts/interactable-latest");
-    if fs::create_dir_all(directory).is_ok() {
+    let witness = crate::atoms::projectio::engine_state_witness();
+    if crate::atoms::projectio::engine_make_dir(&witness, directory).is_ok() {
         if let Ok(bytes) = serde_json::to_vec_pretty(&receipt) {
-            let _ = fs::write(directory.join("touch.json"), bytes);
+            let target = directory.join("touch.json");
+            let _ = match fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.file_type().is_file() =>
+                    crate::atoms::projectio::engine_put_owned(&witness, &target, &bytes, metadata.mode() & 0o7777, metadata.uid(), metadata.gid()),
+                Ok(_) => Err(std::io::Error::other(format!("touch-receipt-target-not-regular {}", target.display()))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+                    crate::atoms::projectio::engine_put(&witness, &target, &bytes, 0o644),
+                Err(error) => Err(error),
+            };
         }
     }
     result

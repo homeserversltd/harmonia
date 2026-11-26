@@ -55,7 +55,7 @@ pub(crate) mod write_file;
 use super::Receipt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
@@ -63,11 +63,7 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
-
-static JSON_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static PROPOSAL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Attestation-owned no-follow read handle for source observation.
 #[cfg(unix)]
@@ -83,8 +79,8 @@ pub(crate) fn open_nofollow_read(path: &Path) -> Result<File, String> {
 pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        return fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| error.to_string());
+        let witness = crate::atoms::projectio::engine_state_witness();
+        return crate::atoms::projectio::act_scratch_mode(&witness, path, mode).map_err(|error| error.to_string());
     }
     #[cfg(not(unix))]
     { let _ = (path, mode); Ok(()) }
@@ -1090,12 +1086,12 @@ fn make_receipt_tree_readable(path: &Path) -> Result<(), String> {
     let mut current = root.to_path_buf();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&current, fs::Permissions::from_mode(0o755))
+        let witness = crate::atoms::projectio::engine_state_witness();
+        crate::atoms::projectio::engine_mode(&witness, &current, 0o755)
             .map_err(|e| format!("receipt-directory-mode-failed {}: {e}", current.display()))?;
         for component in relative.components() {
             current.push(component);
-            fs::set_permissions(&current, fs::Permissions::from_mode(0o755))
+            crate::atoms::projectio::engine_mode(&witness, &current, 0o755)
                 .map_err(|e| format!("receipt-directory-mode-failed {}: {e}", current.display()))?;
         }
     }
@@ -1158,49 +1154,16 @@ pub(crate) fn write_receipt_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<bo
     let parent = path
         .parent()
         .ok_or_else(|| format!("receipt-parent-missing {}", path.display()))?;
-    let name = path
+    path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("receipt-name-invalid {}", path.display()))?;
     prepare_receipt_parent(parent)?;
-    let sequence = JSON_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(
-        ".{name}.harmonia-attest-{}-{sequence}.tmp",
-        std::process::id()
-    ));
-    let result = (|| -> Result<(), String> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|error| format!("receipt-temp-create-failed {}: {error}", temp.display()))?;
-        file.write_all(bytes)
-            .map_err(|error| format!("receipt-temp-write-failed {}: {error}", temp.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("receipt-temp-sync-failed {}: {error}", temp.display()))?;
-        drop(file);
-        if strict_receipt {
-            #[cfg(unix)]
-            fs::set_permissions(&temp, fs::Permissions::from_mode(0o644))
-                .map_err(|error| format!("receipt-temp-mode-failed {}: {error}", temp.display()))?;
-            verify_receipt_owner(&temp)?;
-        }
-        fs::rename(&temp, path).map_err(|error| {
-            format!(
-                "receipt-atomic-promote-failed {} -> {}: {error}",
-                temp.display(),
-                path.display()
-            )
-        })?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("receipt-parent-sync-failed {}: {error}", parent.display()))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result.map(|()| true)
+    let witness = crate::atoms::projectio::engine_state_witness();
+    let (uid, gid) = proposal_owner(ProposalOwnerPolicy::CurrentProcess);
+    crate::atoms::projectio::engine_put_owned(&witness, path, bytes, 0o644, uid, gid)
+        .map_err(|error| format!("receipt-atomic-promote-failed: {error}"))?;
+    Ok(true)
 }
 
 pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1238,7 +1201,8 @@ fn verify_receipt_owner(path: &Path) -> Result<(), String> {
 
 pub(crate) fn prepare_receipt_parent(parent: &Path) -> Result<(), String> {
     convergence_receipts::migrate_latest_receipt_ancestor(parent)?;
-    fs::create_dir_all(parent)
+    let witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::engine_make_dir(&witness, parent)
         .map_err(|error| format!("receipt-parent-create-failed {}: {error}", parent.display()))?;
     make_receipt_tree_readable(parent)
 }
@@ -1246,7 +1210,19 @@ pub(crate) fn prepare_receipt_parent(parent: &Path) -> Result<(), String> {
 pub(crate) fn copy_artifact(source: &Path, target: &Path) -> Result<(), String> {
     let parent = target.parent().ok_or_else(|| format!("artifact-copy-parent-missing {}", target.display()))?;
     prepare_receipt_parent(parent)?;
-    fs::copy(source, target).map_err(|error| format!("artifact-copy-failed {} -> {}: {error}", source.display(), target.display()))?;
+    let copy_error = |error| format!("artifact-copy-failed {} -> {}: {error}", source.display(), target.display());
+    let bytes = fs::read(source).map_err(copy_error)?;
+    let mode = fs::metadata(source).map_err(copy_error)?.permissions().mode() & 0o7777;
+    let witness = crate::atoms::projectio::engine_state_witness();
+    use std::os::unix::fs::MetadataExt;
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_file() =>
+            crate::atoms::projectio::engine_put_owned(&witness, target, &bytes, mode, metadata.uid(), metadata.gid()),
+        Ok(_) => Err(std::io::Error::other(format!("artifact-copy-target-not-regular {}", target.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+            crate::atoms::projectio::engine_put(&witness, target, &bytes, mode),
+        Err(error) => Err(error),
+    }.map_err(copy_error)?;
     Ok(())
 }
 

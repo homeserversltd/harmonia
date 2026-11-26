@@ -228,21 +228,17 @@ pub(crate) fn materialize_latest_receipt_dir(
     }
     crate::atoms::attest::prepare_receipt_parent(receipt_dir)?;
     let parent = receipt_dir.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+    let witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::act_sync(&witness, parent)
         .map_err(|error| format!("{error_prefix}-parent-sync-failed: {error}"))?;
     Ok(receipt_dir.to_path_buf())
 }
 
 fn unlink_latest_alias(path: &Path) -> Result<(), String> {
-    use std::os::unix::ffi::OsStrExt;
-    let name = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| "receipt-latest-alias-name-invalid".to_string())?;
     // unlink(2) removes the alias itself and never follows its old run target.
-    if unsafe { libc::unlink(name.as_ptr()) } != 0 {
-        return Err(format!("receipt-latest-alias-unlink-failed {}: {}",
-            path.display(), std::io::Error::last_os_error()));
-    }
-    Ok(())
+    let witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::engine_remove(&witness, path, false)
+        .map_err(|error| format!("receipt-latest-alias-unlink-failed {}: {error}", path.display()))
 }
 
 /// Direct receipt writers share the same one-time canonical alias migration.
