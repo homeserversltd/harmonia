@@ -1175,6 +1175,186 @@ impl ScratchWitness<'_> {
     fn hold(self) { match self { Self::KnownGood(w) => { let _ = w; }, Self::Engine(w) => { let _ = w; } } }
 }
 
+/// A caller's authority accompanies held-descriptor mutations.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) enum PenWitness<'a> {
+    Owner(&'a OwnerAcceptance),
+    Engine(&'a EngineStateWitness),
+    KnownGood(&'a crate::atoms::comparison::ActionAuthorization),
+}
+#[allow(dead_code)]
+impl<'a> From<&'a OwnerAcceptance> for PenWitness<'a> {
+    fn from(w: &'a OwnerAcceptance) -> Self { Self::Owner(w) }
+}
+#[allow(dead_code)]
+impl<'a> From<&'a EngineStateWitness> for PenWitness<'a> {
+    fn from(w: &'a EngineStateWitness) -> Self { Self::Engine(w) }
+}
+#[allow(dead_code)]
+impl<'a> From<&'a crate::atoms::comparison::ActionAuthorization> for PenWitness<'a> {
+    fn from(w: &'a crate::atoms::comparison::ActionAuthorization) -> Self { Self::KnownGood(w) }
+}
+#[allow(dead_code)]
+impl PenWitness<'_> {
+    fn lane(self) -> &'static str {
+        match self {
+            Self::Owner(w) => { let _ = w; "interactable" },
+            Self::Engine(w) => { let _ = w; "self" },
+            Self::KnownGood(w) => { let _ = w; "known-good" },
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn pen_name(name: &std::ffi::OsStr) -> std::io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "projectio-invalid-component"));
+    }
+    std::ffi::CString::new(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+}
+#[allow(dead_code)]
+fn pen_check(record: Option<&Path>) -> std::io::Result<()> {
+    if let Some(path) = record { check_act_path(path)?; }
+    Ok(())
+}
+#[allow(dead_code)]
+fn pen_record(record: Option<&Path>, lane: &'static str) {
+    if let Some(path) = record { crate::atoms::touch::record_lane(path, lane); }
+}
+#[allow(dead_code)]
+fn pen_error(act: &str, record: Option<&Path>) -> std::io::Error {
+    act_mismatch(act, record.unwrap_or_else(|| Path::new("<fd>")))
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_fd_owner<'a>(w: impl Into<PenWitness<'a>>, file: &File, uid: libc::uid_t, gid: libc::gid_t, record: Option<&Path>) -> std::io::Result<()> {
+    pen_check(record)?;
+    let lane = w.into().lane();
+    let before = file.metadata()?;
+    let changed = (uid != !0 && before.uid() != uid) || (gid != !0 && before.gid() != gid);
+    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 { return Err(std::io::Error::last_os_error()); }
+    if changed { pen_record(record, lane); }
+    let after = file.metadata()?;
+    if (uid != !0 && after.uid() != uid) || (gid != !0 && after.gid() != gid) { return Err(pen_error("fd-owner", record)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_fd_mode<'a>(w: impl Into<PenWitness<'a>>, file: &File, mode: u32, record: Option<&Path>) -> std::io::Result<()> {
+    pen_check(record)?;
+    let lane = w.into().lane();
+    let changed = file.metadata()?.mode() & 0o7777 != mode & 0o7777;
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+    if changed { pen_record(record, lane); }
+    if file.metadata()?.mode() & 0o7777 != mode & 0o7777 { return Err(pen_error("fd-mode", record)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_at_make_dir<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, mode: u32, record: Option<&Path>) -> std::io::Result<File> {
+    pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
+    if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+    if let Some(path) = record { crate::atoms::touch::record_made_directory(path, lane); }
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 { return Err(std::io::Error::last_os_error()); }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+    let actual = file.metadata()?;
+    let named = stat_at_nofollow(dir, &name)?;
+    if !actual.is_dir() || actual.mode() & 0o7777 != mode & 0o7777 || file_identity(&actual) != stat_identity(&named) { return Err(pen_error("make-dir-at", record)); }
+    Ok(file)
+}
+#[allow(dead_code)]
+pub(crate) fn act_at_create_new<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, mode: u32, record: Option<&Path>) -> std::io::Result<File> {
+    pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, mode as libc::mode_t) };
+    if fd < 0 { return Err(std::io::Error::last_os_error()); }
+    let file = unsafe { File::from_raw_fd(fd) };
+    pen_record(record, lane);
+    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+    let actual = file.metadata()?; let named = stat_at_nofollow(dir, &name)?;
+    if !actual.is_file() || actual.mode() & 0o7777 != mode & 0o7777 || file_identity(&actual) != stat_identity(&named) { return Err(pen_error("create-at", record)); }
+    Ok(file)
+}
+#[allow(dead_code)]
+pub(crate) fn act_at_unlink<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, directory: bool, record: Option<&Path>) -> std::io::Result<()> {
+    pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), if directory { libc::AT_REMOVEDIR } else { 0 }) } != 0 { return Err(std::io::Error::last_os_error()); }
+    pen_record(record, lane);
+    if !matches!(stat_at_nofollow(dir, &name), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(pen_error("unlink-at", record)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_at_rename<'a>(w: impl Into<PenWitness<'a>>, from_dir: &File, from_name: &std::ffi::OsStr, to_dir: &File, to_name: &std::ffi::OsStr, how: LinkPromotion, record_to: Option<&Path>, record_from: Option<&Path>) -> std::io::Result<()> {
+    pen_check(record_to)?; pen_check(record_from)?; let from_name = pen_name(from_name)?; let to_name = pen_name(to_name)?; let lane = w.into().lane();
+    let before = stat_at_nofollow(from_dir, &from_name)?;
+    let other = if matches!(how, LinkPromotion::Exchange) { Some(stat_at_nofollow(to_dir, &to_name)?) } else { None };
+    let flags = match how { LinkPromotion::Rename => 0, LinkPromotion::Exchange => libc::RENAME_EXCHANGE, LinkPromotion::NoReplace => libc::RENAME_NOREPLACE };
+    if unsafe { libc::renameat2(from_dir.as_raw_fd(), from_name.as_ptr(), to_dir.as_raw_fd(), to_name.as_ptr(), flags) } != 0 { return Err(std::io::Error::last_os_error()); }
+    pen_record(record_to, lane); pen_record(record_from, lane);
+    let to_ok = stat_at_nofollow(to_dir, &to_name).is_ok_and(|s| stat_identity(&s) == stat_identity(&before));
+    let from_ok = match other { Some(s) => stat_at_nofollow(from_dir, &from_name).is_ok_and(|a| stat_identity(&a) == stat_identity(&s)), None => matches!(stat_at_nofollow(from_dir, &from_name), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) };
+    if !to_ok || !from_ok { return Err(pen_error("rename-at", record_to)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_at_link<'a>(w: impl Into<PenWitness<'a>>, from_dir: &File, from_name: &std::ffi::OsStr, to_dir: &File, to_name: &std::ffi::OsStr, record: Option<&Path>) -> std::io::Result<()> {
+    pen_check(record)?; let from_name = pen_name(from_name)?; let to_name = pen_name(to_name)?; let lane = w.into().lane();
+    if unsafe { libc::linkat(from_dir.as_raw_fd(), from_name.as_ptr(), to_dir.as_raw_fd(), to_name.as_ptr(), 0) } != 0 { return Err(std::io::Error::last_os_error()); }
+    pen_record(record, lane);
+    let a = stat_at_nofollow(from_dir, &from_name)?; let b = stat_at_nofollow(to_dir, &to_name)?;
+    if stat_identity(&a) != stat_identity(&b) { return Err(pen_error("link-at", record)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_fd_link<'a>(w: impl Into<PenWitness<'a>>, file: &File, to_dir: &File, to_name: &std::ffi::OsStr, record: Option<&Path>) -> std::io::Result<()> {
+    pen_check(record)?; let to_name = pen_name(to_name)?; let lane = w.into().lane();
+    let source = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).expect("fd path contains no NUL");
+    let before = file.metadata()?;
+    if unsafe { libc::linkat(libc::AT_FDCWD, source.as_ptr(), to_dir.as_raw_fd(), to_name.as_ptr(), libc::AT_SYMLINK_FOLLOW) } != 0 { return Err(std::io::Error::last_os_error()); }
+    pen_record(record, lane);
+    if stat_identity(&stat_at_nofollow(to_dir, &to_name)?) != file_identity(&before) { return Err(pen_error("fd-link", record)); }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_scratch_make_dir_new_mode<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, mode: u32) -> std::io::Result<()> {
+    w.into().hold(); check_act_path(path)?; fs::create_dir(path)?;
+    let dir = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path)?;
+    if unsafe { libc::fchmod(dir.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+    let opened = dir.metadata()?; let named = fs::symlink_metadata(path)?;
+    if !opened.is_dir() || opened.mode() & 0o7777 != mode & 0o7777 || file_identity(&opened) != file_identity(&named) { return Err(act_mismatch("scratch-make-dir", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_rename_new<'a>(w: impl Into<ScratchWitness<'a>>, from: &Path, to: &Path) -> std::io::Result<()> {
+    w.into().hold(); check_act_path(from)?; check_act_path(to)?;
+    let before = fs::symlink_metadata(from)?;
+    renameat2_raw(from, to, libc::RENAME_NOREPLACE)?;
+    if !fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) || !matches!(fs::symlink_metadata(from), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("scratch-rename", to)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_symlink<'a>(w: impl Into<ScratchWitness<'a>>, text: &Path, path: &Path) -> std::io::Result<()> {
+    w.into().hold(); check_act_path(path)?; std::os::unix::fs::symlink(text, path)?;
+    if !fs::read_link(path).is_ok_and(|actual| actual == text) { return Err(act_mismatch("scratch-symlink", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_scratch_temp_dir<'a>(w: impl Into<ScratchWitness<'a>>, parent: &Path, prefix: &std::ffi::OsStr) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    w.into().hold(); check_act_path(parent)?; let _ = pen_name(prefix)?;
+    let mut leaf = prefix.as_bytes().to_vec(); leaf.extend_from_slice(b"XXXXXX");
+    let template = parent.join(std::ffi::OsString::from_vec(leaf)); check_act_path(&template)?;
+    let mut bytes = std::ffi::CString::new(template.as_os_str().as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?.into_bytes_with_nul();
+    if unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null() { return Err(std::io::Error::last_os_error()); }
+    bytes.pop(); let made = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+    let meta = fs::symlink_metadata(&made)?;
+    if !meta.is_dir() || meta.mode() & 0o7777 != 0o700 { return Err(act_mismatch("scratch-temp-dir", &made)); }
+    Ok(made)
+}
+
 // Create each missing rung separately: partial success must not lose its touch.
 fn make_directories(path: &Path, record: bool) -> std::io::Result<Vec<PathBuf>> {
     check_act_path(path)?;
