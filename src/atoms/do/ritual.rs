@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    os::unix::{ffi::OsStrExt, fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt}},
+    os::unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt}},
     path::{Path, PathBuf},
 };
 
@@ -50,11 +50,13 @@ fn hard_link_nofollow(root: &Path, source: &Path, destination: &Path) -> Result<
     let src_parent = open_dir_nofollow(root, source.parent().ok_or_else(|| "source parent missing".to_string())?)?;
     let dst_parent = open_dir_nofollow(root, destination.parent().ok_or_else(|| "destination parent missing".to_string())?)?;
     let src_name = std::ffi::CString::new(source.file_name().ok_or_else(|| "source name missing".to_string())?.as_bytes()).map_err(|e| e.to_string())?;
-    let dst_name = std::ffi::CString::new(destination.file_name().ok_or_else(|| "destination name missing".to_string())?.as_bytes()).map_err(|e| e.to_string())?;
+
     let st = stat_at(&src_parent, &src_name).map_err(|e| e.to_string())?;
     if st.st_mode & libc::S_IFMT != libc::S_IFREG { return Err("source is not a regular file".into()); }
-    let result = unsafe { libc::linkat(src_parent.as_raw_fd(), src_name.as_ptr(), dst_parent.as_raw_fd(), dst_name.as_ptr(), 0) };
-    if result != 0 { return Err(std::io::Error::last_os_error().to_string()); }
+    let witness = crate::atoms::projectio::engine_state_witness();
+    let src_file = fs::File::from(src_parent);
+    let dst_file = fs::File::from(dst_parent);
+    crate::atoms::projectio::act_at_link(&witness, &src_file, source.file_name().unwrap(), &dst_file, destination.file_name().unwrap(), None).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -76,6 +78,7 @@ fn check_shadows(snapshot: &Snapshot) -> Result<(), String> {
 }
 
 fn build_shadows(snapshot: &Snapshot) -> Result<(), (String, bool)> {
+    let witness = crate::atoms::projectio::engine_state_witness();
     let mut made = Vec::new();
     let result = (|| {
         for root in &snapshot.roots {
@@ -90,13 +93,13 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), (String, bool)> {
                 let destination = if relative.as_os_str().is_empty() { building.clone() } else { building.join(relative) };
                 match &node.kind {
                     Kind::Dir => {
-                        fs::DirBuilder::new().mode(0o700).create(&destination).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
+                        crate::atoms::projectio::act_scratch_make_dir_new_mode(&witness, &destination, 0o700).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
                         if node.path == root.path { made.push((root.path.clone(), building.clone())); }
                         let directory = open_dir_nofollow(&root.path, &destination).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
                         directories.push((directory, node, destination));
                     },
                     Kind::Symlink(target) => {
-                        std::os::unix::fs::symlink(target, &destination).map_err(|e| e.to_string())?;
+                        crate::atoms::projectio::act_scratch_symlink(&witness, target, &destination).map_err(|e| e.to_string())?;
                         if node.path == root.path { made.push((root.path.clone(), building.clone())); }
                         let c = std::ffi::CString::new(destination.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
                         if unsafe { libc::lchown(c.as_ptr(), node.uid, node.gid) } != 0 { return Err(format!("rollback-shadow-build-failed {}: {}", destination.display(), std::io::Error::last_os_error())); }
@@ -116,17 +119,14 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), (String, bool)> {
                 let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
                 if unsafe { libc::fstat(directory.as_raw_fd(), stat.as_mut_ptr()) } != 0 { return Err(std::io::Error::last_os_error().to_string()); }
                 let stat = unsafe { stat.assume_init() };
-                if (stat.st_uid != node.uid || stat.st_gid != node.gid)
-                    && unsafe { libc::fchown(directory.as_raw_fd(), node.uid, node.gid) } != 0 {
-                    return Err(format!("rollback-shadow-build-failed {}: {}", destination.display(), std::io::Error::last_os_error()));
+                let directory = fs::File::from(directory);
+                if stat.st_uid != node.uid || stat.st_gid != node.gid {
+                    crate::atoms::projectio::act_fd_owner(&witness, &directory, node.uid, node.gid, None).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
                 }
-                if unsafe { libc::fchmod(directory.as_raw_fd(), node.mode & 0o7777) } != 0 { return Err(format!("rollback-shadow-build-failed {}: {}", destination.display(), std::io::Error::last_os_error())); }
+                crate::atoms::projectio::act_fd_mode(&witness, &directory, node.mode & 0o7777, None).map_err(|e| format!("rollback-shadow-build-failed {}: {e}", destination.display()))?;
             }
             if made.last().is_some_and(|(_, path)| path == &building) {
-                let old = std::ffi::CString::new(building.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-                let new = std::ffi::CString::new(final_path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-                if unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) } != 0 {
-                    let error = std::io::Error::last_os_error();
+                if let Err(error) = crate::atoms::projectio::act_scratch_rename_new(&witness, &building, &final_path) {
                     if error.kind() == std::io::ErrorKind::AlreadyExists {
                         return Err(format!("rollback-shadow-left-standing {}", final_path.display()));
                     }
@@ -140,7 +140,7 @@ fn build_shadows(snapshot: &Snapshot) -> Result<(), (String, bool)> {
     if let Err(mut error) = result {
         let mut survives = false;
         for (root, path) in made.iter().rev() {
-            if let Err(cleanup) = rm(root, path) {
+            if let Err(cleanup) = rm(root, path, (&witness).into(), true) {
                 survives = true;
                 error.push_str(&format!("; rollback-shadow-cleanup-failed {}: {cleanup}", path.display()));
             }
@@ -214,11 +214,12 @@ pub(crate) fn shadow_not_owed() {
 }
 
 pub(crate) fn remove_shadow_roots(roots: &[PathBuf]) -> Result<(), String> {
+    let witness = crate::atoms::projectio::engine_state_witness();
     let mut errors = Vec::new();
     for root in roots {
         for building in [false, true] {
             match shadow_name(root, building) {
-                Ok(path) => if let Err(error) = rm(root, &path) {
+                Ok(path) => if let Err(error) = rm(root, &path, (&witness).into(), true) {
                     errors.push(format!("rollback-shadow-cleanup-failed {}: {error}", path.display()));
                 },
                 Err(error) => errors.push(format!("rollback-shadow-cleanup-failed {}: {error}", root.display())),
@@ -503,7 +504,27 @@ fn stat_at(dir: &OwnedFd, name: &std::ffi::CStr) -> Result<libc::stat, std::io::
     Ok(unsafe { st.assume_init() })
 }
 
-fn rm(root: &Path, p: &Path) -> Result<(), String> {
+// Walk only through the held, no-follow directories; never re-resolve the root.
+fn remove_held_tree(dir: &fs::File, name: &std::ffi::OsStr, path: &Path, witness: crate::atoms::projectio::PenWitness<'_>, scratch: bool) -> Result<(), String> {
+    let cname = std::ffi::CString::new(name.as_bytes()).map_err(|e| e.to_string())?;
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), cname.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 { return Err(std::io::Error::last_os_error().to_string()); }
+    let child = unsafe { fs::File::from_raw_fd(fd) };
+    for entry in fs::read_dir(format!("/proc/self/fd/{}", child.as_raw_fd())).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let child_name = entry.file_name();
+        let child_path = path.join(&child_name);
+        let meta = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+        if meta.file_type().is_dir() {
+            remove_held_tree(&child, &child_name, &child_path, witness, scratch)?;
+        } else {
+            crate::atoms::projectio::act_at_unlink(witness, &child, &child_name, false, if scratch { None } else { Some(&child_path) }).map_err(|e| e.to_string())?;
+        }
+    }
+    crate::atoms::projectio::act_at_unlink(witness, dir, name, true, if scratch { None } else { Some(path) }).map_err(|e| e.to_string())
+}
+
+fn rm(root: &Path, p: &Path, witness: crate::atoms::projectio::PenWitness<'_>, scratch: bool) -> Result<(), String> {
     let parent = p.parent().ok_or_else(|| "parent missing".to_string())?;
     let dir = match open_dir_nofollow(root, parent) {
         Ok(dir) => dir,
@@ -516,15 +537,14 @@ fn rm(root: &Path, p: &Path) -> Result<(), String> {
         Err(e) => return Err(e.to_string()),
     };
     if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
-        // std's remove_dir_all uses a descriptor-relative no-follow walk.
-        let anchored = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd())).join(p.file_name().unwrap());
-        fs::remove_dir_all(anchored).map_err(|e| e.to_string())
+        let dir = fs::File::from(dir);
+        remove_held_tree(&dir, p.file_name().unwrap(), p, witness, scratch)
     } else {
-        let rc = unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) };
-        if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error().to_string()) }
+        let dir = fs::File::from(dir);
+        crate::atoms::projectio::act_at_unlink(witness, &dir, p.file_name().unwrap(), false, if scratch { None } else { Some(p) }).map_err(|e| e.to_string())
     }
 }
-fn restore_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+fn restore_owner(witness: &crate::atoms::projectio::RollbackWitness, path: &Path, uid: u32, gid: u32) -> Result<(), String> {
     let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if m.uid() == uid && m.gid() == gid {
         return Ok(());
@@ -534,13 +554,7 @@ fn restore_owner(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
         .map_err(|e| format!("ownership-restore-open-failed {}: {e}", path.display()))?;
-    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-        return Err(format!(
-            "ownership-restore-failed {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
+    crate::atoms::projectio::act_fd_owner(witness, &file, uid, gid, Some(path)).map_err(|e| format!("ownership-restore-failed {}: {e}", path.display()))?;
     Ok(())
 }
 fn root_matches_snapshot(root: &Path, expected: &[Node]) -> Result<bool, String> {
@@ -909,7 +923,7 @@ fn mutate_rollback_verification_root(s: &Snapshot) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], _key: &InvocationKey) -> Result<(), String> {
+fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], witness: &crate::atoms::projectio::RollbackWitness) -> Result<(), String> {
     let shadow_root = shadow_name(root, false)?;
     let relative = node.path.strip_prefix(root).map_err(|e| e.to_string())?;
     let shadow = if relative.as_os_str().is_empty() { shadow_root } else { shadow_root.join(relative) };
@@ -946,23 +960,20 @@ fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], _key: 
             let same = fs::symlink_metadata(&node.path).ok().is_some_and(|m| m.file_type().is_file() && m.dev() == shadow_meta.dev() && m.ino() == shadow_meta.ino());
             if !same {
                 if fs::symlink_metadata(&node.path).ok().is_some_and(|m| m.file_type().is_dir()) {
-                    remove_changed_kind(root, &node.path).map_err(|e| format!("rollback-remove-failed {}: {e}", node.path.display()))?;
+                    remove_changed_kind(root, &node.path, witness).map_err(|e| format!("rollback-remove-failed {}: {e}", node.path.display()))?;
                 }
                 let parent = node.path.parent().ok_or_else(|| "parent missing".to_string())?;
                 let name = node.path.file_name().ok_or_else(|| "name missing".to_string())?.to_string_lossy();
                 let temp = parent.join(format!(".{name}.harmonia-restore-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
                 let destination = open_dir_nofollow(root, parent)?;
-                let target = std::ffi::CString::new(temp.file_name().ok_or_else(|| "name missing".to_string())?.as_bytes()).map_err(|e| e.to_string())?;
-                let descriptor_path = std::ffi::CString::new(format!("/proc/self/fd/{}", shadow_file.as_raw_fd())).map_err(|e| e.to_string())?;
-                if unsafe { libc::linkat(libc::AT_FDCWD, descriptor_path.as_ptr(), destination.as_raw_fd(), target.as_ptr(), libc::AT_SYMLINK_FOLLOW) } != 0 {
-                    return Err(std::io::Error::last_os_error().to_string());
-                }
+                let destination = fs::File::from(destination);
+                crate::atoms::projectio::act_fd_link(&authorization, &shadow_file, &destination, temp.file_name().ok_or_else(|| "name missing".to_string())?, None).map_err(|e| e.to_string())?;
                 if let Err(error) = crate::atoms::projectio::act_rename(&authorization, &temp, &node.path, true, false) {
                     let _ = crate::atoms::projectio::act_scratch_remove(&authorization, &temp);
                     return Err(error.to_string());
                 }
             }
-            restore_owner(&node.path, node.uid, node.gid)?;
+            restore_owner(witness, &node.path, node.uid, node.gid)?;
             let m = fs::symlink_metadata(&node.path).map_err(|e| e.to_string())?;
             if m.mode() & 0o7777 != node.mode & 0o7777 {
                 crate::atoms::projectio::act_mode(&authorization, &node.path, node.mode & 0o7777).map_err(|e| e.to_string())?;
@@ -987,7 +998,7 @@ fn restore_parent_is_safe(root: &Path, path: &Path) -> Result<(), String> {
 }
 
 // A missing nested root is already restored if a non-link ancestor is absent.
-fn restore_missing(root: &Path, path: &Path) -> Result<(), String> {
+fn restore_missing(root: &Path, path: &Path, witness: &crate::atoms::projectio::RollbackWitness) -> Result<(), String> {
     if root != path {
         let parent = path.parent().ok_or_else(|| "parent missing".to_string())?;
         let relative = parent.strip_prefix(root).map_err(|e| e.to_string())?;
@@ -1003,36 +1014,20 @@ fn restore_missing(root: &Path, path: &Path) -> Result<(), String> {
             }
         }
     }
-    rm(root, path)
+    rm(root, path, witness.into(), false)
 }
 
 // Changed-kind removals use the same anchored descriptor path as missing roots.
-fn remove_changed_kind(root: &Path, path: &Path) -> Result<(), String> {
-    rm(root, path)
+fn remove_changed_kind(root: &Path, path: &Path, witness: &crate::atoms::projectio::RollbackWitness) -> Result<(), String> {
+    rm(root, path, witness.into(), false)
 }
 
-fn restore_link(node: &Node, target: &Path) -> Result<(), String> {
+fn restore_link(node: &Node, target: &Path, witness: &crate::atoms::projectio::RollbackWitness) -> Result<(), String> {
     if let Ok(m) = fs::symlink_metadata(&node.path) {
         if m.file_type().is_symlink() && m.uid() == node.uid && m.gid() == node.gid
             && fs::read_link(&node.path).map_err(|e| e.to_string())? == target { return Ok(()); }
     }
-    let parent = node.path.parent().ok_or_else(|| "parent missing".to_string())?;
-    let name = node.path.file_name().ok_or_else(|| "name missing".to_string())?.to_string_lossy();
-    let temp = parent.join(format!(".{name}.harmonia-link-{}-{}", std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-    std::os::unix::fs::symlink(target, &temp).map_err(|e| e.to_string())?;
-    let result = (|| {
-        let m = fs::symlink_metadata(&temp).map_err(|e| e.to_string())?;
-        if m.uid() != node.uid || m.gid() != node.gid {
-            let p = std::ffi::CString::new(temp.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
-            if unsafe { libc::lchown(p.as_ptr(), node.uid, node.gid) } != 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-        }
-        fs::rename(&temp, &node.path).map_err(|e| e.to_string())
-    })();
-    if result.is_err() { let _ = fs::remove_file(&temp); }
-    result
+    crate::atoms::projectio::rollback_symlink(witness, target, &node.path, node.uid, node.gid).map_err(|e| e.to_string())
 }
 
 fn collect_extra_dir(dir: &OwnedFd, path: &Path, named: &BTreeSet<PathBuf>, extras: &mut Vec<PathBuf>, failures: &mut BTreeMap<PathBuf, String>) {
@@ -1071,7 +1066,7 @@ fn collect_extras(path: &Path, named: &BTreeSet<PathBuf>, extras: &mut Vec<PathB
     }
 }
 
-fn remove_extra(root: &Path, path: &Path) -> Result<(), String> {
+fn remove_extra(root: &Path, path: &Path, witness: &crate::atoms::projectio::RollbackWitness) -> Result<(), String> {
     let parent = path.parent().ok_or_else(|| "parent missing".to_string())?;
     let dir = open_dir_nofollow(root, parent)?;
     let name = std::ffi::CString::new(path.file_name().ok_or_else(|| "name missing".to_string())?.as_bytes()).map_err(|e| e.to_string())?;
@@ -1080,9 +1075,9 @@ fn remove_extra(root: &Path, path: &Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e.to_string()),
     };
-    let flags = if st.st_mode & libc::S_IFMT == libc::S_IFDIR { libc::AT_REMOVEDIR } else { 0 };
-    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } == 0 { Ok(()) }
-    else { Err(std::io::Error::last_os_error().to_string()) }
+    let directory = st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+    let dir = fs::File::from(dir);
+    crate::atoms::projectio::act_at_unlink(witness, &dir, path.file_name().unwrap(), directory, Some(path)).map_err(|e| e.to_string())
 }
 
 pub(crate) fn restore(
@@ -1090,6 +1085,7 @@ pub(crate) fn restore(
     key: &InvocationKey,
     restored_paths: &mut Vec<String>,
 ) -> Result<(), String> {
+    let witness = crate::atoms::projectio::rollback_witness(s, key);
     let mut changed = Vec::new();
     let mut errors = Vec::new();
     let mut observations = Vec::new();
@@ -1120,7 +1116,7 @@ pub(crate) fn restore(
     for root in changed.iter().rev() {
         let mut root_failed = false;
         if let Some(parent) = root.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
+            if let Err(error) = crate::atoms::projectio::rollback_make_dir(&witness, parent) {
                 root_failed = true;
                 errors.push(format!("rollback-restore-failed {}: {error}", parent.display()));
             }
@@ -1131,7 +1127,7 @@ pub(crate) fn restore(
         for n in &nodes {
             let result = (|| -> Result<(), String> {
                 if matches!(n.kind, Kind::Missing) {
-                    return restore_missing(root, &n.path).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()));
+                    return restore_missing(root, &n.path, &witness).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()));
                 }
                 restore_parent_is_safe(root, &n.path)?;
                 let existing = match fs::symlink_metadata(&n.path) {
@@ -1148,21 +1144,22 @@ pub(crate) fn restore(
                         Kind::Missing => false,
                     };
                     if !same && !matches!(n.kind, Kind::File(_)) {
-                        remove_changed_kind(root, &n.path).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()))?;
+                        remove_changed_kind(root, &n.path, &witness).map_err(|e| format!("rollback-remove-failed {}: {e}", n.path.display()))?;
                     }
                 }
                 match &n.kind {
                     Kind::Missing => {},
                     Kind::Dir => {
-                        if fs::symlink_metadata(&n.path).is_err() { fs::create_dir(&n.path).map_err(|e| e.to_string())?; }
+                        if fs::symlink_metadata(&n.path).is_err() { crate::atoms::projectio::rollback_make_dir(&witness, &n.path).map_err(|e| e.to_string())?; }
                         let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
                         if m.mode() & 0o700 != 0o700 {
-                            fs::set_permissions(&n.path, fs::Permissions::from_mode((m.mode() & 0o7777) | 0o700)).map_err(|e| e.to_string())?;
+                            let directory = fs::File::from(open_dir_nofollow(root, &n.path)?);
+                            crate::atoms::projectio::act_fd_mode(&witness, &directory, (m.mode() & 0o7777) | 0o700, Some(&n.path)).map_err(|e| e.to_string())?;
                         }
                     },
-                    Kind::File(hash) => comparison_authorized_write(n, root, hash, key)?,
+                    Kind::File(hash) => comparison_authorized_write(n, root, hash, &witness)?,
                     Kind::Special => return Err(format!("rollback-shadow-special-file {}", n.path.display())),
-                    Kind::Symlink(target) => restore_link(n, target)?,
+                    Kind::Symlink(target) => restore_link(n, target, &witness)?,
                 }
                 Ok(())
             })();
@@ -1179,7 +1176,7 @@ pub(crate) fn restore(
             if named.contains(root) { collect_extras(root, &named, &mut extras, &mut failures); }
             extras.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
             for path in extras {
-                if let Err(error) = remove_extra(root, &path) { failures.insert(path, error); }
+                if let Err(error) = remove_extra(root, &path, &witness) { failures.insert(path, error); }
             }
             if pass == 1 {
                 for (path, error) in failures {
@@ -1192,9 +1189,10 @@ pub(crate) fn restore(
             let result = restore_parent_is_safe(root, &n.path).and_then(|_| {
                 let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
                 if !m.file_type().is_dir() { return Err("not a directory".into()); }
-                restore_owner(&n.path, n.uid, n.gid)?;
+                restore_owner(&witness, &n.path, n.uid, n.gid)?;
                 if m.mode() & 0o7777 != n.mode & 0o7777 {
-                    fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777)).map_err(|e| e.to_string())?;
+                    let directory = fs::File::from(open_dir_nofollow(root, &n.path)?);
+                    crate::atoms::projectio::act_fd_mode(&witness, &directory, n.mode & 0o7777, Some(&n.path)).map_err(|e| e.to_string())?;
                 }
                 Ok(())
             });
