@@ -62,6 +62,16 @@ fn hard_link_nofollow(root: &Path, source: &Path, destination: &Path) -> Result<
 
 fn check_shadows(snapshot: &Snapshot) -> Result<(), String> {
     for root in &snapshot.roots {
+        for building in [false, true] {
+            let path = shadow_name(&root.path, building)?;
+            for target in snapshot.roots.iter().map(|r| &r.path).chain(snapshot.nodes.iter().map(|n| &n.path)) {
+                if path.starts_with(target) || target.starts_with(&path) {
+                    return Err(format!("rollback-shadow-collides-target {} {}", path.display(), target.display()));
+                }
+            }
+        }
+    }
+    for root in &snapshot.roots {
         if snapshot.roots.iter().any(|other| other.path != root.path && root.path.starts_with(&other.path)) {
             return Err(format!("rollback-shadow-nested-root {}", root.path.display()));
         }
@@ -968,7 +978,9 @@ fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], witnes
                 let destination = fs::File::from(destination);
                 crate::atoms::projectio::act_fd_link(&authorization, &shadow_file, &destination, temp.file_name().ok_or_else(|| "name missing".to_string())?, None).map_err(|e| e.to_string())?;
                 if let Err(error) = crate::atoms::projectio::act_rename(&authorization, &temp, &node.path, true, false) {
-                    let _ = crate::atoms::projectio::act_scratch_remove(&authorization, &temp);
+                    if let Err(cleanup) = crate::atoms::projectio::act_scratch_remove(&authorization, &temp) {
+                        return Err(format!("{error}; rollback-restore-temp-cleanup-failed {}: {cleanup}", temp.display()));
+                    }
                     return Err(error.to_string());
                 }
             }
@@ -1188,6 +1200,7 @@ pub(crate) fn restore(
                 let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
                 if !m.file_type().is_dir() { return Err("not a directory".into()); }
                 restore_owner(&witness, &n.path, n.uid, n.gid)?;
+                let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
                 if m.mode() & 0o7777 != n.mode & 0o7777 {
                     crate::atoms::projectio::rollback_mode(&witness, &n.path, n.mode & 0o7777).map_err(|e| e.to_string())?;
                 }
