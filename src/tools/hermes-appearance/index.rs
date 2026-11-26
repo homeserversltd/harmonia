@@ -370,11 +370,13 @@ pub(crate) fn run_interactable(
             continue;
         }
         if !plan.home.skins.exists() {
-            if let Err(_) = create_skins_dir(&witness, &plan.home) {
-                failure = Some("hermes-appearance-skins-directory-create-failed");
-                break;
+            match create_skins_dir(&witness, &plan.home) {
+                Ok(created) => plan.created_skins_dir = created,
+                Err(_) => {
+                    failure = Some("hermes-appearance-skins-directory-create-failed");
+                    break;
+                }
             }
-            plan.created_skins_dir = true;
         }
         match install_asset(&witness, &plan.home, &asset_bytes, item, state_path) {
             Ok(change) => {
@@ -789,11 +791,11 @@ fn remove_skins_dir(witness: &OwnerAcceptance, home: &Home) -> std::io::Result<(
     projectio::act_at_unlink(witness, &parent, OsStr::new("skins"), true, Some(&home.skins))
 }
 
-fn create_skins_dir(witness: &OwnerAcceptance, home: &Home) -> Result<(), String> {
+fn create_skins_dir(witness: &OwnerAcceptance, home: &Home) -> Result<bool, String> {
     let parent = open_directory(&home.path).map_err(|_| "hermes-skins-directory-create-failed")?;
     let dir = match projectio::act_at_make_dir(witness, &parent, OsStr::new("skins"), 0o700, Some(&home.skins)) {
         Ok(dir) => dir,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return preflight_home(home),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return preflight_home(home).map(|()| false),
         Err(_) => return Err("hermes-skins-directory-create-failed".into()),
     };
     let result = (|| {
@@ -806,7 +808,7 @@ fn create_skins_dir(witness: &OwnerAcceptance, home: &Home) -> Result<(), String
     if result.is_err() {
         let _ = projectio::act_at_unlink(witness, &parent, OsStr::new("skins"), true, Some(&home.skins));
     }
-    result
+    result.map(|()| true)
 }
 
 fn install_asset(witness: &OwnerAcceptance, home: &Home, bytes: &[u8], item: &Interactable, state_path: &Path) -> Result<Option<AssetChange>, String> {
