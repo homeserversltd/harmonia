@@ -1,12 +1,6 @@
-use crate::atoms::r#do::InvocationKey;
-use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
+use crate::atoms::projectio;
+use crate::atoms::r#do::InvocationKey;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct FileWriteOptions<'a> {
@@ -30,39 +24,49 @@ pub(crate) fn file_write(
 ) -> Result<FileWriteResult, String> {
     let backed_up = if let Some(backup) = options.backup_to {
         if let Some(parent) = backup.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "file-write-backup-parent-create-failed {}: {error}",
-                    parent.display()
-                )
+            projectio::act_make_dir(authorization, parent).map_err(|error| {
+                format!("file-write-backup-parent-create-failed {}: {error}", parent.display())
             })?;
         }
-        fs::copy(path, backup).map_err(|error| {
-            format!(
-                "file-write-backup-failed {} -> {}: {error}",
-                path.display(),
-                backup.display()
-            )
+        projectio::act_copy(authorization, path, backup, None, None, None).map_err(|error| {
+            format!("file-write-backup-failed {} -> {}: {error}", path.display(), backup.display())
         })?;
-        crate::atoms::touch::record(backup, None, false);
         Some(backup.to_path_buf())
     } else {
         None
     };
     if options.write_bytes {
-        atomic_file_write(path, bytes, options.mode, options.uid, options.gid, false)?;
+        put(authorization, path, bytes, options.mode, options.uid, options.gid)
+            .map_err(|error| format!("file-write-promote-failed {}: {error}", path.display()))?;
     } else {
         if let Some(mode) = options.mode {
-            set_mode(path, mode)?;
-            crate::atoms::touch::record(path, None, false);
+            projectio::act_mode(authorization, path, mode)
+                .map_err(|error| format!("file-write-mode-set-failed {}: {error}", path.display()))?;
         }
-        set_ownership(path, options.uid, options.gid)?;
-        if options.mode.is_none() && (options.uid.is_some() || options.gid.is_some()) {
-            crate::atoms::touch::record(path, None, false);
+        if options.uid.is_some() || options.gid.is_some() {
+            projectio::act_owner(authorization, path, options.uid.unwrap_or(!0), options.gid.unwrap_or(!0))
+                .map_err(|error| format!("file-write-owner-set-failed {}: {error}", path.display()))?;
         }
     }
-    let _ = (authorization, invocation);
+    let _ = invocation;
     Ok(FileWriteResult { backed_up })
+}
+
+// act_put preserves existing metadata when unnamed; an absent file used to be
+// created with 0666 under the service's 022 umask.
+fn put(
+    authorization: &ActionAuthorization,
+    path: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> std::io::Result<()> {
+    let mode = match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(mode.unwrap_or(0o644)),
+        _ => mode,
+    };
+    projectio::act_put(authorization, path, bytes, mode, uid, gid)
 }
 
 /// Stage bytes for a caller-owned scratch name without recording that name.
@@ -73,83 +77,24 @@ pub(crate) fn file_write_scratch(
     bytes: &[u8],
     mode: Option<u32>,
 ) -> Result<(), String> {
-    atomic_file_write(path, bytes, mode, None, None, true)?;
-    let _ = (authorization, invocation);
-    Ok(())
-}
-
-fn atomic_file_write(
-    path: &Path,
-    bytes: &[u8],
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-    scratch: bool,
-) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("file-write-parent-missing {}", path.display()))?;
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("file");
-    let temp = parent.join(format!(
-        ".{name}.harmonia-atom-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    let parent = path.parent().ok_or_else(|| format!("file-write-parent-missing {}", path.display()))?;
+    let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("file");
+    let temp = parent.join(format!(".{name}.harmonia-atom-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(|error| {
-                format!("file-write-temp-create-failed {}: {error}", temp.display())
-            })?;
-        file.write_all(bytes)
+        projectio::act_scratch_write_new(authorization, &temp, bytes, mode.unwrap_or(0o644))
             .map_err(|error| format!("file-write-temp-write-failed {}: {error}", temp.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("file-write-temp-sync-failed {}: {error}", temp.display()))?;
-        drop(file);
-        if let Some(mode) = mode {
-            set_mode(&temp, mode)?;
-        }
-        set_ownership(&temp, uid, gid)?;
-        fs::rename(&temp, path).map_err(|error| {
-            format!(
-                "file-write-promote-failed {} -> {}: {error}",
-                temp.display(),
-                path.display()
-            )
-        })?;
-        if !scratch {
-            crate::atoms::touch::record(path, None, false);
-        }
-        let directory = OpenOptions::new()
-            .read(true)
-            .open(parent)
-            .map_err(|error| {
-                format!(
-                    "file-write-parent-open-failed {}: {error}",
-                    parent.display()
-                )
-            })?;
-        directory.sync_all().map_err(|error| {
-            format!(
-                "file-write-parent-sync-failed {}: {error}",
-                parent.display()
-            )
-        })
+        projectio::act_rename(authorization, &temp, path, true, true)
+            .map_err(|error| format!("file-write-promote-failed {} -> {}: {error}", temp.display(), path.display()))?;
+        projectio::act_sync(authorization, parent)
+            .map_err(|error| format!("file-write-parent-sync-failed {}: {error}", parent.display()))
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&temp);
+        let _ = projectio::act_scratch_remove(authorization, &temp);
     }
+    let _ = invocation;
     result
 }
-
 
 /// Authorized managed-file transactional writer. The comparison kernel supplies
 /// both capabilities; dry-run paths never enter this function.
@@ -162,99 +107,7 @@ pub(crate) fn atomic_write_bytes_with_ownership(
     uid: Option<u32>,
     gid: Option<u32>,
 ) -> Result<(), String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
-    let temp = parent.join(format!(
-        ".{}.harmonia-tmp-{}",
-        target.file_name().and_then(|name| name.to_str()).unwrap_or("file"),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    let result = (|| -> Result<(), String> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(|e| format!("files-temp-create-failed {}: {e}", temp.display()))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("files-temp-write-failed {}: {e}", temp.display()))?;
-        file.sync_all()
-            .map_err(|e| format!("files-temp-sync-failed {}: {e}", temp.display()))?;
-        drop(file);
-        if let Some(mode) = mode { managed_set_mode(&temp, mode)?; }
-        managed_set_ownership(&temp, uid, gid)?;
-        fs::rename(&temp, target).map_err(|e| format!("files-atomic-promote-failed {} -> {}: {e}", temp.display(), target.display()))?;
-        crate::atoms::touch::record(target, None, false);
-        let directory = OpenOptions::new().read(true).open(parent)
-            .map_err(|e| format!("files-parent-open-failed {}: {e}", parent.display()))?;
-        directory.sync_all().map_err(|e| format!("files-parent-sync-failed {}: {e}", parent.display()))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-        let _ = OpenOptions::new().read(true).open(parent).and_then(|directory| directory.sync_all());
-    }
-    result?;
-    let _ = (authorization, invocation);
-    Ok(())
-}
-
-#[cfg(unix)]
-fn managed_set_mode(path: &Path, mode: u32) -> Result<(), String> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| format!("files-mode-set-failed {}: {e}", path.display()))
-}
-#[cfg(not(unix))]
-fn managed_set_mode(_path: &Path, _mode: u32) -> Result<(), String> { Ok(()) }
-#[cfg(unix)]
-fn managed_set_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
-    if uid.is_none() && gid.is_none() { return Ok(()); }
-    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path)
-        .map_err(|e| format!("files-owner-open-failed {}: {e}", path.display()))?;
-    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
-    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
-    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-        return Err(format!("files-owner-set-failed {}: {}", path.display(), std::io::Error::last_os_error()));
-    }
-    Ok(())
-}
-#[cfg(not(unix))]
-fn managed_set_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> { Ok(()) }
-
-#[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        .map_err(|error| format!("file-write-mode-set-failed {}: {error}", path.display()))
-}
-#[cfg(not(unix))]
-fn set_mode(_path: &Path, _mode: u32) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
-    if uid.is_none() && gid.is_none() {
-        return Ok(());
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|error| format!("file-write-owner-open-failed {}: {error}", path.display()))?;
-    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
-    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
-    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-        return Err(format!(
-            "file-write-owner-set-failed {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-#[cfg(not(unix))]
-fn set_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> {
-    Ok(())
+    let _ = invocation;
+    put(authorization, target, bytes, mode, uid, gid)
+        .map_err(|error| format!("files-atomic-promote-failed {}: {error}", target.display()))
 }
