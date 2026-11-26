@@ -541,6 +541,17 @@ fn atomic_copy_tree(
     let result = (|| {
         crate::atoms::projectio::act_scratch_copy_tree(authorization, source, &staged_tree)
             .map_err(|e| format!("grub-theme-copy-failed:{e}"))?;
+        // The source can change after its first validation. Do not promote a
+        // symlink or special file that appeared while the scratch tree was copied.
+        for entry in walk(&staged_tree)? {
+            let metadata = fs::symlink_metadata(&entry).map_err(|e| e.to_string())?;
+            if metadata.file_type().is_symlink() {
+                return Err("grub-theme-source-symlink-forbidden".into());
+            }
+            if !metadata.is_dir() && !metadata.is_file() {
+                return Err("grub-theme-source-special-file-forbidden".into());
+            }
+        }
         let backup = temp_path(parent, &format!("{name}.old"));
         let had_prior = target.exists();
         if had_prior {
