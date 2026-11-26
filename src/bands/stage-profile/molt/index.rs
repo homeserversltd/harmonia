@@ -1653,7 +1653,7 @@ fn replace_export_directory_entry(
                     &output_observed,
                 )?;
                 verify_absent(&output_observed)?;
-                fs::create_dir(&output_observed).map_err(|error| {
+                crate::atoms::projectio::act_make_dir_new(&authorization, &output_observed).map_err(|error| {
                     format!(
                         "molt-export-directory-create-failed {}: {error}",
                         output_observed.display()
