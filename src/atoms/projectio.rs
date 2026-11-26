@@ -1333,6 +1333,11 @@ pub(crate) fn engine_rename(_w: &EngineStateWitness, from: &Path, to: &Path, scr
 pub(crate) fn engine_remove(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 0, !scratch) }
 #[allow(dead_code)]
 pub(crate) fn engine_remove_if(_w: &EngineStateWitness, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> {
+    remove_if_claimed(path, expected, scratch, "self")
+}
+
+#[allow(dead_code)]
+fn remove_if_claimed(path: &Path, expected: &[u8], scratch: bool, lane: &'static str) -> std::io::Result<()> {
     check_act_path(path)?;
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str())
@@ -1369,7 +1374,7 @@ pub(crate) fn engine_remove_if(_w: &EngineStateWitness, path: &Path, expected: &
         }
     };
     fs::remove_file(&claim).map_err(|e| std::io::Error::new(e.kind(), format!("projectio-remove-if-claim-remove {} (target {}): {e}", claim.display(), path.display())))?;
-    if !scratch { crate::atoms::touch::record_lane(path, "self"); }
+    if !scratch { crate::atoms::touch::record_lane(path, lane); }
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Ok(metadata) if file_identity(&metadata) != identity => Ok(()),
@@ -1381,6 +1386,182 @@ pub(crate) fn engine_remove_if(_w: &EngineStateWitness, path: &Path, expected: &
 pub(crate) fn engine_remove_dir(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 1, !scratch) }
 #[allow(dead_code)]
 pub(crate) fn engine_remove_tree(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 2, !scratch) }
+
+// Read a regular file without following a final symlink, and keep its metadata.
+#[allow(dead_code)]
+fn read_regular(path: &Path) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
+    check_act_path(path)?;
+    let mut file = OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() { return Err(std::io::Error::other("projectio-source-not-regular")); }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok((bytes, metadata))
+}
+
+#[allow(dead_code)]
+fn put_file(target: &Path, bytes: &[u8], mode: u32, uid: Option<u32>, gid: Option<u32>, exclusive: bool, record: bool) -> std::io::Result<()> {
+    check_act_path(target)?;
+    let parent = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("target");
+    let (mut temp, temp_path) = create_temp(parent, name).map_err(std::io::Error::other)?;
+    let result = (|| {
+        temp.write_all(bytes)?;
+        if uid.is_some() || gid.is_some() {
+            if unsafe { libc::fchown(temp.as_raw_fd(), uid.unwrap_or(!0), gid.unwrap_or(!0)) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        temp.set_permissions(fs::Permissions::from_mode(mode))?;
+        temp.sync_all()?;
+        let staged = temp.metadata()?;
+        if exclusive { renameat2_raw(&temp_path, target, libc::RENAME_NOREPLACE)?; }
+        else { fs::rename(&temp_path, target)?; }
+        if record { crate::atoms::touch::record_lane(target, "known-good"); }
+        File::open(parent)?.sync_all()?;
+        let (actual, metadata) = read_regular(target)?;
+        if actual != bytes || file_identity(&metadata) != file_identity(&staged)
+            || metadata.mode() & 0o7777 != mode & 0o7777
+            || uid.is_some_and(|u| metadata.uid() != u)
+            || gid.is_some_and(|g| metadata.gid() != g) {
+            return Err(act_mismatch("put", target));
+        }
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temp_path); }
+    result
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_put(_auth: &crate::atoms::comparison::ActionAuthorization, target: &Path, bytes: &[u8], mode: Option<u32>, uid: Option<u32>, gid: Option<u32>) -> std::io::Result<()> {
+    check_act_path(target)?;
+    let existing = match fs::symlink_metadata(target) {
+        Ok(m) if m.is_file() => Some(m),
+        Ok(_) => return Err(std::io::Error::other("projectio-target-not-regular-file")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    let mode = mode.or_else(|| existing.as_ref().map(|m| m.mode() & 0o7777))
+        .ok_or_else(|| std::io::Error::other("projectio-put-absent-needs-mode"))?;
+    let uid = uid.unwrap_or_else(|| existing.as_ref().map(|m| m.uid()).unwrap_or_else(|| unsafe { libc::geteuid() }));
+    let gid = gid.unwrap_or_else(|| existing.as_ref().map(|m| m.gid()).unwrap_or_else(|| unsafe { libc::getegid() }));
+    put_file(target, bytes, mode, Some(uid), Some(gid), existing.is_none(), true)
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_copy(auth: &crate::atoms::comparison::ActionAuthorization, source: &Path, target: &Path, mode: Option<u32>, uid: Option<u32>, gid: Option<u32>) -> std::io::Result<()> {
+    check_act_path(source)?; check_act_path(target)?;
+    let (bytes, metadata) = read_regular(source)?;
+    act_put(auth, target, &bytes, Some(mode.unwrap_or(metadata.mode() & 0o7777)), uid, gid)
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_scratch_copy<'a>(w: impl Into<ScratchWitness<'a>>, source: &Path, target: &Path, mode: Option<u32>) -> std::io::Result<()> {
+    w.into().hold(); check_act_path(source)?; check_act_path(target)?;
+    let (bytes, metadata) = read_regular(source)?;
+    put_file(target, &bytes, mode.unwrap_or(metadata.mode() & 0o7777), None, None, true, false)
+}
+
+/// A tree promoted later by act_rename records only the promoted root.
+#[allow(dead_code)]
+pub(crate) fn act_scratch_copy_tree<'a>(w: impl Into<ScratchWitness<'a>>, source_dir: &Path, target_dir: &Path) -> std::io::Result<()> {
+    let w = w.into(); w.hold(); check_act_path(source_dir)?; check_act_path(target_dir)?;
+    let metadata = fs::symlink_metadata(source_dir)?;
+    if !metadata.is_dir() { return Err(std::io::Error::other("projectio-source-not-directory")); }
+    fs::create_dir(target_dir)?;
+    for entry in fs::read_dir(source_dir)? {
+        let entry = entry?;
+        let source = entry.path(); let target = target_dir.join(entry.file_name());
+        let m = fs::symlink_metadata(&source)?;
+        if m.file_type().is_symlink() {
+            let text = fs::read_link(&source)?;
+            std::os::unix::fs::symlink(&text, &target)?;
+            if fs::read_link(&target)? != text { return Err(act_mismatch("link", &target)); }
+        } else if m.is_dir() {
+            act_scratch_copy_tree(w, &source, &target)?;
+        } else if m.is_file() {
+            act_scratch_copy(w, &source, &target, Some(m.mode() & 0o7777))?;
+        } else { return Err(std::io::Error::other("projectio-source-not-regular")); }
+    }
+    let dir = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(target_dir)?;
+    dir.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
+    dir.sync_all()?;
+    let opened = dir.metadata()?;
+    if !fs::symlink_metadata(target_dir).is_ok_and(|m| m.is_dir() && m.mode() & 0o7777 == metadata.mode() & 0o7777 && file_identity(&m) == file_identity(&opened)) { return Err(act_mismatch("tree", target_dir)); }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_exchange_files(_auth: &crate::atoms::comparison::ActionAuthorization, candidate: &Path, target: &Path) -> std::io::Result<()> {
+    check_act_path(candidate)?; check_act_path(target)?;
+    let a = fs::symlink_metadata(candidate)?; let b = fs::symlink_metadata(target)?;
+    if !a.is_file() || !b.is_file() { return Err(std::io::Error::other("projectio-exchange-not-regular")); }
+    renameat2_raw(candidate, target, libc::RENAME_EXCHANGE)?;
+    crate::atoms::touch::record_lane(target, "known-good");
+    if !fs::symlink_metadata(candidate).is_ok_and(|m| m.is_file() && file_identity(&m) == file_identity(&b))
+        || !fs::symlink_metadata(target).is_ok_and(|m| m.is_file() && file_identity(&m) == file_identity(&a)) { return Err(act_mismatch("exchange", target)); }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_remove_if_current(_auth: &crate::atoms::comparison::ActionAuthorization, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> {
+    remove_if_claimed(path, expected, scratch, "known-good")
+}
+
+#[allow(dead_code)]
+fn xattr_read(path: &std::ffi::CStr, name: &std::ffi::CStr) -> std::io::Result<Option<Vec<u8>>> {
+    loop {
+        let size = unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
+        if size < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ENODATA) { return Ok(None); }
+            return Err(e);
+        }
+        let mut value = vec![0u8; size as usize];
+        let n = unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len()) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ERANGE) { continue; }
+            if e.raw_os_error() == Some(libc::ENODATA) { return Ok(None); }
+            return Err(e);
+        }
+        value.truncate(n as usize); return Ok(Some(value));
+    }
+}
+
+#[allow(dead_code)]
+fn xattr_change(path: &Path, name: &std::ffi::OsStr, value: Option<&[u8]>) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    check_act_path(path)?;
+    let p = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let n = std::ffi::CString::new(name.as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let before = xattr_read(&p, &n)?;
+    if before.as_deref() == value { return Ok(()); }
+    let rc = match value {
+        Some(v) => unsafe { libc::lsetxattr(p.as_ptr(), n.as_ptr(), v.as_ptr().cast(), v.len(), 0) },
+        None => unsafe { libc::lremovexattr(p.as_ptr(), n.as_ptr()) },
+    };
+    if rc != 0 { return Err(std::io::Error::last_os_error()); }
+    crate::atoms::touch::record_lane(path, "known-good");
+    if xattr_read(&p, &n)?.as_deref() != value { return Err(act_mismatch("xattr", path)); }
+    Ok(())
+}
+#[allow(dead_code)]
+pub(crate) fn act_xattr_set(_auth: &crate::atoms::comparison::ActionAuthorization, path: &Path, name: &std::ffi::OsStr, value: &[u8]) -> std::io::Result<()> { xattr_change(path, name, Some(value)) }
+#[allow(dead_code)]
+pub(crate) fn act_xattr_remove(_auth: &crate::atoms::comparison::ActionAuthorization, path: &Path, name: &std::ffi::OsStr) -> std::io::Result<()> { xattr_change(path, name, None) }
+
+#[allow(dead_code)]
+pub(crate) fn act_sync<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> {
+    w.into().hold(); check_act_path(path)?;
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path)?;
+    let before = file.metadata()?;
+    if !before.is_file() && !before.is_dir() { return Err(std::io::Error::other("projectio-sync-not-file-or-directory")); }
+    file.sync_all()?;
+    if !fs::symlink_metadata(path).is_ok_and(|m| file_identity(&m) == file_identity(&before)) { return Err(act_mismatch("sync", path)); }
+    Ok(())
+}
 
 /// Replace engine-maintained state through the Projectio membrane.
 pub(crate) fn write_engine_state(
