@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -52,11 +52,14 @@ fn extract_archive_member(archive: &[u8], member: &str) -> Result<Vec<u8>, Strin
     let path = std::env::temp_dir().join(format!(
         "harmonia-external-archive-{}", crate::atoms::ask::fetch_artifact::unique_temp_suffix()
     ));
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)
-        .map_err(|error| format!("external-release-archive-stage-failed: {error}"))?;
+    let witness = crate::atoms::projectio::engine_state_witness();
+    if let Err(error) = crate::atoms::projectio::act_scratch_write_new(&witness, &path, archive, 0o644) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = crate::atoms::projectio::act_scratch_remove(&witness, &path);
+        }
+        return Err(format!("external-release-archive-stage-failed: {error}"));
+    }
     let result = (|| {
-        file.write_all(archive).map_err(|error| format!("external-release-archive-stage-failed: {error}"))?;
-        drop(file);
         let list = bounded_unzip(&["-Z1", path.to_str().ok_or("external-release-stage-path-invalid")?], 1024 * 1024)?;
         let list = std::str::from_utf8(&list).map_err(|_| "external-release-member-list-invalid")?;
         if list.lines().filter(|line| *line == member).count() != 1 {
@@ -66,7 +69,7 @@ fn extract_archive_member(archive: &[u8], member: &str) -> Result<Vec<u8>, Strin
         if bytes.is_empty() { return Err("external-release-member-empty".into()); }
         Ok(bytes)
     })();
-    let _ = fs::remove_file(&path);
+    let _ = crate::atoms::projectio::act_scratch_remove(&witness, &path);
     result
 }
 
@@ -132,11 +135,14 @@ fn safe_nested_member(member: &str) -> bool {
 fn extract_pinned_tar(archive: &[u8], member: &str) -> Result<Vec<u8>, String> {
     if !safe_nested_member(member) { return Err("pinned-release-member-invalid".into()); }
     let path = std::env::temp_dir().join(format!("harmonia-pinned-archive-{}", crate::atoms::ask::fetch_artifact::unique_temp_suffix()));
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)
-        .map_err(|e| format!("pinned-release-archive-stage-failed: {e}"))?;
+    let witness = crate::atoms::projectio::engine_state_witness();
+    if let Err(error) = crate::atoms::projectio::act_scratch_write_new(&witness, &path, archive, 0o644) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = crate::atoms::projectio::act_scratch_remove(&witness, &path);
+        }
+        return Err(format!("pinned-release-archive-stage-failed: {error}"));
+    }
     let result = (|| {
-        file.write_all(archive).map_err(|e| format!("pinned-release-archive-stage-failed: {e}"))?;
-        drop(file);
         let archive_path = path.to_str().ok_or("pinned-release-stage-path-invalid")?;
         let list = bounded_tar(&["--list", "--gzip", "--file", archive_path, "--quoting-style=escape"], 1024 * 1024)?;
         let list = std::str::from_utf8(&list).map_err(|_| "pinned-release-member-list-invalid")?;
@@ -152,7 +158,7 @@ fn extract_pinned_tar(archive: &[u8], member: &str) -> Result<Vec<u8>, String> {
         if bytes.is_empty() { return Err("pinned-release-member-empty".into()); }
         Ok(bytes)
     })();
-    let _ = fs::remove_file(&path);
+    let _ = crate::atoms::projectio::act_scratch_remove(&witness, &path);
     result
 }
 

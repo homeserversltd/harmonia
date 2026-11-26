@@ -1,8 +1,9 @@
 use crate::atoms::ask::fetch_artifact::Download;
 use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::InvocationKey;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use crate::atoms::projectio;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,12 +25,13 @@ impl ReleaseStagingRoot {
     }
 }
 
-fn atomic_install(destination: &Path, bytes: &[u8], staging: Option<&ReleaseStagingRoot>) -> Result<(), String> {
+fn atomic_install(authorization: &ActionAuthorization, destination: &Path, bytes: &[u8], staging: Option<&ReleaseStagingRoot>, scratch_destination: bool) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or("fetch-artifact-destination-parent-missing")?;
     let absent = || format!("fetch-artifact-destination-parent-absent {}; birth places the parent", parent.display());
     let within_staging = staging.and_then(|root| parent.strip_prefix(&root.root).ok().map(|relative| (root, relative)));
+    let is_scratch = scratch_destination || within_staging.is_some();
     if let Some((staging, relative)) = within_staging {
         // Inspect existing as well as absent components: exists() follows
         // symlinks and must not turn a Release seat into an outside write.
@@ -45,13 +47,25 @@ fn atomic_install(destination: &Path, bytes: &[u8], staging: Option<&ReleaseStag
                 Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {},
                 Ok(_) => return Err(format!("fetch-artifact-staging-path-invalid {}", path.display())),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    fs::create_dir(&path).map_err(|e| format!("fetch-artifact-staging-create-failed {}: {e}", path.display()))?;
+                    projectio::act_scratch_make_dir(authorization, &path).map_err(|e| format!("fetch-artifact-staging-create-failed {}: {e}", path.display()))?;
                 }
                 Err(err) => return Err(format!("fetch-artifact-staging-stat-failed {}: {err}", path.display())),
             }
         }
     } else if !parent.exists() {
         return Err(absent());
+    }
+    if !is_scratch {
+        let metadata = match fs::symlink_metadata(destination) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!("fetch-artifact-destination-absent {}; birth places the destination", destination.display()));
+            }
+            Err(error) => return Err(format!("fetch-artifact-destination-stat-failed {}: {error}", destination.display())),
+        };
+        return projectio::act_strike(authorization, destination, bytes, 0o755, metadata.uid(), metadata.gid())
+            .map(|_| ())
+            .map_err(|error| format!("fetch-artifact-rename-failed: {error}"));
     }
     let name = destination
         .file_name()
@@ -63,32 +77,15 @@ fn atomic_install(destination: &Path, bytes: &[u8], staging: Option<&ReleaseStag
         TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|e| format!("fetch-artifact-temp-create-failed: {e}"))?;
-        file.write_all(bytes)
+        projectio::act_scratch_write_new(authorization, &temporary, bytes, 0o755)
             .map_err(|e| format!("fetch-artifact-temp-write-failed: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))
-                .map_err(|e| format!("fetch-artifact-chmod-failed: {e}"))?;
-        }
-        file.sync_all()
-            .map_err(|e| format!("fetch-artifact-temp-sync-failed: {e}"))?;
-        fs::rename(&temporary, destination)
+        projectio::act_rename(authorization, &temporary, destination, true, is_scratch)
             .map_err(|e| format!("fetch-artifact-rename-failed: {e}"))?;
-        OpenOptions::new()
-            .read(true)
-            .open(parent)
-            .map_err(|e| format!("fetch-artifact-parent-open-failed: {e}"))?
-            .sync_all()
+        projectio::act_sync(authorization, parent)
             .map_err(|e| format!("fetch-artifact-parent-sync-failed: {e}"))
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        let _ = projectio::act_scratch_remove(authorization, &temporary);
     }
     result
 }
@@ -99,7 +96,7 @@ pub(crate) fn install(
     destination: &Path,
     download: &Download,
 ) -> Result<(), String> {
-    install_release_staging(authorization, invocation, destination, download, None)
+    install_release_staging(authorization, invocation, destination, download, None, false)
 }
 
 pub(crate) fn install_release_staging(
@@ -108,11 +105,12 @@ pub(crate) fn install_release_staging(
     destination: &Path,
     download: &Download,
     staging: Option<&ReleaseStagingRoot>,
+    scratch_destination: bool,
 ) -> Result<(), String> {
     // These unforgeable capabilities are the permission boundary: only the comparison gate can supply them to this mutating atom.
-    let _ = (authorization, invocation);
+    let _ = invocation;
     verify_download(download)?;
-    atomic_install(destination, &download.bytes, staging)
+    atomic_install(authorization, destination, &download.bytes, staging, scratch_destination)
 }
 
 fn verify_download(download: &Download) -> Result<(), String> {

@@ -1,5 +1,6 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
 use crate::atoms::git_artifact::{ReleaseAssets, ReleaseRequest};
+use crate::atoms::projectio;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -27,7 +28,15 @@ pub(crate) fn memo_release_identity<T>(
     let mut memo = RELEASE_IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((status, body)) = memo.get(url) {
-        let write_error = if *status == 200 { fs::write(destination, body).err() } else { None };
+        let write_error = if *status == 200 {
+            // The caller can reuse a scratch destination; stage then replace it.
+            let witness = projectio::engine_state_witness();
+            let temp = destination.with_extension(format!("memo-{}", unique_temp_suffix()));
+            let result = projectio::act_scratch_write_new(&witness, &temp, body, 0o644)
+                .and_then(|_| projectio::engine_rename(&witness, &temp, destination, true, true));
+            if result.is_err() { let _ = projectio::act_scratch_remove(&witness, &temp); }
+            result.err()
+        } else { None };
         return Ok(replay(*status, write_error));
     }
     let (result, status) = fetch()?;
@@ -171,7 +180,7 @@ pub(crate) fn fetch_external_archive(
         }
         Ok((tag.to_string(), bytes))
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -207,7 +216,7 @@ pub(crate) fn fetch_pinned_external_archive(
         let url = release_asset_url(&metadata, tag, asset_name)?;
         download_release_asset(&request, &url, asset_name, true)
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -297,7 +306,7 @@ fn lookup_release_metadata_with_tag_mode(
     } else {
         release_metadata_url_for_request(&api, &r.owner, &r.repo, tag)
     };
-    fs::create_dir_all(&r.cache_dir).map_err(|e| format!("release-cache-create-failed: {e}"))?;
+    projectio::act_scratch_make_dir(&projectio::engine_state_witness(), &r.cache_dir).map_err(|e| format!("release-cache-create-failed: {e}"))?;
     let path = r
         .cache_dir
         .join(format!(".metadata-{}", unique_temp_suffix()));
@@ -309,15 +318,15 @@ fn lookup_release_metadata_with_tag_mode(
     args.extend(["-w".into(), "%{http_code}".into()]);
     let result = memo_curl(&url, &path, &args, r.credential_for_url(&url), inspection_bounds)?;
     if result.stdout.trim() == "404" {
-        let _ = fs::remove_file(&path);
+        let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
         return Ok(None);
     }
     if inspection_bounds && result.code == 63 {
-        let _ = fs::remove_file(&path);
+        let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
         return Err(INSPECTION_OVERSIZE_BLOCKER.into());
     }
     if !result.ok {
-        let _ = fs::remove_file(&path);
+        let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
         let error = format!("release-metadata-fetch-failed: {}", result.stderr);
         let error_with_status = format!("{error} http_status={}", result.stdout.trim());
         return Err(if r.credential_for_url(&url).is_none() {
@@ -332,7 +341,7 @@ fn lookup_release_metadata_with_tag_mode(
     }
     let text =
         fs::read_to_string(&path).map_err(|e| format!("release-metadata-read-failed: {e}"))?;
-    let _ = fs::remove_file(&path);
+    let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("release-metadata-malformed: {e}"))?;
     let target_commitish = value
@@ -420,11 +429,11 @@ fn download_release_asset_with_role(
         run_curl(&args, r.credential_for_url(url))?
     };
     if inspection_bounds && x.code == 63 {
-        let _ = fs::remove_file(&p);
+        let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &p);
         return Err(INSPECTION_OVERSIZE_BLOCKER.into());
     }
     if !x.ok {
-        let _ = fs::remove_file(&p);
+        let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &p);
         let error = format!("release-asset-fetch-failed: {}", x.stderr);
         return Err(if r.credential_for_url(&url).is_none() {
             crate::atoms::ask::fetch_artifact::normalize_auth_required_error(&error, url)
@@ -434,7 +443,7 @@ fn download_release_asset_with_role(
         });
     }
     let b = fs::read(&p).map_err(|e| format!("release-asset-read-failed: {e}"))?;
-    let _ = fs::remove_file(&p);
+    let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &p);
     Ok(b)
 }
 
@@ -544,7 +553,7 @@ pub(crate) fn read_pinned_member_release_flag(
             flag,
         }])
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result.map_err(|error| {
         if error.contains(" url=") {
             error
@@ -705,7 +714,7 @@ pub(crate) fn read_member_release_flags(
         }
         Ok(candidates)
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     let target_url = if provider == "github" {
         format!(
             "{}/repos/{}/{}/releases/latest",
@@ -769,7 +778,7 @@ pub(crate) fn fetch_release_asset_set_for_inspection(
     }
     let observation = observation.filter(|seen| selected_tag == seen.tag);
     if observation.is_some() {
-        fs::create_dir_all(&request.cache_dir)
+        projectio::act_scratch_make_dir(&projectio::engine_state_witness(), &request.cache_dir)
             .map_err(|error| format!("release-cache-create-failed: {error}"))?;
     }
     let metadata = if let Some(seen) = observation { seen.metadata.clone() } else {
@@ -942,8 +951,10 @@ pub(crate) fn fetch_release_asset(
         Ok(v) => v,
         Err(e) => return Ok(miss(e)),
     };
-    if let Err(e) = fs::write(&temp, bytes).and_then(|_| fs::rename(&temp, &destination)) {
-        let _ = fs::remove_file(&temp);
+    let witness = projectio::engine_state_witness();
+    if let Err(e) = projectio::act_scratch_write_new(&witness, &temp, &bytes, 0o644)
+        .and_then(|_| projectio::engine_rename(&witness, &temp, &destination, true, true)) {
+        let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &temp);
         return Ok(miss(format!("release-asset-promote-failed: {e}")));
     }
     Ok(crate::CmdResult {
@@ -1515,7 +1526,7 @@ fn curl_with_resolved_credential(
         };
     let stderr_path = destination.with_extension("stderr");
     let result = curl_to_file(url, destination, &stderr_path, credential.as_deref());
-    let _ = fs::remove_file(&stderr_path);
+    let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &stderr_path);
     result.map_err(|error| normalize_auth_required_error(&error, url).unwrap_or(error))
 }
 
@@ -1582,7 +1593,7 @@ fn download_with_credential_source(
         "harmonia-fetch-{source_sha}-{}",
         unique_temp_suffix()
     ));
-    fs::create_dir_all(&directory)
+    projectio::act_scratch_make_dir(&projectio::engine_state_witness(), &directory)
         .map_err(|e| format!("fetch-artifact-temp-create-failed: {e}"))?;
     let result = (|| {
         let manifest_path = directory.join("manifest.json");
@@ -1620,7 +1631,7 @@ fn download_with_credential_source(
             identity: "liveness-marker".into(),
         })
     })();
-    let _ = fs::remove_dir_all(&directory);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &directory);
     result
 }
 fn release_source_revision(
@@ -1769,7 +1780,7 @@ pub(crate) fn inspect_release(
             || !reference.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'/' | b'-'))) {
             return Err("xenia-release-ref-invalid".into());
         }
-        fs::create_dir_all(&request.cache_dir).map_err(|error| format!("release-cache-create-failed: {error}"))?;
+        projectio::act_scratch_make_dir(&projectio::engine_state_witness(), &request.cache_dir).map_err(|error| format!("release-cache-create-failed: {error}"))?;
         let mut candidate_requests = Vec::new();
         for url in candidates {
             let (_, candidate_owner, candidate_repo) = external_release_candidate_shape("github-release", url, asset)?;
@@ -1816,7 +1827,7 @@ pub(crate) fn inspect_release(
             page += 1;
         }
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -1860,7 +1871,7 @@ pub(crate) fn download_xenia_release(
             sha256: inspected.digest, built_at: tag.into(), pipeline_url: metadata.url,
             env_sha: None, rustc_version: None }, bytes, identity: identity.into() })
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -1963,7 +1974,7 @@ pub(crate) fn download_engine_release(
             identity: "engine-release".into(),
         }))
     })();
-    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     match result {
         Err(error) if !credential_scope_found => {
             let metadata_url = release_metadata_url(api_root, release_repo, source_sha);
@@ -2019,7 +2030,7 @@ pub(crate) fn probe_release_digest(
         }
         Ok(Some(digest.to_owned()))
     })();
-    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -2095,7 +2106,7 @@ pub(crate) fn download_release(
             identity: identity.into(),
         }))
     })();
-    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     match result {
         Err(error) if !credential_scope_found => {
             let metadata_url = release_metadata_url(api_root, release_repo, &tag);
@@ -2173,7 +2184,7 @@ fn fetch_exact_pinned_asset_set(
     }
     let observation = observation.filter(|seen| seen.tag == tag);
     if observation.is_some() {
-        fs::create_dir_all(&request.cache_dir)
+        projectio::act_scratch_make_dir(&projectio::engine_state_witness(), &request.cache_dir)
             .map_err(|error| format!("release-cache-create-failed: {error}"))?;
     }
     let metadata = if let Some(seen) = observation { seen.metadata.clone() } else {
@@ -2347,7 +2358,7 @@ pub(crate) fn download_pinned_engine_release_for_provider(
         )?;
         Ok(Some(download))
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -2442,7 +2453,7 @@ pub(crate) fn observe_module_release_identity(
         Ok(Some(ReleaseObservation { source_sha, digest, tag, metadata, flag,
             sidecar_name: sidecar_name.to_owned(), sidecar, releases: observed_releases }))
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -2587,7 +2598,7 @@ pub(crate) fn download_latest_engine_release_for_assets(
         }
         Ok(None)
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     match result {
         Err(error) if !credential_scope_found => {
             let metadata_url = format!(
@@ -2689,7 +2700,7 @@ pub(crate) fn download_github_latest_engine_release_for_assets(
         )
         .map(Some)
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result
 }
 
@@ -2965,7 +2976,7 @@ pub(crate) fn download_member_release_binary(
         }
         Ok(Some(download))
     })();
-    let _ = fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     result.map_err(|error| {
         let target_url = if provider == "github" {
             format!(
@@ -3217,7 +3228,7 @@ fn download_release_with_pin(
         }
         Ok(None)
     })();
-    let _ = std::fs::remove_dir_all(&request.cache_dir);
+    let _ = projectio::act_scratch_remove_tree(&projectio::engine_state_witness(), &request.cache_dir);
     match result {
         Err(error) if !credential_scope_found => {
             let metadata_url = format!(
@@ -3308,7 +3319,7 @@ fn lookup_published_releases(request: &ReleaseRequest) -> Result<Vec<PublishedRe
         "{api}/repos/{}/{}/releases",
         request.owner, request.repo
     );
-    fs::create_dir_all(&request.cache_dir)
+    projectio::act_scratch_make_dir(&projectio::engine_state_witness(), &request.cache_dir)
         .map_err(|error| format!("release-cache-create-failed: {error}"))?;
     let mut releases = Vec::new();
     for page in 1..=RELEASE_LIST_MAX_PAGES {
@@ -3321,11 +3332,11 @@ fn lookup_published_releases(request: &ReleaseRequest) -> Result<Vec<PublishedRe
         args.extend(["-w".into(), "%{http_code}".into()]);
         let response = memo_curl(&page_url, &path, &args, request.credential_for_url(&page_url), true)?;
         if response.code == 63 {
-            let _ = fs::remove_file(&path);
+            let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
             return Err(INSPECTION_OVERSIZE_BLOCKER.into());
         }
         if !response.ok {
-            let _ = fs::remove_file(&path);
+            let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
             let error = format!(
                 "release-list-fetch-failed: {} http_status={}",
                 response.stderr,
@@ -3339,7 +3350,7 @@ fn lookup_published_releases(request: &ReleaseRequest) -> Result<Vec<PublishedRe
         }
         let bytes = fs::read(&path)
             .map_err(|error| format!("release-list-read-failed: {error}"))?;
-        let _ = fs::remove_file(&path);
+        let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
         let page_releases: Vec<Value> = serde_json::from_slice(&bytes)
             .map_err(|error| format!("release-list-malformed: {error}"))?;
         if page_releases.len() > RELEASE_LIST_PAGE_SIZE {

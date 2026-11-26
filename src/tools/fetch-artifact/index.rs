@@ -11,6 +11,7 @@ pub(crate) struct FetchArtifactExecution {
 pub(crate) struct XeniaStage {
     dir: std::path::PathBuf,
     cleanup: bool,
+    witness: crate::atoms::projectio::EngineStateWitness,
 }
 
 impl XeniaStage {
@@ -18,14 +19,15 @@ impl XeniaStage {
         let dir = std::env::temp_dir().join(format!("harmonia-xenia-stage-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default().as_nanos()));
-        std::fs::create_dir(&dir).map_err(|e| format!("xenia-stage-create-failed: {e}"))?;
-        Ok(Self { dir, cleanup: true })
+        let witness = crate::atoms::projectio::engine_state_witness();
+        crate::atoms::projectio::act_scratch_make_dir_new(&witness, &dir).map_err(|e| format!("xenia-stage-create-failed: {e}"))?;
+        Ok(Self { dir, cleanup: true, witness })
     }
     pub(crate) fn from_artifact(path: &Path) -> Option<Self> {
         let dir = path.parent()?;
         if path.file_name()? != "artifact" || dir.parent()? != std::env::temp_dir()
             || !dir.file_name()?.to_str()?.starts_with("harmonia-xenia-stage-") { return None; }
-        Some(Self { dir: dir.to_path_buf(), cleanup: true })
+        Some(Self { dir: dir.to_path_buf(), cleanup: true, witness: crate::atoms::projectio::engine_state_witness() })
     }
     fn artifact(&self) -> std::path::PathBuf { self.dir.join("artifact") }
     fn handoff(&mut self) { self.cleanup = false; }
@@ -34,8 +36,8 @@ impl XeniaStage {
 impl Drop for XeniaStage {
     fn drop(&mut self) {
         if self.cleanup {
-            let _ = std::fs::remove_file(self.artifact());
-            let _ = std::fs::remove_dir(&self.dir);
+            let _ = crate::atoms::projectio::act_scratch_remove(&self.witness, &self.artifact());
+            let _ = crate::atoms::projectio::act_scratch_remove_dir(&self.witness, &self.dir);
         }
     }
 }
@@ -410,7 +412,7 @@ fn execute_with_module_provenance(
                 artifact_path: installed_binary.to_path_buf(),
             });
         }
-        std::fs::create_dir_all(receipt_dir)
+        crate::atoms::projectio::engine_make_dir(&crate::atoms::projectio::engine_state_witness(), receipt_dir)
             .map_err(|error| format!("fetch-artifact-receipt-dir-create: {error}"))?;
         crate::write_json(
             &receipt_dir.join("module-release-candidates.json"),
@@ -868,6 +870,7 @@ fn execute_with_module_provenance(
                 destination,
                 &download,
                 release_staging,
+                xenia_artifact,
             )
         },
     );
