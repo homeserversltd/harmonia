@@ -86,9 +86,7 @@ pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, Engine
         })?;
     }
     loop {
-        static LOCK_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let sequence = LOCK_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let contents = format!("pid={}\nsequence={sequence}\n", std::process::id()).into_bytes();
+        let contents = format!("pid={}\n", std::process::id()).into_bytes();
         match crate::atoms::projectio::engine_create_new(&witness, &path, &contents, 0o644) {
             Ok(()) => {
                 return Ok(EngineRunLockGuard { path, contents });
