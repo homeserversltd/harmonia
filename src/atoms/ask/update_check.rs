@@ -608,8 +608,6 @@ struct PacmanScratch(PathBuf);
 
 impl PacmanScratch {
     fn create() -> Result<Self, String> {
-        use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::fs::PermissionsExt;
         let conf = crate::atoms::package::pacman_conf_program();
         let result = crate::atoms::ask::read_only_command_with_timeout(&conf, &["DBPath".into()], CHECK_TIMEOUT);
         let db = Path::new(result.stdout.trim());
@@ -626,23 +624,20 @@ impl PacmanScratch {
         if parent != Path::new("/tmp") && parent != Path::new("/var/tmp") {
             return Err("update-check-index-refresh-failed".into());
         }
-        let template = parent.join("harmonia-check-XXXXXX");
-        let mut bytes = CString::new(template.as_os_str().as_bytes()).map_err(|_| "update-check-index-refresh-failed")?.into_bytes_with_nul();
-        if unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null() {
-            return Err("update-check-index-refresh-failed".into());
-        }
-        use std::os::unix::ffi::OsStringExt;
-        bytes.pop();
-        let scratch = Self(PathBuf::from(std::ffi::OsString::from_vec(bytes)));
-        std::fs::set_permissions(&scratch.0, std::fs::Permissions::from_mode(0o755))
+        let witness = crate::atoms::projectio::engine_state_witness();
+        let scratch = Self(crate::atoms::projectio::act_scratch_temp_dir(
+            &witness, &parent, std::ffi::OsStr::new("harmonia-check-"),
+        ).map_err(|_| "update-check-index-refresh-failed")?);
+        crate::atoms::projectio::act_scratch_mode(&witness, &scratch.0, 0o755)
             .map_err(|_| "update-check-index-refresh-failed")?;
-        std::os::unix::fs::symlink(db.join("local"), scratch.0.join("local"))
+        crate::atoms::projectio::act_scratch_symlink(&witness, &db.join("local"), &scratch.0.join("local"))
             .map_err(|_| "update-check-index-refresh-failed")?;
         Ok(scratch)
     }
 
     fn remove(&mut self) -> std::io::Result<()> {
-        std::fs::remove_dir_all(&self.0)?;
+        let witness = crate::atoms::projectio::engine_state_witness();
+        crate::atoms::projectio::act_scratch_remove_tree(&witness, &self.0)?;
         self.0.clear();
         Ok(())
     }
@@ -650,7 +645,10 @@ impl PacmanScratch {
 
 impl Drop for PacmanScratch {
     fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() { let _ = std::fs::remove_dir_all(&self.0); }
+        if !self.0.as_os_str().is_empty() {
+            let witness = crate::atoms::projectio::engine_state_witness();
+            let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &self.0);
+        }
     }
 }
 

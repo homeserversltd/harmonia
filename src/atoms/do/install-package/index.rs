@@ -1,4 +1,5 @@
 use crate::atoms::command;
+use crate::atoms::projectio;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::CommandObservation;
 use crate::atoms::package::{
@@ -85,7 +86,7 @@ pub(crate) fn reclaim_pacman_database_lock(
     program: &str,
     apply: bool,
 ) -> Result<(), String> {
-    let _capability = (authorization, invocation);
+    let _capability = invocation;
     let resolved_program = resolved_pacman_program(program);
     let lock_path = pacman_database_lock_path(program);
     let lock_present = lock_path.exists();
@@ -101,7 +102,7 @@ pub(crate) fn reclaim_pacman_database_lock(
         if state_changed_before_action || second_holder {
             None
         } else {
-            fs::remove_file(&lock_path).err()
+            projectio::act_remove(authorization, &lock_path, false).err()
         }
     } else {
         None
@@ -277,7 +278,6 @@ use serde::Serialize;
 use std::env;
 use std::ffi::CString;
 use std::io::{self, Read, Seek};
-use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -975,23 +975,24 @@ fn observe_apt_check(
     pins: &std::collections::BTreeMap<String, String>,
 ) -> UpdateObservation {
     let d = update_sandbox(r);
+    let witness = projectio::engine_state_witness();
     let mut created = false;
     let setup = (|| -> io::Result<Vec<String>> {
-        fs::create_dir_all(r)?;
-        fs::create_dir(&d)?;
+        projectio::engine_make_dir(&witness, r)?;
+        projectio::act_scratch_make_dir_new(&witness, &d)?;
         created = true;
         let root = fs::canonicalize(&d)?;
         for relative in ["lists/partial", "cache/archives/partial", "state", "log"] {
-            fs::create_dir_all(root.join(relative))?;
+            projectio::act_scratch_make_dir(&witness, &root.join(relative))?;
         }
         // Host update hooks can mutate the live package state even when lists
         // are private. Keep their execution outside this read-only check.
         let config = root.join("apt.conf");
-        fs::write(&config, concat!(
+        projectio::act_scratch_write_new(&witness, &config, concat!(
             "#clear APT::Update::Pre-Invoke;\n",
             "#clear APT::Update::Post-Invoke;\n",
             "#clear APT::Update::Post-Invoke-Success;\n",
-        ))?;
+        ).as_bytes(), 0o644)?;
         let mut options = vec!["-c".into(), config.to_string_lossy().into_owned()];
         for (key, path) in [
             ("Dir::State", root.join("state")),
@@ -1035,7 +1036,7 @@ fn observe_apt_check(
         }
     };
     let cleanup_failure = if created {
-        fs::remove_dir_all(&d).err().map(|error| error.to_string())
+        projectio::act_scratch_remove_tree(&witness, &d).err().map(|error| error.to_string())
     } else {
         None
     };
@@ -1070,21 +1071,22 @@ fn observe_update(
     match b {
         PackageBackend::Pacman => {
             let d = update_sandbox(r);
-            let setup = fs::create_dir_all(&d).and_then(|_| {
+            let witness = projectio::engine_state_witness();
+            let setup = projectio::engine_make_dir(&witness, r).and_then(|_| projectio::act_scratch_make_dir(&witness, &d)).and_then(|_| {
                 if unsafe { libc::geteuid() } == 0 {
-                    fs::set_permissions(&d, fs::Permissions::from_mode(0o755))?;
+                    projectio::act_scratch_mode(&witness, &d, 0o755)?;
                     let name = CString::new("alpm").map_err(io::Error::other)?;
                     let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
                     if passwd.is_null() {
                         return Err(io::Error::other("pacman sandbox alpm user lookup failed"));
                     }
-                    std::os::unix::fs::chown(
-                        &d,
-                        Some(unsafe { (*passwd).pw_uid } as u32),
-                        Some(unsafe { (*passwd).pw_gid } as u32),
+                    projectio::act_scratch_chown(
+                        &witness, &d,
+                        unsafe { (*passwd).pw_uid } as u32,
+                        unsafe { (*passwd).pw_gid } as u32,
                     )?;
                 }
-                std::os::unix::fs::symlink("/var/lib/pacman/local", d.join("local"))
+                projectio::act_scratch_symlink(&witness, Path::new("/var/lib/pacman/local"), &d.join("local"))
             });
             let (refresh, q, mut p, ok, ignored_upgrades) = if let Err(e) = setup {
                 (
@@ -1124,7 +1126,7 @@ fn observe_update(
                     (refresh, q, p, ok, ignored)
                 }
             };
-            let cleanup = fs::remove_dir_all(&d).err().map(|e| e.to_string());
+            let cleanup = projectio::act_scratch_remove_tree(&witness, &d).err().map(|e| e.to_string());
             let probe_ok = ok && cleanup.is_none();
             p.retain(|item| !pins.contains_key(&item.name));
             UpdateObservation {
@@ -1272,6 +1274,7 @@ pub(crate) fn run_apt_command(
     timeout_secs: u64,
     pins: &std::collections::BTreeMap<String, String>,
 ) -> CmdResult {
+    let witness = projectio::engine_state_witness();
     let pref = receipt_dir.join(format!(
         ".harmonia-apt-preferences-{name}-{}",
         UPDATE_SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -1299,7 +1302,7 @@ pub(crate) fn run_apt_command(
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     let result = command::capture_with_timeout(program, &refs, timeout_secs);
     if created {
-        if let Err(error) = fs::remove_file(&pref) {
+        if let Err(error) = projectio::act_scratch_remove(&witness, &pref) {
             return synthetic(&format!(
                 "apt preferences cleanup failed: {error}; apt result: ok={} code={}",
                 result.ok, result.code
