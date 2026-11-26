@@ -1260,6 +1260,9 @@ pub(crate) fn act_at_make_dir<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name
     let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
     if fd < 0 { return Err(std::io::Error::last_os_error()); }
     let file = unsafe { File::from_raw_fd(fd) };
+    if file.metadata()?.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!("projectio-made-directory-substituted {}", record.unwrap_or_else(|| Path::new("<fd>")).display())));
+    }
     if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
     let actual = file.metadata()?;
     let named = stat_at_nofollow(dir, &name)?;
@@ -1328,6 +1331,9 @@ pub(crate) fn act_fd_link<'a>(w: impl Into<PenWitness<'a>>, file: &File, to_dir:
 pub(crate) fn act_scratch_make_dir_new_mode<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, mode: u32) -> std::io::Result<()> {
     w.into().hold(); check_act_path(path)?; fs::create_dir(path)?;
     let dir = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path)?;
+    if dir.metadata()?.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!("projectio-made-directory-substituted {}", path.display())));
+    }
     if unsafe { libc::fchmod(dir.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
     let opened = dir.metadata()?; let named = fs::symlink_metadata(path)?;
     if !opened.is_dir() || opened.mode() & 0o7777 != mode & 0o7777 || file_identity(&opened) != file_identity(&named) { return Err(act_mismatch("scratch-make-dir", path)); }
