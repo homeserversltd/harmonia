@@ -9,7 +9,6 @@ use crate::atoms::git_artifact::{
     SourceCandidate, SourceCandidateKind, SourceOutcome, SourcePlan, SourceReceipt,
 };
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,12 +48,12 @@ pub(crate) fn preserved_non_git_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn apply(
-    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
     _invocation: &crate::atoms::r#do::InvocationKey,
     request: &Request,
     observation: &crate::atoms::ask::pull_repo::PullRepoObservation,
 ) -> Outcome {
-    let sync = sync_repo(request, observation);
+    let sync = sync_repo(authorization, request, observation);
     Outcome {
         ok: sync.command.ok,
         changed: sync.changed,
@@ -114,7 +113,7 @@ fn clobber_dirty_destination(
     ))
 }
 
-fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::PullRepoObservation) -> SyncResult {
+fn sync_repo(authorization: &crate::atoms::comparison::ActionAuthorization, request: &Request, observation: &crate::atoms::ask::pull_repo::PullRepoObservation) -> SyncResult {
     let mut initial_transcript = vec![
         format!("destination_type={}", observation.destination_kind),
         format!("requested_ref={}", request.branch),
@@ -131,7 +130,7 @@ fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::Pull
             changed: false,
         };
     }
-    let preparation = match prepare_bearer_writable_path(request) {
+    let preparation = match prepare_bearer_writable_path(authorization, request) {
         Ok(preparation) => preparation,
         Err(stderr) => {
             return SyncResult {
@@ -166,7 +165,7 @@ fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::Pull
         };
         if request.path.exists() {
             let preserved = preserved_non_git_path(&request.path);
-            match fs::rename(&request.path, &preserved) {
+            match crate::atoms::projectio::act_rename(authorization, &request.path, &preserved, false, false) {
                 Ok(()) => transcript.push(format!(
                     "non_git_existing_path_preserved={}",
                     preserved.display()
@@ -370,12 +369,12 @@ fn sync_repo(request: &Request, observation: &crate::atoms::ask::pull_repo::Pull
     }
 }
 
-fn prepare_bearer_writable_path(request: &Request) -> Result<BearerPathPreparation, String> {
+fn prepare_bearer_writable_path(authorization: &crate::atoms::comparison::ActionAuthorization, request: &Request) -> Result<BearerPathPreparation, String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(BearerPathPreparation::default());
     }
     let (uid, gid) = bearer_ids(&request.bearer)?;
-    repair_tree_owned_by_bearer(&request.path, uid, gid)
+    repair_tree_owned_by_bearer(authorization, &request.path, uid, gid)
 }
 
 fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
@@ -392,6 +391,7 @@ fn bearer_ids(bearer: &str) -> Result<(u32, u32), String> {
 }
 
 fn repair_tree_owned_by_bearer(
+    authorization: &crate::atoms::comparison::ActionAuthorization,
     path: &Path,
     uid: u32,
     gid: u32,
@@ -403,7 +403,7 @@ fn repair_tree_owned_by_bearer(
         )
     })?;
     let mut preparation = BearerPathPreparation::default();
-    if let Some(transcript) = chown_new_bearer_path(path, uid, gid)? {
+    if let Some(transcript) = chown_new_bearer_path(authorization, path, uid, gid)? {
         preparation.changed = true;
         preparation.transcript.push(transcript);
     }
@@ -420,7 +420,7 @@ fn repair_tree_owned_by_bearer(
                     path.display()
                 )
             })?;
-            let child = repair_tree_owned_by_bearer(&entry.path(), uid, gid)?;
+            let child = repair_tree_owned_by_bearer(authorization, &entry.path(), uid, gid)?;
             preparation.changed |= child.changed;
             preparation.transcript.extend(child.transcript);
         }
@@ -428,7 +428,7 @@ fn repair_tree_owned_by_bearer(
     Ok(preparation)
 }
 
-fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<Option<String>, String> {
+fn chown_new_bearer_path(authorization: &crate::atoms::comparison::ActionAuthorization, path: &Path, uid: u32, gid: u32) -> Result<Option<String>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|err| {
         format!(
             "git-owner-source-path-stat-failed {}: {err}",
@@ -440,15 +440,8 @@ fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<Option<Strin
     if previous_uid == uid && previous_gid == gid {
         return Ok(None);
     }
-    let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| format!("git-owner-source-path-non-utf8 {}", path.display()))?;
-    if unsafe { libc::lchown(path_c.as_ptr(), uid, gid) } != 0 {
-        return Err(format!(
-            "git-owner-source-path-chown-failed {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
+    crate::atoms::projectio::act_owner(authorization, path, uid, gid)
+        .map_err(|error| format!("git-owner-source-path-chown-failed {}: {error}", path.display()))?;
     Ok(Some(format!(
         "git-owner-source-path-ownership-repaired path={} before={previous_uid}:{previous_gid} after={uid}:{gid}",
         path.display()
@@ -456,7 +449,7 @@ fn chown_new_bearer_path(path: &Path, uid: u32, gid: u32) -> Result<Option<Strin
 }
 
 pub(crate) fn acquire_source(
-    _authorization: &crate::atoms::comparison::ActionAuthorization,
+    authorization: &crate::atoms::comparison::ActionAuthorization,
     _invocation: &crate::atoms::r#do::InvocationKey,
     plan: &SourcePlan,
     observations: &[crate::atoms::ask::pull_repo::SourceObservation],
@@ -542,7 +535,7 @@ pub(crate) fn acquire_source(
                     }
                 }
                 if !candidate_parent_prepared {
-                    let preparation = match prepare_source_acquisition_parent(plan) {
+                    let preparation = match prepare_source_acquisition_parent(authorization, plan) {
                         Ok(preparation) => preparation,
                         Err(detail) => {
                             attempts.push(source_attempt(
@@ -682,7 +675,7 @@ pub(crate) fn acquire_source(
             }
         }
         if !candidate_parent_prepared {
-            let preparation = match prepare_source_acquisition_parent(plan) {
+            let preparation = match prepare_source_acquisition_parent(authorization, plan) {
                 Ok(preparation) => preparation,
                 Err(detail) => {
                     attempts.push(source_attempt(
@@ -722,7 +715,7 @@ pub(crate) fn acquire_source(
             None,
         );
         if !clone.ok {
-            let _ = fs::remove_dir_all(&stage);
+            let _ = crate::atoms::projectio::act_scratch_remove_tree(authorization, &stage);
             attempts.push(source_attempt(
                 index,
                 candidate,
@@ -743,7 +736,7 @@ pub(crate) fn acquire_source(
             stage.to_str(),
         );
         if !fetch.ok {
-            let _ = fs::remove_dir_all(&stage);
+            let _ = crate::atoms::projectio::act_scratch_remove_tree(authorization, &stage);
             attempts.push(source_attempt(
                 index,
                 candidate,
@@ -927,7 +920,7 @@ fn project_local_checkout(
     Ok((true, clobber_detail, stage))
 }
 
-fn prepare_source_acquisition_parent(plan: &SourcePlan) -> Result<BearerPathPreparation, String> {
+fn prepare_source_acquisition_parent(authorization: &crate::atoms::comparison::ActionAuthorization, plan: &SourcePlan) -> Result<BearerPathPreparation, String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(BearerPathPreparation::default());
     }
@@ -940,7 +933,7 @@ fn prepare_source_acquisition_parent(plan: &SourcePlan) -> Result<BearerPathPrep
     }
     let (uid, gid) = bearer_ids(&plan.bearer)?;
     let mut preparation = BearerPathPreparation::default();
-    match chown_new_bearer_path(parent, uid, gid)? {
+    match chown_new_bearer_path(authorization, parent, uid, gid)? {
         Some(change) => {
             preparation.changed = true;
             preparation.transcript.push(format!(
@@ -968,7 +961,8 @@ fn source_acquisition_detail(precondition: &[String], detail: &str) -> String {
 struct SourceStagingGuard(PathBuf);
 impl Drop for SourceStagingGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let witness = crate::atoms::projectio::engine_state_witness();
+        let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &self.0);
     }
 }
 
@@ -980,8 +974,7 @@ pub(crate) fn promote_staged_source(stage: &Path, destination: &Path) -> Result<
         return Err("unsafe-cross-filesystem-promotion-refused".into());
     }
     if !destination.exists() {
-        return fs::rename(stage, destination)
-            .map_err(|err| format!("promotion-install-failed: {err}"));
+        return Err(format!("pull-repo-destination-absent {}; birth places the destination", destination.display()));
     }
     let backup = destination.with_file_name(format!(
         "{}.source-backup-{}",
@@ -994,7 +987,8 @@ pub(crate) fn promote_staged_source(stage: &Path, destination: &Path) -> Result<
     fs::rename(destination, &backup).map_err(|err| format!("promotion-backup-failed: {err}"))?;
     match fs::rename(stage, destination) {
         Ok(()) => {
-            let _ = fs::remove_dir_all(backup);
+            let witness = crate::atoms::projectio::engine_state_witness();
+            let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &backup);
             Ok(())
         }
         Err(err) => {
@@ -1007,7 +1001,8 @@ pub(crate) fn promote_staged_source(stage: &Path, destination: &Path) -> Result<
 }
 
 pub(crate) fn discard_staged_source(stage: &Path) {
-    let _ = fs::remove_dir_all(stage);
+    let witness = crate::atoms::projectio::engine_state_witness();
+    let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, stage);
 }
 
 fn source_failure(
@@ -1131,6 +1126,9 @@ pub(crate) fn acquire_source(
             },
         };
     };
+    if !plan.destination.exists() {
+        return super::source_failure(Vec::new(), &format!("pull-repo-destination-absent {}; birth places the destination", plan.destination.display()), false);
+    }
     if let Some(parent) = plan.destination.parent() {
         if !parent.exists() {
             return super::source_failure(Vec::new(), &format!("source-acquire-destination-parent-absent {}; birth places the parent", parent.display()), false);
