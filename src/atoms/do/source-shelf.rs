@@ -3,14 +3,12 @@ use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::r#do::InvocationKey;
 use crate::atoms::{Drift, Receipt};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
+#[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn receipt(message: String) -> Receipt {
@@ -20,162 +18,6 @@ fn receipt(message: String) -> Receipt {
         drift: Drift::Current,
         message,
     }
-}
-
-pub(crate) fn mkdir_all(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    path: &Path,
-) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|e| e.to_string())?;
-    {
-        let _ = (a, i, path);
-        Ok(())
-    }
-}
-
-pub(crate) fn copy(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    source: &Path,
-    target: &Path,
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-) -> Result<(), String> {
-    let bytes = fs::read(source)
-        .map_err(|e| format!("files-source-read-failed {}: {e}", source.display()))?;
-    atomic_write(a, i, target, &bytes, mode, uid, gid)
-}
-
-pub(crate) fn rename(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    from: &Path,
-    to: &Path,
-) -> Result<(), String> {
-    crate::atoms::r#do::rename::rename(a, i, from, to)
-}
-
-pub(crate) fn copy_raw(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    source: &Path,
-    target: &Path,
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-) -> Result<(), String> {
-    copy(a, i, source, target, mode, uid, gid)
-}
-
-fn atomic_write(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    target: &Path,
-    bytes: &[u8],
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-) -> Result<(), String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("files-target-parent-missing {}", target.display()))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let temp = parent.join(format!(
-        ".{}.harmonia-tmp-{}",
-        target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("file"),
-        nonce
-    ));
-    let result = (|| -> Result<(), String> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(|e| format!("files-temp-create-failed {}: {e}", temp.display()))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("files-temp-write-failed {}: {e}", temp.display()))?;
-        file.sync_all()
-            .map_err(|e| format!("files-temp-sync-failed {}: {e}", temp.display()))?;
-        drop(file);
-        if let Some(mode) = mode {
-            set_mode(&temp, mode)?;
-        }
-        set_ownership(&temp, uid, gid)?;
-        fs::rename(&temp, target).map_err(|e| {
-            format!(
-                "files-atomic-promote-failed {} -> {}: {e}",
-                temp.display(),
-                target.display()
-            )
-        })?;
-        sync_directory(parent)?;
-        let _ = (a, i, target);
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-        let _ = sync_directory(parent);
-    }
-    result
-}
-
-#[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = fs::metadata(path)
-        .map_err(|e| format!("files-mode-metadata-failed {}: {e}", path.display()))?
-        .permissions();
-    permissions.set_mode(mode);
-    fs::set_permissions(path, permissions)
-        .map_err(|e| format!("files-mode-set-failed {}: {e}", path.display()))
-}
-#[cfg(not(unix))]
-fn set_mode(_path: &Path, _mode: u32) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_ownership(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
-    if uid.is_none() && gid.is_none() {
-        return Ok(());
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|e| format!("managed-file-owner-open-failed {}: {e}", path.display()))?;
-    let uid = uid.map_or(!0 as libc::uid_t, |value| value as libc::uid_t);
-    let gid = gid.map_or(!0 as libc::gid_t, |value| value as libc::gid_t);
-    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-        return Err(format!(
-            "managed-file-owner-set-failed {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-#[cfg(not(unix))]
-fn set_ownership(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> Result<(), String> {
-    Ok(())
-}
-
-fn sync_directory(path: &Path) -> Result<(), String> {
-    fs::File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| {
-            format!(
-                "source-shelf-sweep-directory-sync-failed {}: {error}",
-                path.display()
-            )
-        })
 }
 
 pub(crate) fn remove_file(
@@ -206,21 +48,35 @@ pub(crate) fn remove_file(
     )
 }
 
-pub(crate) fn remove_tree(
-    a: &ActionAuthorization,
-    i: &InvocationKey,
-    path: &Path,
+fn copy_file_to_target(
+    authorization: &ActionAuthorization,
+    source: &Path,
+    target: &Path,
+    mode: u32,
+    uid: u32,
+    gid: u32,
 ) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e.to_string()),
-        Ok(m) if !m.file_type().is_dir() => return remove_file(a, i, path),
-        Ok(_) => {}
-    }
-    fs::remove_dir_all(path).map_err(|e| e.to_string())?;
-    {
-        let _ = (a, i, path);
-        Ok(())
+    let bytes = fs::read(source)
+        .map_err(|error| format!("files-source-read-failed {}: {error}", source.display()))?;
+    crate::atoms::projectio::act_put(authorization, target, &bytes, Some(mode), Some(uid), Some(gid))
+        .map_err(|error| format!("files-atomic-promote-failed {}: {error}", target.display()))
+}
+
+fn remove_tree(
+    authorization: &ActionAuthorization,
+    path: &Path,
+    scratch: bool,
+) -> Result<(), String> {
+    let result = if scratch {
+        crate::atoms::projectio::act_scratch_remove_tree(authorization, path)
+    } else {
+        crate::atoms::projectio::act_remove_tree(
+            authorization, path, crate::atoms::projectio::RemoveTree::Tree, false,
+        )
+    };
+    match result {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other.map_err(|error| error.to_string()),
     }
 }
 
@@ -696,7 +552,8 @@ fn sync_authorized_parent(
     invocation: &crate::atoms::r#do::InvocationKey,
     launcher_root: &Path,
     path: &Path,
-    newly_created: &mut Vec<PathBuf>,
+    newly_created: &mut Vec<(PathBuf, bool)>,
+    scratch: bool,
 ) -> Result<(), String> {
     let parent = path
         .parent()
@@ -718,8 +575,15 @@ fn sync_authorized_parent(
             .parent()
             .ok_or_else(|| format!("source-shelf-sweep-parent-missing {}", cursor.display()))?;
     }
-    crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, parent)?;
-    newly_created.extend(missing);
+    if scratch {
+        crate::atoms::projectio::act_scratch_make_dir(authorization, parent)
+            .map_err(|error| error.to_string())?;
+    } else {
+        crate::atoms::projectio::act_make_dir(authorization, parent)
+            .map_err(|error| error.to_string())?;
+    }
+    let _ = invocation;
+    newly_created.extend(missing.into_iter().map(|path| (path, scratch)));
     sync_sweep_directory(parent)
 }
 
@@ -727,16 +591,22 @@ fn remove_new_launcher_dirs(
     authorization: &crate::atoms::comparison::ActionAuthorization,
     invocation: &crate::atoms::r#do::InvocationKey,
     launcher_root: &Path,
-    newly_created: &mut Vec<PathBuf>,
+    newly_created: &mut Vec<(PathBuf, bool)>,
 ) -> Result<(), String> {
-    newly_created.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    newly_created.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
     newly_created.dedup();
     let mut errors = Vec::new();
-    for path in newly_created.iter() {
+    for (path, scratch) in newly_created.iter() {
         if !path.starts_with(launcher_root) || path == launcher_root {
             continue;
         }
-        match crate::atoms::r#do::symlink_converge::remove_dir(authorization, invocation, path) {
+        let removed = if *scratch {
+            crate::atoms::projectio::act_scratch_remove_dir(authorization, path)
+                .map_err(|error| error.to_string())
+        } else {
+            crate::atoms::r#do::symlink_converge::remove_dir(authorization, invocation, path)
+        };
+        match removed {
             Ok(()) => {
                 if let Some(parent) = path.parent() {
                     if let Err(error) = sync_sweep_directory(parent) {
@@ -762,14 +632,13 @@ fn remove_new_launcher_dirs(
 }
 
 fn sync_sweep_directory(path: &Path) -> Result<(), String> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| {
-            format!(
-                "source-shelf-sweep-directory-sync-failed {}: {error}",
-                path.display()
-            )
-        })
+    let witness = crate::atoms::projectio::engine_state_witness();
+    let resolved = fs::canonicalize(path).map_err(|error| {
+        format!("source-shelf-sweep-directory-sync-failed {}: {error}", path.display())
+    })?;
+    crate::atoms::projectio::act_sync(&witness, &resolved).map_err(|error| {
+        format!("source-shelf-sweep-directory-sync-failed {}: {error}", path.display())
+    })
 }
 
 fn stage_sweep_tree(
@@ -783,86 +652,50 @@ fn stage_sweep_tree(
     uid: u32,
     gid: u32,
 ) -> Result<(), String> {
-    crate::atoms::r#do::make_dir::create_dir_all(authorization, invocation, stage).map_err(
-        |error| {
-            format!(
-                "source-shelf-sweep-stage-create-failed {}: {error}",
-                stage.display()
-            )
-        },
-    )?;
-    crate::atoms::r#do::change_mode::change(
-        authorization,
-        invocation,
-        &crate::atoms::r#do::change_mode::Plan {
-            path: stage.to_path_buf(),
-            mode: Some(directory_mode),
-            no_follow: true,
-        },
-    )?;
-    crate::atoms::r#do::change_owner::change(
-        authorization,
-        invocation,
-        &crate::atoms::r#do::change_owner::Plan {
-            path: stage.to_path_buf(),
-            uid: Some(uid),
-            gid: Some(gid),
-            no_follow: true,
-        },
-    )?;
-    for entry in entries
-        .iter()
-        .filter(|entry| entry.relative_path != Path::new("."))
-    {
+    let _ = invocation;
+    crate::atoms::projectio::act_scratch_make_dir(authorization, stage).map_err(|error| {
+        format!("source-shelf-sweep-stage-create-failed {}: {error}", stage.display())
+    })?;
+    crate::atoms::projectio::act_scratch_mode(authorization, stage, directory_mode)
+        .map_err(|error| error.to_string())?;
+    crate::atoms::projectio::act_scratch_chown(authorization, stage, uid, gid)
+        .map_err(|error| error.to_string())?;
+    for entry in entries.iter().filter(|entry| entry.relative_path != Path::new(".")) {
         let source_path = source.join(&entry.relative_path);
         let target_path = stage.join(&entry.relative_path);
         if entry.is_dir {
-            crate::atoms::r#do::make_dir::create_dir_all(authorization, invocation, &target_path)
-                .map_err(|error| {
-                format!(
-                    "source-shelf-sweep-stage-directory-failed {}: {error}",
-                    target_path.display()
-                )
-            })?;
-            crate::atoms::r#do::change_mode::change(
-                authorization,
-                invocation,
-                &crate::atoms::r#do::change_mode::Plan {
-                    path: target_path.clone(),
-                    mode: Some(directory_mode),
-                    no_follow: true,
-                },
-            )?;
-            crate::atoms::r#do::change_owner::change(
-                authorization,
-                invocation,
-                &crate::atoms::r#do::change_owner::Plan {
-                    path: target_path.clone(),
-                    uid: Some(uid),
-                    gid: Some(gid),
-                    no_follow: true,
-                },
-            )?;
+            crate::atoms::projectio::act_scratch_make_dir(authorization, &target_path)
+                .map_err(|error| format!("source-shelf-sweep-stage-directory-failed {}: {error}", target_path.display()))?;
+            crate::atoms::projectio::act_scratch_mode(authorization, &target_path, directory_mode)
+                .map_err(|error| error.to_string())?;
+            crate::atoms::projectio::act_scratch_chown(authorization, &target_path, uid, gid)
+                .map_err(|error| error.to_string())?;
         } else {
-            let parent = target_path.parent().ok_or_else(|| {
-                format!(
-                    "source-shelf-sweep-stage-parent-missing {}",
-                    target_path.display()
-                )
-            })?;
-            crate::atoms::r#do::copy_file::copy(
-                authorization,
-                invocation,
-                &crate::atoms::r#do::copy_file::Plan {
-                    source: source_path,
-                    target: target_path.clone(),
-                    mode: Some(file_mode),
-                    uid: Some(uid),
-                    gid: Some(gid),
-                    no_follow: true,
-                    restore: None,
-                },
-            )?;
+            let parent = target_path.parent().ok_or_else(|| format!("source-shelf-sweep-stage-parent-missing {}", target_path.display()))?;
+            // Prepare ownership and durability on a scratch sibling before replacement.
+            let candidate = parent.join(format!(".harmonia-stage-copy-{}", sweep_nonce()));
+            let result = (|| -> Result<(), String> {
+                crate::atoms::projectio::act_scratch_copy(authorization, &source_path, &candidate, Some(file_mode))
+                    .map_err(|error| format!("copy-file-write-failed: {error}"))?;
+                crate::atoms::projectio::act_scratch_chown(authorization, &candidate, uid, gid)
+                    .map_err(|error| format!("copy-file-write-failed: {error}"))?;
+                crate::atoms::projectio::act_scratch_mode(authorization, &candidate, file_mode)
+                    .map_err(|error| format!("copy-file-write-failed: {error}"))?;
+                crate::atoms::projectio::act_sync(authorization, &candidate)
+                    .map_err(|error| format!("copy-file-write-failed: {error}"))?;
+                if let Ok(metadata) = fs::symlink_metadata(&target_path) {
+                    if !metadata.file_type().is_file() {
+                        return Err(format!("copy-file-write-failed: projectio-target-not-regular-file {}", target_path.display()));
+                    }
+                }
+                crate::atoms::projectio::act_rename(authorization, &candidate, &target_path, true, true)
+                    .map_err(|error| format!("copy-file-write-failed: {error}"))?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = crate::atoms::projectio::act_scratch_remove(authorization, &candidate);
+            }
+            result?;
             sync_sweep_directory(parent)?;
         }
     }
@@ -2424,11 +2257,7 @@ fn source_shelf_owned_recursive_sweep(
                     write_sweep_provenance(provenance_path, &provenance)?;
                     return Ok(());
                 }
-                crate::atoms::r#do::source_shelf::mkdir_all(
-                    authorization,
-                    invocation,
-                    &quarantine,
-                )?;
+                crate::atoms::projectio::act_scratch_make_dir(authorization, &quarantine).map(|_| ()).map_err(|error| error.to_string())?;
                 for entry in &desired {
                     let source = if entry.relative_path == Path::new(".") {
                         shelf_source.to_path_buf()
@@ -2449,11 +2278,7 @@ fn source_shelf_owned_recursive_sweep(
                     }
                     if entry.is_dir {
                         if !target.exists() {
-                            crate::atoms::r#do::source_shelf::mkdir_all(
-                                authorization,
-                                invocation,
-                                &target,
-                            )
+                            crate::atoms::projectio::act_make_dir(authorization, &target).map(|_| ()).map_err(|error| error.to_string())
                             .map_err(|error| {
                                 format!(
                                     "source-shelf-sweep-owned-directory-create-failed {}: {error}",
@@ -2536,18 +2361,9 @@ fn source_shelf_owned_recursive_sweep(
                         if target.exists() {
                             let backup = quarantine.join(&entry.relative_path);
                             if let Some(parent) = backup.parent() {
-                                crate::atoms::r#do::source_shelf::mkdir_all(
-                                    authorization,
-                                    invocation,
-                                    parent,
-                                )?;
+                                crate::atoms::projectio::act_scratch_make_dir(authorization, parent).map(|_| ()).map_err(|error| error.to_string())?;
                             }
-                            crate::atoms::r#do::source_shelf::rename(
-                                authorization,
-                                invocation,
-                                &target,
-                                &backup,
-                            )
+                            crate::atoms::r#do::rename::rename_to_scratch(authorization, invocation, &target, &backup)
                             .map_err(|error| {
                                 format!(
                                     "source-shelf-sweep-owned-quarantine-failed {}: {error}",
@@ -2555,15 +2371,7 @@ fn source_shelf_owned_recursive_sweep(
                                 )
                             })?;
                         }
-                        crate::atoms::r#do::source_shelf::copy(
-                            authorization,
-                            invocation,
-                            &source,
-                            &target,
-                            Some(request.shelf_file_mode),
-                            Some(uid),
-                            Some(gid),
-                        )?;
+                        copy_file_to_target(authorization, &source, &target, request.shelf_file_mode, uid, gid)?;
                         provenance.paths.insert(target.display().to_string());
                         promoted_count += 1;
                     }
@@ -2646,18 +2454,9 @@ fn source_shelf_owned_recursive_sweep(
                             }
                             let cache_backup = quarantine.join(relative).join("__pycache__");
                             if let Some(parent) = cache_backup.parent() {
-                                crate::atoms::r#do::source_shelf::mkdir_all(
-                                    authorization,
-                                    invocation,
-                                    parent,
-                                )?;
+                                crate::atoms::projectio::act_scratch_make_dir(authorization, parent).map(|_| ()).map_err(|error| error.to_string())?;
                             }
-                            crate::atoms::r#do::source_shelf::rename(
-                                authorization,
-                                invocation,
-                                &target.join("__pycache__"),
-                                &cache_backup,
-                            )
+                            crate::atoms::r#do::rename::rename_to_scratch(authorization, invocation, &target.join("__pycache__"), &cache_backup)
                             .map_err(|error| {
                                 format!(
                                     "source-shelf-sweep-owned-quarantine-failed {}: {error}",
@@ -2683,7 +2482,7 @@ fn source_shelf_owned_recursive_sweep(
                                     target.display()
                                 ));
                             }
-                            fs::remove_dir(&target).map_err(|error| {
+                            crate::atoms::projectio::act_remove_tree(authorization, &target, crate::atoms::projectio::RemoveTree::Empty, false).map_err(|error| {
                                 format!(
                                     "source-shelf-sweep-owned-empty-directory-remove-failed {}: {error}",
                                     target.display()
@@ -2730,7 +2529,7 @@ fn source_shelf_owned_recursive_sweep(
                             .is_none()
                         && fs::symlink_metadata(&backup).is_ok()
                     {
-                        fs::remove_dir(&target).map_err(|error| {
+                        crate::atoms::projectio::act_remove_tree(authorization, &target, crate::atoms::projectio::RemoveTree::Empty, false).map_err(|error| {
                             format!(
                                 "source-shelf-sweep-owned-empty-directory-remove-failed {}: {error}",
                                 target.display()
@@ -2741,18 +2540,9 @@ fn source_shelf_owned_recursive_sweep(
                         continue;
                     }
                     if let Some(parent) = backup.parent() {
-                        crate::atoms::r#do::source_shelf::mkdir_all(
-                            authorization,
-                            invocation,
-                            parent,
-                        )?;
+                        crate::atoms::projectio::act_scratch_make_dir(authorization, parent).map(|_| ()).map_err(|error| error.to_string())?;
                     }
-                    crate::atoms::r#do::source_shelf::rename(
-                        authorization,
-                        invocation,
-                        &target,
-                        &backup,
-                    )
+                    crate::atoms::r#do::rename::rename_to_scratch(authorization, invocation, &target, &backup)
                     .map_err(|error| {
                         format!(
                             "source-shelf-sweep-owned-quarantine-failed {}: {error}",
@@ -2763,11 +2553,7 @@ fn source_shelf_owned_recursive_sweep(
                     removed_count += 1;
                 }
                 write_sweep_provenance(provenance_path, &provenance)?;
-                if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(
-                    authorization,
-                    invocation,
-                    &quarantine,
-                ) {
+                if let Err(error) = remove_tree(authorization, &quarantine, true) {
                     cleanup_error = Some(format!(
                         "source-shelf-sweep-quarantine-remove-failed {}: {error}",
                         quarantine.display()
@@ -3198,7 +2984,7 @@ fn source_shelf_sweep_with_fault(
                 if fault.fail_setup_after_stage {
                     return Err("source-shelf-sweep-injected-setup-failure".into());
                 }
-                crate::atoms::r#do::source_shelf::mkdir_all(authorization, invocation, &quarantine)
+                crate::atoms::projectio::act_scratch_make_dir(authorization, &quarantine).map(|_| ()).map_err(|error| error.to_string())
                     .map_err(|error| {
                         format!(
                             "source-shelf-sweep-quarantine-create-failed {}: {error}",
@@ -3217,11 +3003,7 @@ fn source_shelf_sweep_with_fault(
                     if existed_before {
                         continue;
                     }
-                    if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(
-                        authorization,
-                        invocation,
-                        path,
-                    ) {
+                    if let Err(error) = remove_tree(authorization, path, true) {
                         if !error.contains("No such file") {
                             cleanup_errors
                                 .push(format!("remove setup path {}: {error}", path.display()));
@@ -3279,7 +3061,7 @@ fn source_shelf_sweep_with_fault(
             let mut carried_excluded: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut launcher_backups: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut new_launchers: Vec<PathBuf> = Vec::new();
-            let mut newly_created_launcher_dirs: Vec<PathBuf> = Vec::new();
+            let mut newly_created_launcher_dirs: Vec<(PathBuf, bool)> = Vec::new();
             let mut promoted_count = 0usize;
             let mut removed_count = 0usize;
             let transaction = (|| -> Result<(), String> {
@@ -3332,15 +3114,12 @@ fn source_shelf_sweep_with_fault(
                         &request.launcher_target_root,
                         &target,
                         &mut newly_created_launcher_dirs,
+                        false,
                     )?;
                     if target.exists() {
                         let backup = receipt_dir.join("backups").join(name);
                         if let Some(parent) = backup.parent() {
-                            crate::atoms::r#do::source_shelf::mkdir_all(
-                                authorization,
-                                invocation,
-                                parent,
-                            )
+                            crate::atoms::projectio::engine_make_dir(&crate::atoms::projectio::engine_state_witness(), parent).map(|_| ()).map_err(|error| error.to_string())
                             .map_err(|error| {
                                 format!(
                                     "source-shelf-sweep-launcher-backup-parent-failed {}: {error}",
@@ -3348,15 +3127,11 @@ fn source_shelf_sweep_with_fault(
                                 )
                             })?;
                         }
-                        crate::atoms::r#do::source_shelf::copy_raw(
-                            authorization,
-                            invocation,
-                            &target,
-                            &backup,
-                            None,
-                            None,
-                            None,
-                        )
+                        {
+                            let bytes = fs::read(&target).map_err(|error| format!("files-source-read-failed {}: {error}", target.display()))?;
+                            let witness = crate::atoms::projectio::engine_state_witness();
+                            crate::atoms::projectio::engine_put(&witness, &backup, &bytes, 0o644).map_err(|error| error.to_string())
+                        }
                         .map_err(|error| {
                             format!(
                                 "source-shelf-sweep-launcher-backup-failed {} -> {}: {error}",
@@ -3365,11 +3140,7 @@ fn source_shelf_sweep_with_fault(
                             )
                         })?;
                         sync_sweep_directory(backup.parent().expect("launcher backup has parent"))?;
-                        crate::atoms::r#do::source_shelf::mkdir_all(
-                            authorization,
-                            invocation,
-                            &quarantine,
-                        )
+                        crate::atoms::projectio::act_scratch_make_dir(authorization, &quarantine).map(|_| ()).map_err(|error| error.to_string())
                         .map_err(|error| {
                             format!(
                                 "source-shelf-sweep-quarantine-create-failed {}: {error}",
@@ -3383,13 +3154,9 @@ fn source_shelf_sweep_with_fault(
                             &request.launcher_target_root,
                             &backup,
                             &mut newly_created_launcher_dirs,
+                            true,
                         )?;
-                        crate::atoms::r#do::source_shelf::rename(
-                            authorization,
-                            invocation,
-                            &target,
-                            &backup,
-                        )
+                        crate::atoms::r#do::rename::rename_to_scratch(authorization, invocation, &target, &backup)
                         .map_err(|error| {
                             format!(
                                 "source-shelf-sweep-launcher-quarantine-failed {}: {error}",
@@ -3402,15 +3169,7 @@ fn source_shelf_sweep_with_fault(
                     } else {
                         new_launchers.push(target.clone());
                     }
-                    crate::atoms::r#do::source_shelf::copy_raw(
-                        authorization,
-                        invocation,
-                        source,
-                        &target,
-                        Some(request.launcher_mode),
-                        Some(uid),
-                        Some(gid),
-                    )?;
+                    copy_file_to_target(authorization, source, &target, request.launcher_mode, uid, gid)?;
                     sync_sweep_directory(target.parent().expect("launcher target has parent"))?;
                     promoted_count += 1;
                     if fault
@@ -3423,11 +3182,7 @@ fn source_shelf_sweep_with_fault(
                 if request.prune {
                     for name in &stale {
                         let target = request.launcher_target_root.join(name);
-                        crate::atoms::r#do::source_shelf::mkdir_all(
-                            authorization,
-                            invocation,
-                            &quarantine,
-                        )
+                        crate::atoms::projectio::act_scratch_make_dir(authorization, &quarantine).map(|_| ()).map_err(|error| error.to_string())
                         .map_err(|error| {
                             format!(
                                 "source-shelf-sweep-quarantine-create-failed {}: {error}",
@@ -3441,13 +3196,9 @@ fn source_shelf_sweep_with_fault(
                             &request.launcher_target_root,
                             &backup,
                             &mut newly_created_launcher_dirs,
+                            true,
                         )?;
-                        crate::atoms::r#do::source_shelf::rename(
-                            authorization,
-                            invocation,
-                            &target,
-                            &backup,
-                        )
+                        crate::atoms::r#do::rename::rename_to_scratch(authorization, invocation, &target, &backup)
                         .map_err(|error| {
                             format!(
                                 "source-shelf-sweep-stale-launcher-quarantine-failed {}: {error}",
@@ -3575,12 +3326,7 @@ fn source_shelf_sweep_with_fault(
                             ));
                         }
                     }
-                    if let Err(error) = crate::atoms::r#do::source_shelf::rename(
-                        authorization,
-                        invocation,
-                        backup,
-                        target,
-                    ) {
+                    if let Err(error) = crate::atoms::r#do::rename::rename_from_scratch(authorization, invocation, backup, target) {
                         rollback_errors.push(format!(
                             "restore {} -> {}: {error}",
                             backup.display(),
@@ -3620,11 +3366,7 @@ fn source_shelf_sweep_with_fault(
                             ));
                         }
                     }
-                    if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(
-                        authorization,
-                        invocation,
-                        &request.target_shelf,
-                    ) {
+                    if let Err(error) = remove_tree(authorization, &request.target_shelf, false) {
                         rollback_errors.push(format!(
                             "remove promoted shelf {}: {error}",
                             request.target_shelf.display()
@@ -3645,16 +3387,8 @@ fn source_shelf_sweep_with_fault(
                         }
                     }
                 }
-                let _ = crate::atoms::r#do::source_shelf::remove_tree(
-                    authorization,
-                    invocation,
-                    &stage,
-                );
-                let _ = crate::atoms::r#do::source_shelf::remove_tree(
-                    authorization,
-                    invocation,
-                    &quarantine,
-                );
+                let _ = remove_tree(authorization, &stage, true);
+                let _ = remove_tree(authorization, &quarantine, true);
                 if let Err(error) = sync_sweep_directory(&request.launcher_target_root) {
                     rollback_errors
                         .push(format!("sync launcher quarantine rollback parent: {error}"));
@@ -3734,11 +3468,7 @@ fn source_shelf_sweep_with_fault(
                     return Err("source-shelf-sweep-injected-cleanup-failure".into());
                 }
                 let remove_dir_all_if_present = |path: &Path, label: &str| -> Result<(), String> {
-                    if let Err(error) = crate::atoms::r#do::source_shelf::remove_tree(
-                        authorization,
-                        invocation,
-                        path,
-                    ) {
+                    if let Err(error) = remove_tree(authorization, path, true) {
                         if !error.contains("No such file") {
                             return Err(format!("{label} {}: {error}", path.display()));
                         }
@@ -3761,11 +3491,7 @@ fn source_shelf_sweep_with_fault(
                         "source-shelf-sweep-prior-shelf-remove-failed",
                     )?;
                 }
-                let _ = crate::atoms::r#do::source_shelf::remove_tree(
-                    authorization,
-                    invocation,
-                    &stage,
-                );
+                let _ = remove_tree(authorization, &stage, true);
                 sync_sweep_directory(shelf_parent)?;
                 sync_sweep_directory(&request.launcher_target_root)?;
                 Ok(())
