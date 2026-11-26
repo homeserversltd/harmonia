@@ -189,7 +189,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::MetadataExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
@@ -1685,7 +1685,8 @@ where
         .map_err(|error| format!("validated-sudoers-staging-clock-failed: {error}"))?
         .as_nanos();
     let staged_root = module_dir.join(format!(".sudoers-staging-{}-{nonce}", std::process::id()));
-    fs::create_dir(&staged_root).map_err(|error| {
+    let scratch_witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::act_scratch_make_dir_new(&scratch_witness, &staged_root).map_err(|error| {
         format!(
             "validated-sudoers-staging-create-failed {}: {error}",
             staged_root.display()
@@ -1694,7 +1695,8 @@ where
     struct StagedSudoersSource(PathBuf);
     impl Drop for StagedSudoersSource {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let witness = crate::atoms::projectio::engine_state_witness();
+            let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &self.0);
         }
     }
     let _staged_source = StagedSudoersSource(staged_root.clone());
@@ -1705,7 +1707,7 @@ where
                 fragment.source_path.display()
             )
         })?;
-        fs::write(staged_root.join(&fragment.name), bytes).map_err(|error| {
+        crate::atoms::projectio::act_scratch_write_new(&scratch_witness, &staged_root.join(&fragment.name), &bytes, 0o644).map_err(|error| {
             format!(
                 "validated-sudoers-staging-write-failed {}: {error}",
                 fragment.name
@@ -1735,14 +1737,10 @@ where
     let mut validate_bytes = |target: &Path, bytes: &[u8]| -> Result<(), String> {
         let name = target.file_name().and_then(|name| name.to_str())
             .ok_or_else(|| "validated-sudoers-fragment-name-invalid".to_string())?;
-        use std::io::Write;
         let candidate = staged_root.join(format!(".validation-{name}"));
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&candidate)
-            .map_err(|error| format!("validated-sudoers-validation-stage-failed {name}: {error}"))?;
-        file.write_all(bytes).map_err(|error| {
+        crate::atoms::projectio::act_scratch_write_new(&scratch_witness, &candidate, bytes, 0o644).map_err(|error| {
             format!("validated-sudoers-validation-stage-failed {name}: {error}")
         })?;
-        drop(file);
         let candidate_text = candidate.to_string_lossy();
         let refs = ["-cf", candidate_text.as_ref()];
         let result = validator(validator_program, &refs, 30);
@@ -1920,7 +1918,7 @@ where
     let (receipt_path, receipt_dir) = create_sudoers_prune_receipt_dir(module_dir, target_root)?;
     for (index, candidate) in candidates.iter_mut().enumerate() {
         candidate.backup_file = format!("pruned-{index:04}.bin");
-        write_private_receipt_file(&receipt_dir, &candidate.backup_file, &candidate.bytes, true)
+        write_private_receipt_file(&receipt_dir, &receipt_path, &candidate.backup_file, &candidate.bytes, true)
             .map_err(|error| {
                 format!(
                     "validated-sudoers-prune-backup-write-failed path={} receipt={} {error}",
@@ -2482,24 +2480,18 @@ fn create_sudoers_prune_receipt_dir(
     if receipt_path.starts_with(target_root) || target_root.starts_with(&receipt_path) {
         return Err("validated-sudoers-prune-receipt-outside-target-refused".into());
     }
-    let mut builder = fs::DirBuilder::new();
-    builder.mode(0o700);
-    builder.create(&receipt_path).map_err(|error| {
+    let witness = crate::atoms::projectio::engine_state_witness();
+    let parent = open_sudoers_directory(module_dir)?;
+    let name = receipt_path.file_name().ok_or_else(|| "validated-sudoers-prune-receipt-name-invalid".to_string())?;
+    let directory = crate::atoms::projectio::act_at_make_dir(&witness, &parent, name, 0o700, Some(&receipt_path)).map_err(|error| {
         format!(
             "validated-sudoers-prune-receipt-dir-create-failed {}: {error}",
             receipt_path.display()
         )
     })?;
-    let directory = open_sudoers_directory(&receipt_path)?;
-    if unsafe { libc::fchown(directory.as_raw_fd(), 0, 0) } != 0
-        || unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0
-    {
-        return Err(format!(
-            "validated-sudoers-prune-receipt-dir-protect-failed {}: {}",
-            receipt_path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
+    crate::atoms::projectio::act_fd_owner(&witness, &directory, 0, 0, Some(&receipt_path))
+        .and_then(|()| crate::atoms::projectio::act_fd_mode(&witness, &directory, 0o700, Some(&receipt_path)))
+        .map_err(|error| format!("validated-sudoers-prune-receipt-dir-protect-failed {}: {error}", receipt_path.display()))?;
     let stat = fstat_fd(directory.as_raw_fd()).map_err(|error| {
         format!(
             "validated-sudoers-prune-receipt-dir-stat-failed {}: {error}",
@@ -2518,12 +2510,15 @@ fn create_sudoers_prune_receipt_dir(
 #[cfg(target_os = "linux")]
 fn write_private_receipt_file(
     directory: &fs::File,
+    receipt_path: &Path,
     name: &str,
     bytes: &[u8],
     create_new: bool,
 ) -> Result<(), String> {
     let name_c = CString::new(name)
         .map_err(|_| "validated-sudoers-prune-receipt-name-invalid".to_string())?;
+    let witness = crate::atoms::projectio::engine_state_witness();
+    let record = receipt_path.join(name);
     let flags = libc::O_WRONLY
         | libc::O_CLOEXEC
         | libc::O_NOFOLLOW
@@ -2532,24 +2527,19 @@ fn write_private_receipt_file(
         } else {
             libc::O_TRUNC
         };
-    let fd = unsafe { libc::openat(directory.as_raw_fd(), name_c.as_ptr(), flags, 0o600) };
-    if fd < 0 {
-        return Err(format!(
-            "openat {name}: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let mut file = unsafe { fs::File::from_raw_fd(fd) };
+    let mut file = if create_new {
+        crate::atoms::projectio::act_at_create_new(&witness, directory, OsStr::new(name), 0o600, Some(&record))
+            .map_err(|error| format!("openat {name}: {error}"))?
+    } else {
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name_c.as_ptr(), flags, 0o600) };
+        if fd < 0 { return Err(format!("openat {name}: {}", std::io::Error::last_os_error())); }
+        unsafe { fs::File::from_raw_fd(fd) }
+    };
     file.write_all(bytes)
         .map_err(|error| format!("write {name}: {error}"))?;
-    if unsafe { libc::fchown(file.as_raw_fd(), 0, 0) } != 0
-        || unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0
-    {
-        return Err(format!(
-            "protect {name}: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    crate::atoms::projectio::act_fd_owner(&witness, &file, 0, 0, Some(&record))
+        .and_then(|()| crate::atoms::projectio::act_fd_mode(&witness, &file, 0o600, Some(&record)))
+        .map_err(|error| format!("protect {name}: {error}"))?;
     file.sync_all()
         .map_err(|error| format!("sync {name}: {error}"))
 }
@@ -2656,7 +2646,7 @@ fn write_sudoers_prune_manifest(
     ))
     .map_err(|error| format!("manifest-serialize: {error}"))?;
     bytes.push(b'\n');
-    write_private_receipt_file(directory, "run.json", &bytes, status == "prepared")?;
+    write_private_receipt_file(directory, receipt_path, "run.json", &bytes, status == "prepared")?;
     sync_directory(directory)
 }
 
