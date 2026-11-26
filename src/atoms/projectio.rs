@@ -107,6 +107,19 @@ pub(crate) fn act_make_dir(
     Ok(())
 }
 
+#[allow(dead_code)]
+pub(crate) fn act_make_dir_new(
+    _auth: &crate::atoms::comparison::ActionAuthorization, path: &Path,
+) -> std::io::Result<()> {
+    check_act_path(path)?;
+    fs::create_dir(path)?;
+    crate::atoms::touch::record_made_directory(path, "known-good");
+    let matches = fs::symlink_metadata(path)
+        .is_ok_and(|after| after.is_dir() && !after.file_type().is_symlink());
+    if !matches { return Err(act_mismatch("make-dir-new", path)); }
+    Ok(())
+}
+
 // The seated link act: scratch staging and ownership, then promotion.
 pub(crate) fn act_link_stage(
     _authorization: &crate::atoms::comparison::ActionAuthorization, source: &Path, candidate: &Path,
