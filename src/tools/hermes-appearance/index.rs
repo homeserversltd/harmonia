@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -790,18 +790,19 @@ fn remove_skins_dir(witness: &OwnerAcceptance, home: &Home) -> std::io::Result<(
 }
 
 fn create_skins_dir(witness: &OwnerAcceptance, home: &Home) -> Result<(), String> {
-    projectio::owner_make_dir(witness, &home.skins)
+    let parent = open_directory(&home.path).map_err(|_| "hermes-skins-directory-create-failed")?;
+    let dir = projectio::act_at_make_dir(witness, &parent, OsStr::new("skins"), 0o700, Some(&home.skins))
         .map_err(|_| "hermes-skins-directory-create-failed")?;
     let result = (|| {
         if unsafe { libc::geteuid() } == 0 {
-            projectio::owner_chown(witness, &home.skins, home.uid, home.gid)
+            projectio::act_fd_owner(witness, &dir, home.uid, home.gid, Some(&home.skins))
                 .map_err(|_| "hermes-skins-directory-owner-set-failed")?;
         }
-        projectio::owner_mode(witness, &home.skins, 0o700)
-            .map_err(|_| "hermes-skins-directory-mode-set-failed")?;
         preflight_home(home)
     })();
-    if result.is_err() { let _ = remove_skins_dir(witness, home); }
+    if result.is_err() {
+        let _ = projectio::act_at_unlink(witness, &parent, OsStr::new("skins"), true, Some(&home.skins));
+    }
     result
 }
 
@@ -846,11 +847,10 @@ fn create_asset_new(witness: &OwnerAcceptance, home: &Home, bytes: &[u8]) -> Res
         }
     }
     let temp_path = temp_path.ok_or("hermes-skin-temp-exhausted")?;
-    let mut file = file.ok_or("hermes-skin-temp-create-failed")?;
+    let file = file.ok_or("hermes-skin-temp-create-failed")?;
     let mut linked_identity = None;
     let result: Result<(), String> = (|| {
-        // R5-0d3 act_fd_write pending
-        file.write_all(bytes).map_err(|_| "hermes-skin-temp-write-failed")?;
+        projectio::act_fd_write(witness, &file, bytes, None).map_err(|_| "hermes-skin-temp-write-failed")?;
         if unsafe { libc::geteuid() } == 0 {
             projectio::act_fd_owner(witness, &file, home.uid, home.gid, Some(&home.asset))
                 .map_err(|_| "hermes-skin-owner-set-failed")?;
