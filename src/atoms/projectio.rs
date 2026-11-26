@@ -1273,6 +1273,61 @@ pub(crate) fn act_fd_mode<'a>(w: impl Into<PenWitness<'a>>, file: &File, mode: u
     Ok(())
 }
 #[allow(dead_code)]
+pub(crate) fn act_fd_write<'a>(w: impl Into<PenWitness<'a>>, file: &File, bytes: &[u8], record: Option<&Path>) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    pen_check(record)?;
+    let lane = w.into().lane();
+    let length = libc::off_t::try_from(bytes.len()).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "projectio-write-length-overflow"))?;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match file.write_at(&bytes[offset..], offset as u64) {
+            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "projectio-fd-write-zero")),
+            Ok(n) => offset += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    if unsafe { libc::ftruncate(file.as_raw_fd(), length) } != 0 { return Err(std::io::Error::last_os_error()); }
+    file.sync_all()?;
+    pen_record(record, lane);
+    if !file.metadata().is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64) { return Err(pen_error("fd-write", record)); }
+    let mut buffer = [0u8; 8192];
+    let mut offset = 0;
+    loop {
+        let want = (bytes.len() - offset).min(buffer.len()).max(1);
+        match file.read_at(&mut buffer[..want], offset as u64) {
+            Ok(0) if offset == bytes.len() => break,
+            Ok(0) => return Err(pen_error("fd-write", record)),
+            Ok(n) if offset + n <= bytes.len() && buffer[..n] == bytes[offset..offset + n] => offset += n,
+            Ok(_) => return Err(pen_error("fd-write", record)),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(pen_error("fd-write", record)),
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn act_at_open_write<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr) -> std::io::Result<File> {
+    let name = pen_name(name)?;
+    let _ = w.into().lane();
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 { return Err(std::io::Error::last_os_error()); }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !file.metadata()?.is_file() { return Err(pen_error("open-write-at", None)); }
+    Ok(file)
+}
+
+#[allow(dead_code)]
+fn cleanup_created_at(dir: &File, name: &std::ffi::CString, file: &File, directory: bool) {
+    if let (Ok(opened), Ok(named)) = (file.metadata(), stat_at_nofollow(dir, name)) {
+        if file_identity(&opened) == stat_identity(&named) {
+            let _ = unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), if directory { libc::AT_REMOVEDIR } else { 0 }) };
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub(crate) fn act_at_make_dir<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, mode: u32, record: Option<&Path>) -> std::io::Result<File> {
     pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
     // Keep the new directory openable before applying a possibly restrictive final mode.
@@ -1281,13 +1336,20 @@ pub(crate) fn act_at_make_dir<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name
     let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
     if fd < 0 { return Err(std::io::Error::last_os_error()); }
     let file = unsafe { File::from_raw_fd(fd) };
-    if file.metadata()?.uid() != unsafe { libc::geteuid() } {
-        return Err(std::io::Error::other(format!("projectio-made-directory-substituted {}", record.unwrap_or_else(|| Path::new("<fd>")).display())));
+    let result = (|| {
+        if file.metadata()?.uid() != unsafe { libc::geteuid() } {
+            return Err(std::io::Error::other(format!("projectio-made-directory-substituted {}", record.unwrap_or_else(|| Path::new("<fd>")).display())));
+        }
+        if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+        let actual = file.metadata()?;
+        let named = stat_at_nofollow(dir, &name)?;
+        if !actual.is_dir() || actual.mode() & 0o7777 != mode & 0o7777 || file_identity(&actual) != stat_identity(&named) { return Err(pen_error("make-dir-at", record)); }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        cleanup_created_at(dir, &name, &file, true);
+        return Err(error);
     }
-    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
-    let actual = file.metadata()?;
-    let named = stat_at_nofollow(dir, &name)?;
-    if !actual.is_dir() || actual.mode() & 0o7777 != mode & 0o7777 || file_identity(&actual) != stat_identity(&named) { return Err(pen_error("make-dir-at", record)); }
     Ok(file)
 }
 #[allow(dead_code)]
@@ -1297,9 +1359,16 @@ pub(crate) fn act_at_create_new<'a>(w: impl Into<PenWitness<'a>>, dir: &File, na
     if fd < 0 { return Err(std::io::Error::last_os_error()); }
     let file = unsafe { File::from_raw_fd(fd) };
     pen_record(record, lane);
-    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
-    let actual = file.metadata()?; let named = stat_at_nofollow(dir, &name)?;
-    if !actual.is_file() || actual.mode() & 0o7777 != mode & 0o7777 || file_identity(&actual) != stat_identity(&named) { return Err(pen_error("create-at", record)); }
+    let result = (|| {
+        if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+        let actual = file.metadata()?; let named = stat_at_nofollow(dir, &name)?;
+        if !actual.is_file() || actual.mode() & 0o7777 != mode & 0o7777 || file_identity(&actual) != stat_identity(&named) { return Err(pen_error("create-at", record)); }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        cleanup_created_at(dir, &name, &file, false);
+        return Err(error);
+    }
     Ok(file)
 }
 #[allow(dead_code)]
