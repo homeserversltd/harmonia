@@ -2,6 +2,7 @@ use crate::bands::propose_edits::{persist_feed_with_intent, FeedPersistenceInten
 use crate::interactables::{DriftSummary, Interactable, InteractablesFeed};
 use crate::tools::ladder::{LadderManifest, ValidatedStep};
 use crate::OperationOutcome;
+use crate::atoms::projectio::{self, OwnerAcceptance};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -10,8 +11,7 @@ use std::env;
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -257,6 +257,7 @@ pub(crate) fn run_interactable(
     state_path: &Path,
     item: &Interactable,
 ) -> Result<(), String> {
+    let witness = projectio::owner_acceptance(crate::interactables::operator_hand());
     if item.kind != KIND || item.module_id != MODULE_ID {
         return Err("hermes-appearance-interactable-identity-invalid".into());
     }
@@ -369,13 +370,13 @@ pub(crate) fn run_interactable(
             continue;
         }
         if !plan.home.skins.exists() {
-            if let Err(_) = create_skins_dir(&plan.home) {
+            if let Err(_) = create_skins_dir(&witness, &plan.home) {
                 failure = Some("hermes-appearance-skins-directory-create-failed");
                 break;
             }
             plan.created_skins_dir = true;
         }
-        match install_asset(&plan.home, &asset_bytes, item, state_path) {
+        match install_asset(&witness, &plan.home, &asset_bytes, item, state_path) {
             Ok(change) => {
                 plan.skin_changed = true;
                 if let Some(change) = change {
@@ -426,7 +427,7 @@ pub(crate) fn run_interactable(
         }
     }
     if let Some(signal) = failure {
-        let rollback_signal = rollback(&runtime, &mut plans, &mut asset_changes, &asset_bytes, item, state_path);
+        let rollback_signal = rollback(&witness, &runtime, &mut plans, &mut asset_changes, &asset_bytes, item, state_path);
         let actual = observe_final_homes(&runtime, &plans);
         let mut receipt = build_receipt(item, false, false, &evidence, &plans, Some(signal));
         apply_actual_rows(&mut receipt, &plans, &actual, false);
@@ -454,7 +455,7 @@ pub(crate) fn run_interactable(
         item_id: item.id.clone(),
         receipt: receipt.clone(),
     }) {
-        let rollback_signal = rollback(&runtime, &mut plans, &mut asset_changes, &asset_bytes, item, state_path);
+        let rollback_signal = rollback(&witness, &runtime, &mut plans, &mut asset_changes, &asset_bytes, item, state_path);
         let actual = observe_final_homes(&runtime, &plans);
         let mut failed = build_receipt(item, false, false, &evidence, &plans, Some("hermes-appearance-completion-persist-failed"));
         apply_actual_rows(&mut failed, &plans, &actual, false);
@@ -779,28 +780,32 @@ fn hash_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn create_skins_dir(home: &Home) -> Result<(), String> {
-    match fs::create_dir(&home.skins) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return preflight_home(home),
-        Err(_) => return Err("hermes-skins-directory-create-failed".into()),
-    }
+fn open_directory(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path)
+}
+
+fn remove_skins_dir(witness: &OwnerAcceptance, home: &Home) -> std::io::Result<()> {
+    let parent = open_directory(&home.path)?;
+    projectio::act_at_unlink(witness, &parent, OsStr::new("skins"), true, Some(&home.skins))
+}
+
+fn create_skins_dir(witness: &OwnerAcceptance, home: &Home) -> Result<(), String> {
+    projectio::owner_make_dir(witness, &home.skins)
+        .map_err(|_| "hermes-skins-directory-create-failed")?;
     let result = (|| {
         if unsafe { libc::geteuid() } == 0 {
-            let path = CString::new(home.skins.as_os_str().as_encoded_bytes()).map_err(|_| "hermes-skins-path-invalid")?;
-            if unsafe { libc::chown(path.as_ptr(), home.uid, home.gid) } != 0 {
-                return Err("hermes-skins-directory-owner-set-failed".into());
-            }
+            projectio::owner_chown(witness, &home.skins, home.uid, home.gid)
+                .map_err(|_| "hermes-skins-directory-owner-set-failed")?;
         }
-        fs::set_permissions(&home.skins, fs::Permissions::from_mode(0o700))
+        projectio::owner_mode(witness, &home.skins, 0o700)
             .map_err(|_| "hermes-skins-directory-mode-set-failed")?;
         preflight_home(home)
     })();
-    if result.is_err() { let _ = fs::remove_dir(&home.skins); }
+    if result.is_err() { let _ = remove_skins_dir(witness, home); }
     result
 }
 
-fn install_asset(home: &Home, bytes: &[u8], item: &Interactable, state_path: &Path) -> Result<Option<AssetChange>, String> {
+fn install_asset(witness: &OwnerAcceptance, home: &Home, bytes: &[u8], item: &Interactable, state_path: &Path) -> Result<Option<AssetChange>, String> {
     match fs::symlink_metadata(&home.asset) {
         Ok(meta) => {
             if !meta.is_file() || meta.file_type().is_symlink() || meta.uid() != home.uid || meta.gid() != home.gid {
@@ -820,20 +825,21 @@ fn install_asset(home: &Home, bytes: &[u8], item: &Interactable, state_path: &Pa
             Ok(Some(AssetChange::Replaced { home: home.clone(), prior_bytes, mode: meta.mode() as u32 & 0o7777, backup: receipt.backup_path }))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_asset_new(home, bytes)?;
+            create_asset_new(witness, home, bytes)?;
             Ok(Some(AssetChange::Created { home: home.clone() }))
         }
         Err(_) => Err("hermes-skin-asset-stat-failed".into()),
     }
 }
 
-fn create_asset_new(home: &Home, bytes: &[u8]) -> Result<(), String> {
+fn create_asset_new(witness: &OwnerAcceptance, home: &Home, bytes: &[u8]) -> Result<(), String> {
+    let dir = open_directory(&home.skins).map_err(|_| "hermes-skins-directory-open-failed")?;
     let mode = 0o644;
     let mut temp_path = None;
     let mut file = None;
     for index in 0..100u32 {
         let candidate = home.skins.join(format!(".hermes-appearance-{}-{index}.tmp", std::process::id()));
-        match OpenOptions::new().write(true).read(true).create_new(true).mode(0o600).open(&candidate) {
+        match projectio::act_at_create_new(witness, &dir, candidate.file_name().ok_or("hermes-skin-temp-create-failed")?, 0o600, None) {
             Ok(opened) => { temp_path = Some(candidate); file = Some(opened); break; }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(_) => return Err("hermes-skin-temp-create-failed".into()),
@@ -843,20 +849,20 @@ fn create_asset_new(home: &Home, bytes: &[u8]) -> Result<(), String> {
     let mut file = file.ok_or("hermes-skin-temp-create-failed")?;
     let mut linked_identity = None;
     let result: Result<(), String> = (|| {
+        // R5-0d3 act_fd_write pending
         file.write_all(bytes).map_err(|_| "hermes-skin-temp-write-failed")?;
         if unsafe { libc::geteuid() } == 0 {
-            if unsafe { libc::fchown(file.as_raw_fd(), home.uid, home.gid) } != 0 {
-                return Err("hermes-skin-owner-set-failed".into());
-            }
+            projectio::act_fd_owner(witness, &file, home.uid, home.gid, Some(&home.asset))
+                .map_err(|_| "hermes-skin-owner-set-failed")?;
         }
-        if unsafe { libc::fchmod(file.as_raw_fd(), mode) } != 0 { return Err("hermes-skin-mode-set-failed".into()); }
+        projectio::act_fd_mode(witness, &file, mode, Some(&home.asset)).map_err(|_| "hermes-skin-mode-set-failed")?;
         file.sync_all().map_err(|_| "hermes-skin-temp-sync-failed")?;
-        let temp_meta = fs::symlink_metadata(&temp_path).map_err(|_| "hermes-skin-temp-stat-failed")?;
-        drop(file);
-        fs::hard_link(&temp_path, &home.asset).map_err(|_| "hermes-skin-target-create-raced-or-failed")?;
+        let temp_meta = file.metadata().map_err(|_| "hermes-skin-temp-stat-failed")?;
+        // The link may succeed before the pen's readback reports an error.
         linked_identity = Some((temp_meta.dev(), temp_meta.ino()));
-        fs::remove_file(&temp_path).map_err(|_| "hermes-skin-temp-cleanup-failed")?;
-        File::open(&home.skins).and_then(|dir| dir.sync_all()).map_err(|_| "hermes-skins-directory-sync-failed")?;
+        projectio::act_fd_link(witness, &file, &dir, home.asset.file_name().ok_or("hermes-skin-target-create-raced-or-failed")?, Some(&home.asset)).map_err(|_| "hermes-skin-target-create-raced-or-failed")?;
+        projectio::act_at_unlink(witness, &dir, temp_path.file_name().ok_or("hermes-skin-temp-cleanup-failed")?, false, None).map_err(|_| "hermes-skin-temp-cleanup-failed")?;
+        dir.sync_all().map_err(|_| "hermes-skins-directory-sync-failed")?;
         let meta = fs::symlink_metadata(&home.asset).map_err(|_| "hermes-skin-target-readback-failed")?;
         if !meta.is_file() || meta.uid() != home.uid || meta.gid() != home.gid || hash_file(&home.asset)? != SKIN_SHA256 {
             return Err("hermes-skin-target-readback-mismatch".into());
@@ -864,15 +870,15 @@ fn create_asset_new(home: &Home, bytes: &[u8]) -> Result<(), String> {
         Ok(())
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
+        if let Some(name) = temp_path.file_name() { let _ = projectio::act_at_unlink(witness, &dir, name, false, None); }
         if let (Some((dev, ino)), Ok(meta)) = (linked_identity, fs::symlink_metadata(&home.asset)) {
-            if meta.dev() == dev && meta.ino() == ino { let _ = fs::remove_file(&home.asset); }
+            if meta.dev() == dev && meta.ino() == ino { let _ = projectio::owner_remove_if_current(witness, &home.asset, bytes, false); }
         }
     }
     result
 }
 
-fn rollback(runtime: &Runtime, plans: &mut [HomePlan], assets: &mut Vec<AssetChange>, source: &[u8], item: &Interactable, state_path: &Path) -> Option<&'static str> {
+fn rollback(witness: &OwnerAcceptance, runtime: &Runtime, plans: &mut [HomePlan], assets: &mut Vec<AssetChange>, source: &[u8], item: &Interactable, state_path: &Path) -> Option<&'static str> {
     let mut failed = false;
     for plan in plans.iter_mut().rev() {
         if plan.config_attempted {
@@ -890,10 +896,10 @@ fn rollback(runtime: &Runtime, plans: &mut [HomePlan], assets: &mut Vec<AssetCha
                 let current = hash_file(&home.asset).ok();
                 let meta = fs::symlink_metadata(&home.asset).ok();
                 if current.as_deref() == Some(SKIN_SHA256) && meta.as_ref().is_some_and(|m| m.uid() == home.uid && m.gid() == home.gid) {
-                    if fs::remove_file(&home.asset).is_err() { failed = true; }
+                    if projectio::owner_remove_if_current(witness, &home.asset, source, false).is_err() { failed = true; }
                 } else { failed = true; }
                 if let Some(plan) = plans.iter_mut().find(|plan| plan.home.path == home.path) {
-                    if plan.created_skins_dir && fs::remove_dir(&home.skins).is_err() { failed = true; }
+                    if plan.created_skins_dir && remove_skins_dir(witness, &home).is_err() { failed = true; }
                 }
             }
             AssetChange::Replaced { home, prior_bytes, mode, .. } => {
