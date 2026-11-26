@@ -791,8 +791,11 @@ fn remove_skins_dir(witness: &OwnerAcceptance, home: &Home) -> std::io::Result<(
 
 fn create_skins_dir(witness: &OwnerAcceptance, home: &Home) -> Result<(), String> {
     let parent = open_directory(&home.path).map_err(|_| "hermes-skins-directory-create-failed")?;
-    let dir = projectio::act_at_make_dir(witness, &parent, OsStr::new("skins"), 0o700, Some(&home.skins))
-        .map_err(|_| "hermes-skins-directory-create-failed")?;
+    let dir = match projectio::act_at_make_dir(witness, &parent, OsStr::new("skins"), 0o700, Some(&home.skins)) {
+        Ok(dir) => dir,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return preflight_home(home),
+        Err(_) => return Err("hermes-skins-directory-create-failed".into()),
+    };
     let result = (|| {
         if unsafe { libc::geteuid() } == 0 {
             projectio::act_fd_owner(witness, &dir, home.uid, home.gid, Some(&home.skins))
