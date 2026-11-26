@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    os::unix::{ffi::OsStrExt, fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt}},
+    os::unix::{ffi::OsStrExt, fs::{DirBuilderExt, MetadataExt, OpenOptionsExt}},
     path::{Path, PathBuf},
 };
 
@@ -924,7 +924,7 @@ fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], _key: 
                 && hash_regular_nofollow(&node.path).ok().as_ref() == Some(hash))
         },
         |current| if *current { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
-        |_, _| {
+        |authorization, _| {
             let pinned = fs::OpenOptions::new().read(true)
                 .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .open(&shadow).map_err(|e| format!("rollback-shadow-missing {}: {e}", node.path.display()))?;
@@ -957,15 +957,15 @@ fn comparison_authorized_write(node: &Node, root: &Path, hash: &[u8; 32], _key: 
                 if unsafe { libc::linkat(libc::AT_FDCWD, descriptor_path.as_ptr(), destination.as_raw_fd(), target.as_ptr(), libc::AT_SYMLINK_FOLLOW) } != 0 {
                     return Err(std::io::Error::last_os_error().to_string());
                 }
-                if let Err(error) = fs::rename(&temp, &node.path) {
-                    let _ = fs::remove_file(&temp);
+                if let Err(error) = crate::atoms::projectio::act_rename(&authorization, &temp, &node.path, true, false) {
+                    let _ = crate::atoms::projectio::act_scratch_remove(&authorization, &temp);
                     return Err(error.to_string());
                 }
             }
             restore_owner(&node.path, node.uid, node.gid)?;
             let m = fs::symlink_metadata(&node.path).map_err(|e| e.to_string())?;
             if m.mode() & 0o7777 != node.mode & 0o7777 {
-                fs::set_permissions(&node.path, fs::Permissions::from_mode(node.mode & 0o7777)).map_err(|e| e.to_string())?;
+                crate::atoms::projectio::act_mode(&authorization, &node.path, node.mode & 0o7777).map_err(|e| e.to_string())?;
             }
             Ok(())
         },
@@ -1011,7 +1011,7 @@ fn remove_changed_kind(root: &Path, path: &Path) -> Result<(), String> {
     rm(root, path)
 }
 
-fn restore_link(node: &Node, target: &Path) -> Result<(), String> {
+fn restore_link(authorization: &crate::atoms::comparison::ActionAuthorization, node: &Node, target: &Path) -> Result<(), String> {
     if let Ok(m) = fs::symlink_metadata(&node.path) {
         if m.file_type().is_symlink() && m.uid() == node.uid && m.gid() == node.gid
             && fs::read_link(&node.path).map_err(|e| e.to_string())? == target { return Ok(()); }
@@ -1020,18 +1020,17 @@ fn restore_link(node: &Node, target: &Path) -> Result<(), String> {
     let name = node.path.file_name().ok_or_else(|| "name missing".to_string())?.to_string_lossy();
     let temp = parent.join(format!(".{name}.harmonia-link-{}-{}", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-    std::os::unix::fs::symlink(target, &temp).map_err(|e| e.to_string())?;
+    crate::atoms::projectio::act_link_stage(authorization, target, &temp).map_err(|e| e.to_string())?;
     let result = (|| {
         let m = fs::symlink_metadata(&temp).map_err(|e| e.to_string())?;
         if m.uid() != node.uid || m.gid() != node.gid {
-            let p = std::ffi::CString::new(temp.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
-            if unsafe { libc::lchown(p.as_ptr(), node.uid, node.gid) } != 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
+            crate::atoms::projectio::act_scratch_owner(authorization, &temp, node.uid, node.gid)
+                .map_err(|e| e.to_string())?;
         }
-        fs::rename(&temp, &node.path).map_err(|e| e.to_string())
+        crate::atoms::projectio::act_link_promote(authorization, target, &temp, &node.path,
+            crate::atoms::projectio::LinkPromotion::Rename, false).map_err(|e| e.to_string())
     })();
-    if result.is_err() { let _ = fs::remove_file(&temp); }
+    if result.is_err() { let _ = crate::atoms::projectio::act_scratch_remove(authorization, &temp); }
     result
 }
 
@@ -1118,9 +1117,14 @@ pub(crate) fn restore(
             .any(|parent| parent != root && root.starts_with(parent))
     });
     for root in changed.iter().rev() {
+        let act = crate::atoms::comparison::execute_once(
+            "ritual-restore-root",
+            || Ok::<_, String>(root_matches_snapshot(root, &s.nodes).unwrap_or(false)),
+            |current| if *current { crate::atoms::comparison::DiffDecision::Empty } else { crate::atoms::comparison::DiffDecision::Different },
+            |authorization, _| {
         let mut root_failed = false;
         if let Some(parent) = root.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
+            if let Err(error) = crate::atoms::projectio::act_make_dir(&authorization, parent) {
                 root_failed = true;
                 errors.push(format!("rollback-restore-failed {}: {error}", parent.display()));
             }
@@ -1154,15 +1158,15 @@ pub(crate) fn restore(
                 match &n.kind {
                     Kind::Missing => {},
                     Kind::Dir => {
-                        if fs::symlink_metadata(&n.path).is_err() { fs::create_dir(&n.path).map_err(|e| e.to_string())?; }
+                        if fs::symlink_metadata(&n.path).is_err() { crate::atoms::projectio::act_make_dir(&authorization, &n.path).map_err(|e| e.to_string())?; }
                         let m = fs::symlink_metadata(&n.path).map_err(|e| e.to_string())?;
                         if m.mode() & 0o700 != 0o700 {
-                            fs::set_permissions(&n.path, fs::Permissions::from_mode((m.mode() & 0o7777) | 0o700)).map_err(|e| e.to_string())?;
+                            crate::atoms::projectio::act_mode(&authorization, &n.path, (m.mode() & 0o7777) | 0o700).map_err(|e| e.to_string())?;
                         }
                     },
                     Kind::File(hash) => comparison_authorized_write(n, root, hash, key)?,
                     Kind::Special => return Err(format!("rollback-shadow-special-file {}", n.path.display())),
-                    Kind::Symlink(target) => restore_link(n, target)?,
+                    Kind::Symlink(target) => restore_link(&authorization, n, target)?,
                 }
                 Ok(())
             })();
@@ -1194,7 +1198,7 @@ pub(crate) fn restore(
                 if !m.file_type().is_dir() { return Err("not a directory".into()); }
                 restore_owner(&n.path, n.uid, n.gid)?;
                 if m.mode() & 0o7777 != n.mode & 0o7777 {
-                    fs::set_permissions(&n.path, fs::Permissions::from_mode(n.mode & 0o7777)).map_err(|e| e.to_string())?;
+                    crate::atoms::projectio::act_mode(&authorization, &n.path, n.mode & 0o7777).map_err(|e| e.to_string())?;
                 }
                 Ok(())
             });
@@ -1204,6 +1208,10 @@ pub(crate) fn restore(
             }
         }
         if !root_failed { restored_roots.insert(root.clone()); }
+        Ok::<(), String>(())
+            },
+        );
+        if let Err(error) = act { errors.push(format!("rollback-restore-failed {}: {error}", root.display())); }
     }
     #[cfg(feature = "test-facade")]
     if let Err(error) = mutate_rollback_verification_root(s) {

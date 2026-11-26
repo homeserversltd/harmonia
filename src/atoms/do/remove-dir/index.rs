@@ -4,8 +4,12 @@ use crate::atoms::{Drift, Receipt};
 use crate::atoms::comparison::ActionAuthorization;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static RESTORE_LINK_NONCE: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Xattr {
     pub name: Vec<u8>,
@@ -191,8 +195,30 @@ pub(crate) fn remove(authorization: &ActionAuthorization, root: &Path) -> Result
     crate::atoms::projectio::act_remove_tree(authorization, root, crate::atoms::projectio::RemoveTree::Tree, false)
         .map_err(|e| e.to_string())
 }
-fn restore_node(base: &Path, n: &Node) -> Result<(), String> {
-    use std::os::unix::ffi::OsStringExt;
+fn cleanup_link_stage(
+    authorization: &ActionAuthorization,
+    candidate: &Path,
+    link: &Path,
+) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(candidate) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+        Ok(metadata) => metadata,
+    };
+    if !metadata.file_type().is_symlink()
+        || fs::read_link(candidate).map_err(|e| e.to_string())? != link
+    {
+        return Err("remove-dir-link-stage-changed".into());
+    }
+    crate::atoms::projectio::act_remove(authorization, candidate, true)
+        .map_err(|e| e.to_string())
+}
+
+fn restore_node(
+    authorization: &ActionAuthorization,
+    base: &Path,
+    n: &Node,
+) -> Result<(), String> {
     let p = if n.relative.is_empty() {
         base.to_path_buf()
     } else {
@@ -200,29 +226,90 @@ fn restore_node(base: &Path, n: &Node) -> Result<(), String> {
     };
     match n.kind {
         Kind::Directory => {
-            fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+            crate::atoms::projectio::act_make_dir(authorization, &p)
+                .map_err(|e| e.to_string())?;
             for c in &n.children {
-                restore_node(base, c)?
+                restore_node(authorization, base, c)?
             }
         }
         Kind::File => {
             if let Some(d) = p.parent() {
-                fs::create_dir_all(d).map_err(|e| e.to_string())?
+                crate::atoms::projectio::act_make_dir(authorization, d)
+                    .map_err(|e| e.to_string())?
             };
-            let mut f = fs::File::create(&p).map_err(|e| e.to_string())?;
-            std::io::Write::write_all(&mut f, &n.bytes).map_err(|e| e.to_string())?
+            crate::atoms::projectio::act_put(
+                authorization,
+                &p,
+                &n.bytes,
+                Some(n.mode),
+                Some(n.uid),
+                Some(n.gid),
+            )
+            .map_err(|e| e.to_string())?;
         }
         Kind::Symlink => {
             if let Some(d) = p.parent() {
-                fs::create_dir_all(d).map_err(|e| e.to_string())?
+                crate::atoms::projectio::act_make_dir(authorization, d)
+                    .map_err(|e| e.to_string())?
             };
-            std::os::unix::fs::symlink(std::ffi::OsString::from_vec(n.link.clone()), &p)
-                .map_err(|e| e.to_string())?
+            let link = std::path::PathBuf::from(std::ffi::OsString::from_vec(n.link.clone()));
+            let parent = p.parent().unwrap_or_else(|| Path::new("."));
+            let candidate = loop {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let nonce = RESTORE_LINK_NONCE.fetch_add(1, Ordering::Relaxed);
+                let candidate = parent.join(format!(
+                    ".remove-dir-restore-{}-{timestamp}-{nonce}",
+                    std::process::id()
+                ));
+                match fs::symlink_metadata(&candidate) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(_) => continue,
+                    Err(e) => return Err(e.to_string()),
+                }
+                match crate::atoms::projectio::act_link_stage(
+                    authorization,
+                    &link,
+                    &candidate,
+                ) {
+                    Ok(()) => break candidate,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => {
+                        return match cleanup_link_stage(authorization, &candidate, &link) {
+                            Ok(()) => Err(error.to_string()),
+                            Err(cleanup) => Err(format!(
+                                "{error}; remove-dir-link-stage-cleanup-failed: {cleanup}"
+                            )),
+                        };
+                    }
+                }
+            };
+            if let Err(error) = crate::atoms::projectio::act_link_promote(
+                authorization,
+                &link,
+                &candidate,
+                &p,
+                crate::atoms::projectio::LinkPromotion::NoReplace,
+                false,
+            ) {
+                return match cleanup_link_stage(authorization, &candidate, &link) {
+                    Ok(()) => Err(error.to_string()),
+                    Err(cleanup) => Err(format!(
+                        "{error}; remove-dir-link-stage-cleanup-failed: {cleanup}"
+                    )),
+                };
+            }
         }
     };
     Ok(())
 }
-fn restore_attrs(p: &Path, n: &Node) -> Result<(), String> {
+fn restore_attrs(
+    authorization: &ActionAuthorization,
+    p: &Path,
+    n: &Node,
+) -> Result<(), String> {
     let current = attrs(p)?;
     if !n.xattrs.supported {
         return Ok(());
@@ -230,63 +317,50 @@ fn restore_attrs(p: &Path, n: &Node) -> Result<(), String> {
     if n.xattrs.supported && !current.supported {
         return Err("remove-dir-xattr-unsupported".into());
     }
-    let c = cpath(p)?;
     for old in current.values {
         if !n.xattrs.values.iter().any(|x| x.name == old.name) {
-            let nc = std::ffi::CString::new(old.name).map_err(|_| "remove-dir-xattr-name-nul")?;
-            if unsafe { libc::lremovexattr(c.as_ptr(), nc.as_ptr()) } < 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
+            let name = std::ffi::OsString::from_vec(old.name);
+            crate::atoms::projectio::act_xattr_remove(authorization, p, &name)
+                .map_err(|e| e.to_string())?;
         }
     }
     for x in &n.xattrs.values {
-        let nc = std::ffi::CString::new(x.name.clone()).map_err(|_| "remove-dir-xattr-name-nul")?;
-        if unsafe {
-            libc::lsetxattr(
-                c.as_ptr(),
-                nc.as_ptr(),
-                x.value.as_ptr() as *const _,
-                x.value.len(),
-                0,
-            )
-        } < 0
-        {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
+        let name = std::ffi::OsString::from_vec(x.name.clone());
+        crate::atoms::projectio::act_xattr_set(authorization, p, &name, &x.value)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-pub(crate) fn restore(base: &Path, image: &Image) -> Result<(), String> {
-    restore_node(base, &image.root)?;
-    fn walk(base: &Path, n: &Node) -> Result<(), String> {
+pub(crate) fn restore(
+    authorization: &ActionAuthorization,
+    base: &Path,
+    image: &Image,
+) -> Result<(), String> {
+    restore_node(authorization, base, &image.root)?;
+    fn walk(authorization: &ActionAuthorization, base: &Path, n: &Node) -> Result<(), String> {
         for c in &n.children {
-            walk(base, c)?
+            walk(authorization, base, c)?
         }
         let p = if n.relative.is_empty() {
             base.to_path_buf()
         } else {
             base.join(std::ffi::OsString::from_vec(n.relative.clone()))
         };
-        let c = cpath(&p)?;
-        if unsafe { libc::lchown(c.as_ptr(), n.uid, n.gid) } < 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        restore_attrs(&p, n)?;
+        crate::atoms::projectio::act_owner(authorization, &p, n.uid, n.gid)
+            .map_err(|e| e.to_string())?;
+        restore_attrs(authorization, &p, n)?;
         if !matches!(n.kind, Kind::Symlink) {
-            fs::set_permissions(&p, fs::Permissions::from_mode(n.mode))
+            crate::atoms::projectio::act_mode(authorization, &p, n.mode)
                 .map_err(|e| e.to_string())?
         }
         if matches!(n.kind, Kind::File | Kind::Directory) {
-            fs::File::open(&p)
-                .map_err(|e| e.to_string())?
-                .sync_all()
+            crate::atoms::projectio::act_sync(authorization, &p)
                 .map_err(|e| e.to_string())?
         }
         Ok(())
     }
-    walk(base, &image.root)?;
-    crate::atoms::touch::record_lane(base, "known-good");
+    walk(authorization, base, &image.root)?;
     Ok(())
 }
 
@@ -315,7 +389,7 @@ pub(crate) fn replace_authorized(
         if old.is_some() {
             remove(a, root)?;
         }
-        restore(root, replacement)
+        restore(a, root, replacement)
     })();
     if let Err(original) = result {
         let rollback = (|| {
@@ -323,7 +397,7 @@ pub(crate) fn replace_authorized(
                 remove(a, root)?;
             }
             if let Some(image) = old.as_ref() {
-                restore(root, image)?;
+                restore(a, root, image)?;
             }
             Ok::<(), String>(())
         })();
@@ -349,7 +423,7 @@ pub(crate) fn operate(
     let image = capture(root)?;
     remove(a, root)?;
     if let Some(x) = restore_image {
-        restore(root, x)?
+        restore(a, root, x)?
     };
     let _ = (a, i);
     Ok(image)
