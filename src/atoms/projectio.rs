@@ -107,7 +107,6 @@ pub(crate) fn act_make_dir(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_make_dir_new(
     _auth: &crate::atoms::comparison::ActionAuthorization, path: &Path,
 ) -> std::io::Result<()> {
@@ -1168,43 +1167,35 @@ pub(crate) fn act_create(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) struct RollbackWitness(());
 
 /// Only a sealed Snapshot mints one, so a failed observation never does.
-#[allow(dead_code)]
 pub(crate) fn rollback_witness(
     _sealed: &crate::atoms::r#do::ritual::Snapshot,
     _key: &crate::atoms::r#do::InvocationKey,
 ) -> RollbackWitness { RollbackWitness(()) }
 
 /// A scratch name belongs to the act, not to the touch collector.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum ScratchWitness<'a> {
     KnownGood(&'a crate::atoms::comparison::ActionAuthorization),
     Engine(&'a EngineStateWitness),
     Rollback(&'a RollbackWitness),
 }
-#[allow(dead_code)]
 impl<'a> From<&'a RollbackWitness> for ScratchWitness<'a> {
     fn from(w: &'a RollbackWitness) -> Self { Self::Rollback(w) }
 }
-#[allow(dead_code)]
 impl<'a> From<&'a crate::atoms::comparison::ActionAuthorization> for ScratchWitness<'a> {
     fn from(w: &'a crate::atoms::comparison::ActionAuthorization) -> Self { Self::KnownGood(w) }
 }
-#[allow(dead_code)]
 impl<'a> From<&'a EngineStateWitness> for ScratchWitness<'a> {
     fn from(w: &'a EngineStateWitness) -> Self { Self::Engine(w) }
 }
-#[allow(dead_code)]
 impl ScratchWitness<'_> {
     fn hold(self) { match self { Self::KnownGood(w) => { let _ = w; }, Self::Engine(w) => { let _ = w; }, Self::Rollback(w) => { let _ = w; } } }
 }
 
 /// A caller's authority accompanies held-descriptor mutations.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum PenWitness<'a> {
     Owner(&'a OwnerAcceptance),
@@ -1212,23 +1203,18 @@ pub(crate) enum PenWitness<'a> {
     KnownGood(&'a crate::atoms::comparison::ActionAuthorization),
     Rollback(&'a RollbackWitness),
 }
-#[allow(dead_code)]
 impl<'a> From<&'a RollbackWitness> for PenWitness<'a> {
     fn from(w: &'a RollbackWitness) -> Self { Self::Rollback(w) }
 }
-#[allow(dead_code)]
 impl<'a> From<&'a OwnerAcceptance> for PenWitness<'a> {
     fn from(w: &'a OwnerAcceptance) -> Self { Self::Owner(w) }
 }
-#[allow(dead_code)]
 impl<'a> From<&'a EngineStateWitness> for PenWitness<'a> {
     fn from(w: &'a EngineStateWitness) -> Self { Self::Engine(w) }
 }
-#[allow(dead_code)]
 impl<'a> From<&'a crate::atoms::comparison::ActionAuthorization> for PenWitness<'a> {
     fn from(w: &'a crate::atoms::comparison::ActionAuthorization) -> Self { Self::KnownGood(w) }
 }
-#[allow(dead_code)]
 impl PenWitness<'_> {
     fn lane(self) -> &'static str {
         match self {
@@ -1240,7 +1226,6 @@ impl PenWitness<'_> {
     }
 }
 
-#[allow(dead_code)]
 fn pen_name(name: &std::ffi::OsStr) -> std::io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
     let bytes = name.as_bytes();
@@ -1249,21 +1234,17 @@ fn pen_name(name: &std::ffi::OsStr) -> std::io::Result<std::ffi::CString> {
     }
     std::ffi::CString::new(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
 }
-#[allow(dead_code)]
 fn pen_check(record: Option<&Path>) -> std::io::Result<()> {
     if let Some(path) = record { check_act_path(path)?; }
     Ok(())
 }
-#[allow(dead_code)]
 fn pen_record(record: Option<&Path>, lane: &'static str) {
     if let Some(path) = record { crate::atoms::touch::record_lane(path, lane); }
 }
-#[allow(dead_code)]
 fn pen_error(act: &str, record: Option<&Path>) -> std::io::Error {
     act_mismatch(act, record.unwrap_or_else(|| Path::new("<fd>")))
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_fd_owner<'a>(w: impl Into<PenWitness<'a>>, file: &File, uid: libc::uid_t, gid: libc::gid_t, record: Option<&Path>) -> std::io::Result<()> {
     pen_check(record)?;
     let lane = w.into().lane();
@@ -1275,7 +1256,6 @@ pub(crate) fn act_fd_owner<'a>(w: impl Into<PenWitness<'a>>, file: &File, uid: l
     if (uid != !0 && after.uid() != uid) || (gid != !0 && after.gid() != gid) { return Err(pen_error("fd-owner", record)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_fd_mode<'a>(w: impl Into<PenWitness<'a>>, file: &File, mode: u32, record: Option<&Path>) -> std::io::Result<()> {
     pen_check(record)?;
     let lane = w.into().lane();
@@ -1285,7 +1265,6 @@ pub(crate) fn act_fd_mode<'a>(w: impl Into<PenWitness<'a>>, file: &File, mode: u
     if file.metadata()?.mode() & 0o7777 != mode & 0o7777 { return Err(pen_error("fd-mode", record)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_fd_write<'a>(w: impl Into<PenWitness<'a>>, file: &File, bytes: &[u8], record: Option<&Path>) -> std::io::Result<()> {
     use std::os::unix::fs::FileExt;
     pen_check(record)?;
@@ -1324,7 +1303,6 @@ pub(crate) fn act_fd_write<'a>(w: impl Into<PenWitness<'a>>, file: &File, bytes:
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_at_open_write<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr) -> std::io::Result<File> {
     let name = pen_name(name)?;
     let _ = w.into().lane();
@@ -1335,7 +1313,6 @@ pub(crate) fn act_at_open_write<'a>(w: impl Into<PenWitness<'a>>, dir: &File, na
     Ok(file)
 }
 
-#[allow(dead_code)]
 fn cleanup_created_at(dir: &File, name: &std::ffi::CString, file: &File, directory: bool) {
     if let (Ok(opened), Ok(named)) = (file.metadata(), stat_at_nofollow(dir, name)) {
         if file_identity(&opened) == stat_identity(&named) {
@@ -1344,7 +1321,6 @@ fn cleanup_created_at(dir: &File, name: &std::ffi::CString, file: &File, directo
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_at_make_dir<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, mode: u32, record: Option<&Path>) -> std::io::Result<File> {
     pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
     // Keep the new directory openable before applying a possibly restrictive final mode.
@@ -1369,7 +1345,6 @@ pub(crate) fn act_at_make_dir<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name
     }
     Ok(file)
 }
-#[allow(dead_code)]
 pub(crate) fn act_at_create_new<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, mode: u32, record: Option<&Path>) -> std::io::Result<File> {
     pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
     let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, mode as libc::mode_t) };
@@ -1388,7 +1363,6 @@ pub(crate) fn act_at_create_new<'a>(w: impl Into<PenWitness<'a>>, dir: &File, na
     }
     Ok(file)
 }
-#[allow(dead_code)]
 pub(crate) fn act_at_unlink<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, directory: bool, record: Option<&Path>) -> std::io::Result<()> {
     pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
     if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), if directory { libc::AT_REMOVEDIR } else { 0 }) } != 0 { return Err(std::io::Error::last_os_error()); }
@@ -1396,7 +1370,6 @@ pub(crate) fn act_at_unlink<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: 
     if !matches!(stat_at_nofollow(dir, &name), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(pen_error("unlink-at", record)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_at_rename<'a>(w: impl Into<PenWitness<'a>>, from_dir: &File, from_name: &std::ffi::OsStr, to_dir: &File, to_name: &std::ffi::OsStr, how: LinkPromotion, record_to: Option<&Path>, record_from: Option<&Path>) -> std::io::Result<()> {
     pen_check(record_to)?; pen_check(record_from)?; let from_name = pen_name(from_name)?; let to_name = pen_name(to_name)?; let lane = w.into().lane();
     let before = stat_at_nofollow(from_dir, &from_name)?;
@@ -1414,7 +1387,6 @@ pub(crate) fn act_at_rename<'a>(w: impl Into<PenWitness<'a>>, from_dir: &File, f
     if !to_ok || !from_ok { return Err(pen_error("rename-at", record_to)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_at_link<'a>(w: impl Into<PenWitness<'a>>, from_dir: &File, from_name: &std::ffi::OsStr, to_dir: &File, to_name: &std::ffi::OsStr, record: Option<&Path>) -> std::io::Result<()> {
     pen_check(record)?; let from_name = pen_name(from_name)?; let to_name = pen_name(to_name)?; let lane = w.into().lane();
     if unsafe { libc::linkat(from_dir.as_raw_fd(), from_name.as_ptr(), to_dir.as_raw_fd(), to_name.as_ptr(), 0) } != 0 { return Err(std::io::Error::last_os_error()); }
@@ -1423,7 +1395,6 @@ pub(crate) fn act_at_link<'a>(w: impl Into<PenWitness<'a>>, from_dir: &File, fro
     if stat_identity(&a) != stat_identity(&b) { return Err(pen_error("link-at", record)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_fd_link<'a>(w: impl Into<PenWitness<'a>>, file: &File, to_dir: &File, to_name: &std::ffi::OsStr, record: Option<&Path>) -> std::io::Result<()> {
     pen_check(record)?; let to_name = pen_name(to_name)?; let lane = w.into().lane();
     let source = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).expect("fd path contains no NUL");
@@ -1434,7 +1405,6 @@ pub(crate) fn act_fd_link<'a>(w: impl Into<PenWitness<'a>>, file: &File, to_dir:
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_scratch_make_dir_new_mode<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, mode: u32) -> std::io::Result<()> {
     w.into().hold(); check_act_path(path)?; fs::create_dir(path)?;
     let dir = OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path)?;
@@ -1446,7 +1416,6 @@ pub(crate) fn act_scratch_make_dir_new_mode<'a>(w: impl Into<ScratchWitness<'a>>
     if !opened.is_dir() || opened.mode() & 0o7777 != mode & 0o7777 || file_identity(&opened) != file_identity(&named) { return Err(act_mismatch("scratch-make-dir", path)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_rename_new<'a>(w: impl Into<ScratchWitness<'a>>, from: &Path, to: &Path) -> std::io::Result<()> {
     w.into().hold(); check_act_path(from)?; check_act_path(to)?;
     let before = fs::symlink_metadata(from)?;
@@ -1454,13 +1423,11 @@ pub(crate) fn act_scratch_rename_new<'a>(w: impl Into<ScratchWitness<'a>>, from:
     if !fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) || !matches!(fs::symlink_metadata(from), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("scratch-rename", to)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_symlink<'a>(w: impl Into<ScratchWitness<'a>>, text: &Path, path: &Path) -> std::io::Result<()> {
     w.into().hold(); check_act_path(path)?; std::os::unix::fs::symlink(text, path)?;
     if !fs::read_link(path).is_ok_and(|actual| actual == text) { return Err(act_mismatch("scratch-symlink", path)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_temp_dir<'a>(w: impl Into<ScratchWitness<'a>>, parent: &Path, prefix: &std::ffi::OsStr) -> std::io::Result<PathBuf> {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     w.into().hold(); check_act_path(parent)?; let _ = pen_name(prefix)?;
@@ -1503,11 +1470,9 @@ fn make_directories(path: &Path, record: bool) -> std::io::Result<Vec<PathBuf>> 
     Ok(made)
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_scratch_make_dir<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<Vec<PathBuf>> {
     w.into().hold(); make_directories(path, false)
 }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_make_dir_new<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> {
     w.into().hold(); check_act_path(path)?; fs::create_dir(path)?;
     if !fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) { return Err(act_mismatch("make-dir", path)); }
@@ -1523,11 +1488,9 @@ fn set_act_mode(path: &Path, mode: u32, record: bool) -> std::io::Result<()> {
     if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && m.mode() & 0o7777 == mode & 0o7777) { return Err(act_mismatch("mode", path)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_mode<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, mode: u32) -> std::io::Result<()> {
     w.into().hold(); set_act_mode(path, mode, false)
 }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_chown<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     w.into().hold(); check_act_path(path)?;
@@ -1539,7 +1502,6 @@ pub(crate) fn act_scratch_chown<'a>(w: impl Into<ScratchWitness<'a>>, path: &Pat
     Ok(())
 }
 /// Change the owner of the scratch link itself, never its target.
-#[allow(dead_code)]
 pub(crate) fn act_scratch_link_owner<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     w.into().hold();
@@ -1557,7 +1519,6 @@ pub(crate) fn act_scratch_link_owner<'a>(w: impl Into<ScratchWitness<'a>>, path:
 }
 
 /// Restore a mode under the sealed rollback witness, recording real changes.
-#[allow(dead_code)]
 pub(crate) fn rollback_mode(_w: &RollbackWitness, path: &Path, mode: u32) -> std::io::Result<()> {
     check_act_path(path)?;
     let before = fs::symlink_metadata(path)?;
@@ -1572,7 +1533,6 @@ pub(crate) fn rollback_mode(_w: &RollbackWitness, path: &Path, mode: u32) -> std
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_scratch_write_new<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
     w.into().hold(); check_act_path(path)?;
     let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -1598,16 +1558,11 @@ fn remove_act(path: &Path, kind: u8, record: bool) -> std::io::Result<()> {
     if !matches!(fs::symlink_metadata(path), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("remove", path)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_remove<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> { w.into().hold(); remove_act(path, 0, false) }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_remove_dir<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> { w.into().hold(); remove_act(path, 1, false) }
-#[allow(dead_code)]
 pub(crate) fn act_scratch_remove_tree<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> { w.into().hold(); remove_act(path, 2, false) }
 
-#[allow(dead_code)]
 pub(crate) fn engine_make_dir(_w: &EngineStateWitness, path: &Path) -> std::io::Result<()> { make_directories(path, true).map(|_| ()) }
-#[allow(dead_code)]
 pub(crate) fn engine_mode(_w: &EngineStateWitness, path: &Path, mode: u32) -> std::io::Result<()> { set_act_mode(path, mode, true) }
 
 // Write and sync an unrecorded sibling, then make the fully formed inode visible.
@@ -1631,17 +1586,13 @@ fn engine_write(target: &Path, bytes: &[u8], mode: u32, exclusive: bool) -> std:
     if result.is_err() { let _ = fs::remove_file(&temp_path); }
     result
 }
-#[allow(dead_code)]
 pub(crate) fn engine_create_new(_w: &EngineStateWitness, target: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> { engine_write(target, bytes, mode, true) }
-#[allow(dead_code)]
 pub(crate) fn engine_put(_w: &EngineStateWitness, target: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> { engine_write(target, bytes, mode, false) }
-#[allow(dead_code)]
 pub(crate) fn engine_put_owned(_w: &EngineStateWitness, target: &Path, bytes: &[u8], mode: u32, uid: u32, gid: u32) -> std::io::Result<()> {
     check_act_path(target)?;
     cleanup_stale_temporaries_for_target(target).map_err(std::io::Error::other)?;
     put_file(target, bytes, mode, Some(uid), Some(gid), false, Some("self"))
 }
-#[allow(dead_code)]
 pub(crate) fn engine_open_lock(_w: &EngineStateWitness, path: &Path) -> std::io::Result<File> {
     check_act_path(path)?;
     let (file, created) = match OpenOptions::new().write(true).create_new(true).open(path) {
@@ -1654,7 +1605,6 @@ pub(crate) fn engine_open_lock(_w: &EngineStateWitness, path: &Path) -> std::io:
     if !opened.is_file() || !fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && file_identity(&m) == file_identity(&opened)) { return Err(act_mismatch("lock", path)); }
     Ok(file)
 }
-#[allow(dead_code)]
 pub(crate) fn engine_rename(_w: &EngineStateWitness, from: &Path, to: &Path, scratch_from: bool, scratch_to: bool) -> std::io::Result<()> {
     check_act_path(from)?; check_act_path(to)?;
     let before = fs::symlink_metadata(from)?;
@@ -1668,14 +1618,11 @@ pub(crate) fn engine_rename(_w: &EngineStateWitness, from: &Path, to: &Path, scr
     if !fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) || !matches!(fs::symlink_metadata(from), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("rename", to)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn engine_remove(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 0, !scratch) }
-#[allow(dead_code)]
 pub(crate) fn engine_remove_if(_w: &EngineStateWitness, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> {
     remove_if_claimed(path, expected, scratch, "self")
 }
 
-#[allow(dead_code)]
 fn remove_if_claimed(path: &Path, expected: &[u8], scratch: bool, lane: &'static str) -> std::io::Result<()> {
     check_act_path(path)?;
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
@@ -1721,13 +1668,7 @@ fn remove_if_claimed(path: &Path, expected: &[u8], scratch: bool, lane: &'static
         Err(e) => Err(e),
     }
 }
-#[allow(dead_code)]
-pub(crate) fn engine_remove_dir(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 1, !scratch) }
-#[allow(dead_code)]
-pub(crate) fn engine_remove_tree(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 2, !scratch) }
-
 // Read a regular file without following a final symlink, and keep its metadata.
-#[allow(dead_code)]
 fn read_regular(path: &Path) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
     check_act_path(path)?;
     let mut file = OpenOptions::new().read(true)
@@ -1739,7 +1680,6 @@ fn read_regular(path: &Path) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
     Ok((bytes, metadata))
 }
 
-#[allow(dead_code)]
 fn put_file(target: &Path, bytes: &[u8], mode: u32, uid: Option<u32>, gid: Option<u32>, exclusive: bool, record: Option<&'static str>) -> std::io::Result<()> {
     check_act_path(target)?;
     let parent = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
@@ -1773,7 +1713,6 @@ fn put_file(target: &Path, bytes: &[u8], mode: u32, uid: Option<u32>, gid: Optio
 }
 
 // Unlike create_dir_all, each successful mkdir is recorded before readback.
-#[allow(dead_code)]
 fn witnessed_directories(path: &Path, lane: &'static str) -> std::io::Result<()> {
     check_act_path(path)?;
     let mut missing = Vec::new();
@@ -1797,23 +1736,8 @@ fn witnessed_directories(path: &Path, lane: &'static str) -> std::io::Result<()>
     Ok(())
 }
 
-#[allow(dead_code)]
-pub(crate) fn rollback_put(_w: &RollbackWitness, target: &Path, bytes: &[u8], mode: u32, uid: u32, gid: u32) -> std::io::Result<()> {
-    check_act_path(target)?;
-    put_file(target, bytes, mode, Some(uid), Some(gid), false, Some("known-good"))
-}
-#[allow(dead_code)]
-pub(crate) fn rollback_remove(_w: &RollbackWitness, path: &Path, scratch: bool) -> std::io::Result<()> {
-    check_act_path(path)?;
-    fs::remove_file(path)?;
-    if !scratch { crate::atoms::touch::record_lane(path, "known-good"); }
-    if !matches!(fs::symlink_metadata(path), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("remove", path)); }
-    Ok(())
-}
-#[allow(dead_code)]
 pub(crate) fn rollback_make_dir(_w: &RollbackWitness, path: &Path) -> std::io::Result<()> { witnessed_directories(path, "known-good") }
 
-#[allow(dead_code)]
 pub(crate) fn rollback_symlink(w: &RollbackWitness, text: &Path, path: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     check_act_path(path)?;
@@ -1843,47 +1767,8 @@ pub(crate) fn rollback_symlink(w: &RollbackWitness, text: &Path, path: &Path, ui
     let _ = w;
     result
 }
-#[allow(dead_code)]
-pub(crate) fn rollback_rename(_w: &RollbackWitness, from: &Path, to: &Path, scratch_from: bool, scratch_to: bool) -> std::io::Result<()> {
-    check_act_path(from)?; check_act_path(to)?;
-    let before = fs::symlink_metadata(from)?;
-    if fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) { return Ok(()); }
-    fs::rename(from, to)?;
-    if !scratch_to { crate::atoms::touch::record_lane(to, "known-good"); }
-    if !scratch_from { crate::atoms::touch::record_lane(from, "known-good"); }
-    if !fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) || !matches!(fs::symlink_metadata(from), Err(ref e) if e.kind() == std::io::ErrorKind::NotFound) { return Err(act_mismatch("rename", to)); }
-    Ok(())
-}
-#[allow(dead_code)]
-pub(crate) fn owner_make_dir(_w: &OwnerAcceptance, path: &Path) -> std::io::Result<()> { witnessed_directories(path, "interactable") }
-#[allow(dead_code)]
-pub(crate) fn owner_mode(_w: &OwnerAcceptance, path: &Path, mode: u32) -> std::io::Result<()> {
-    check_act_path(path)?;
-    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path)?;
-    let before = file.metadata()?;
-    let changed = before.mode() & 0o7777 != mode & 0o7777;
-    if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
-    if changed { crate::atoms::touch::record_lane(path, "interactable"); }
-    if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && file_identity(&m) == file_identity(&before) && m.mode() & 0o7777 == mode & 0o7777) { return Err(act_mismatch("mode", path)); }
-    Ok(())
-}
-#[allow(dead_code)]
-pub(crate) fn owner_chown(_w: &OwnerAcceptance, path: &Path, uid: libc::uid_t, gid: libc::gid_t) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    check_act_path(path)?;
-    let before = fs::symlink_metadata(path)?;
-    if before.file_type().is_symlink() { return Err(std::io::Error::other(format!("projectio-owner-symlink-refused {}", path.display()))); }
-    let changed = (uid != !0 && before.uid() != uid) || (gid != !0 && before.gid() != gid);
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    if unsafe { libc::lchown(c.as_ptr(), uid, gid) } != 0 { return Err(std::io::Error::last_os_error()); }
-    if changed { crate::atoms::touch::record_lane(path, "interactable"); }
-    if !fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink() && file_identity(&m) == file_identity(&before) && (uid == !0 || m.uid() == uid) && (gid == !0 || m.gid() == gid)) { return Err(act_mismatch("owner", path)); }
-    Ok(())
-}
-#[allow(dead_code)]
 pub(crate) fn owner_remove_if_current(_w: &OwnerAcceptance, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> { remove_if_claimed(path, expected, scratch, "interactable") }
 
-#[allow(dead_code)]
 pub(crate) fn act_put(_auth: &crate::atoms::comparison::ActionAuthorization, target: &Path, bytes: &[u8], mode: Option<u32>, uid: Option<u32>, gid: Option<u32>) -> std::io::Result<()> {
     check_act_path(target)?;
     let existing = match fs::symlink_metadata(target) {
@@ -1899,14 +1784,12 @@ pub(crate) fn act_put(_auth: &crate::atoms::comparison::ActionAuthorization, tar
     put_file(target, bytes, mode, Some(uid), Some(gid), existing.is_none(), Some("known-good"))
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_copy(auth: &crate::atoms::comparison::ActionAuthorization, source: &Path, target: &Path, mode: Option<u32>, uid: Option<u32>, gid: Option<u32>) -> std::io::Result<()> {
     check_act_path(source)?; check_act_path(target)?;
     let (bytes, metadata) = read_regular(source)?;
     act_put(auth, target, &bytes, Some(mode.unwrap_or(metadata.mode() & 0o7777)), uid, gid)
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_scratch_copy<'a>(w: impl Into<ScratchWitness<'a>>, source: &Path, target: &Path, mode: Option<u32>) -> std::io::Result<()> {
     w.into().hold(); check_act_path(source)?; check_act_path(target)?;
     let (bytes, metadata) = read_regular(source)?;
@@ -1914,7 +1797,6 @@ pub(crate) fn act_scratch_copy<'a>(w: impl Into<ScratchWitness<'a>>, source: &Pa
 }
 
 /// A tree promoted later by act_rename records only the promoted root.
-#[allow(dead_code)]
 pub(crate) fn act_scratch_copy_tree<'a>(w: impl Into<ScratchWitness<'a>>, source_dir: &Path, target_dir: &Path) -> std::io::Result<()> {
     let w = w.into(); w.hold(); check_act_path(source_dir)?; check_act_path(target_dir)?;
     let metadata = fs::symlink_metadata(source_dir)?;
@@ -1942,7 +1824,6 @@ pub(crate) fn act_scratch_copy_tree<'a>(w: impl Into<ScratchWitness<'a>>, source
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn act_exchange_files(_auth: &crate::atoms::comparison::ActionAuthorization, candidate: &Path, target: &Path) -> std::io::Result<()> {
     check_act_path(candidate)?; check_act_path(target)?;
     let a = fs::symlink_metadata(candidate)?; let b = fs::symlink_metadata(target)?;
@@ -1954,12 +1835,6 @@ pub(crate) fn act_exchange_files(_auth: &crate::atoms::comparison::ActionAuthori
     Ok(())
 }
 
-#[allow(dead_code)]
-pub(crate) fn act_remove_if_current(_auth: &crate::atoms::comparison::ActionAuthorization, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> {
-    remove_if_claimed(path, expected, scratch, "known-good")
-}
-
-#[allow(dead_code)]
 fn xattr_read(path: &std::ffi::CStr, name: &std::ffi::CStr) -> std::io::Result<Option<Vec<u8>>> {
     loop {
         let size = unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
@@ -1980,7 +1855,6 @@ fn xattr_read(path: &std::ffi::CStr, name: &std::ffi::CStr) -> std::io::Result<O
     }
 }
 
-#[allow(dead_code)]
 fn xattr_change(path: &Path, name: &std::ffi::OsStr, value: Option<&[u8]>) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     check_act_path(path)?;
@@ -1997,12 +1871,9 @@ fn xattr_change(path: &Path, name: &std::ffi::OsStr, value: Option<&[u8]>) -> st
     if xattr_read(&p, &n)?.as_deref() != value { return Err(act_mismatch("xattr", path)); }
     Ok(())
 }
-#[allow(dead_code)]
 pub(crate) fn act_xattr_set(_auth: &crate::atoms::comparison::ActionAuthorization, path: &Path, name: &std::ffi::OsStr, value: &[u8]) -> std::io::Result<()> { xattr_change(path, name, Some(value)) }
-#[allow(dead_code)]
 pub(crate) fn act_xattr_remove(_auth: &crate::atoms::comparison::ActionAuthorization, path: &Path, name: &std::ffi::OsStr) -> std::io::Result<()> { xattr_change(path, name, None) }
 
-#[allow(dead_code)]
 pub(crate) fn act_sync<'a>(w: impl Into<ScratchWitness<'a>>, path: &Path) -> std::io::Result<()> {
     w.into().hold(); check_act_path(path)?;
     let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path)?;
