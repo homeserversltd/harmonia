@@ -315,35 +315,21 @@ fn strict_xattrs(_path: &Path) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, String> {
 }
 
 #[cfg(unix)]
-fn strict_set_xattrs(path: &Path, wanted: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), String> {
+fn strict_set_xattrs(authorization: &crate::atoms::comparison::ActionAuthorization, path: &Path, wanted: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
     let current = strict_xattrs(path)?;
     for name in current.keys().filter(|n| !wanted.contains_key(*n)) {
-        let cn = std::ffi::CString::new(name.as_slice()).map_err(|e| e.to_string())?;
-        if unsafe { libc::lremovexattr(c.as_ptr(), cn.as_ptr()) } != 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
+        crate::atoms::projectio::act_xattr_remove(authorization, path, std::ffi::OsStr::from_bytes(name))
+            .map_err(|e| e.to_string())?;
     }
     for (name, value) in wanted {
-        let cn = std::ffi::CString::new(name.as_slice()).map_err(|e| e.to_string())?;
-        if unsafe {
-            libc::lsetxattr(
-                c.as_ptr(),
-                cn.as_ptr(),
-                value.as_ptr() as *const _,
-                value.len(),
-                0,
-            )
-        } != 0
-        {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
+        crate::atoms::projectio::act_xattr_set(authorization, path, std::ffi::OsStr::from_bytes(name), value)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 #[cfg(not(unix))]
-fn strict_set_xattrs(_path: &Path, _wanted: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), String> {
+fn strict_set_xattrs(_authorization: &crate::atoms::comparison::ActionAuthorization, _path: &Path, _wanted: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), String> {
     Ok(())
 }
 
@@ -388,23 +374,20 @@ fn collision_kind(m: &fs::Metadata) -> &'static str {
         "non-regular"
     }
 }
-fn strict_restore(path: &Path, old: &StrictPreimage) -> Result<(), String> {
+fn strict_restore(authorization: &crate::atoms::comparison::ActionAuthorization, path: &Path, old: &StrictPreimage) -> Result<(), String> {
     if old.existed {
-        fs::write(path, &old.bytes).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            fs::set_permissions(path, fs::Permissions::from_mode(old.mode))
-                .map_err(|e| e.to_string())?;
-            let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
-                .map_err(|e| e.to_string())?;
-            if unsafe { libc::chown(c.as_ptr(), old.uid, old.gid) } != 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            };
+        match fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_file() => {},
+            Ok(_) => return Err("place-file-rollback-collision".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("place-file-rollback-target-absent".into()),
+            Err(e) => return Err(e.to_string()),
         }
-        strict_set_xattrs(path, &old.xattrs)
+        crate::atoms::projectio::act_put(authorization, path, &old.bytes, Some(old.mode), Some(old.uid), Some(old.gid))
+            .map_err(|e| e.to_string())?;
+        strict_set_xattrs(authorization, path, &old.xattrs)
     } else {
         match fs::symlink_metadata(path) {
-            Ok(m) if m.file_type().is_file() => fs::remove_file(path).map_err(|e| e.to_string()),
+            Ok(m) if m.file_type().is_file() => crate::atoms::projectio::act_remove(authorization, path, false).map_err(|e| e.to_string()),
             Ok(_) => Err("place-file-rollback-collision".into()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.to_string()),
@@ -416,6 +399,9 @@ pub(crate) fn execute_strict(
     request: StrictPlaceFileRequest<'_>,
 ) -> Result<PlaceFileOutcome, String> {
     let old = strict_preimage(request.path)?;
+    if !old.existed {
+        return Err("place-file-strict-target-absent".into());
+    }
     let desired_equal = old.existed
         && old.bytes == request.declared_bytes
         && old.mode == request.mode
@@ -436,6 +422,15 @@ pub(crate) fn execute_strict(
             pre_write_validator: None,
         });
     }
+    let run = crate::atoms::comparison::execute_once(
+        "place-file-strict",
+        || Ok::<_, String>(old.clone()),
+        |observed| if observed.existed && observed.bytes == request.declared_bytes
+            && observed.mode == request.mode && observed.uid == request.uid
+            && observed.gid == request.gid && observed.xattrs == *request.xattrs {
+                crate::atoms::comparison::DiffDecision::Empty
+            } else { crate::atoms::comparison::DiffDecision::Different },
+        |authorization, _| {
     let result: Result<PlaceFileOutcome, String> = (|| {
         let out = execute(PlaceFileRequest {
             path: request.path,
@@ -449,7 +444,7 @@ pub(crate) fn execute_strict(
             invocation: Some(request.invocation),
             pre_write_validator: None,
         })?;
-        strict_set_xattrs(request.path, request.xattrs)?;
+        strict_set_xattrs(&authorization, request.path, request.xattrs)?;
         if request.fail_after_action {
             return Err("place-file-injected-post-action-failure".into());
         }
@@ -468,12 +463,18 @@ pub(crate) fn execute_strict(
     match result {
         Ok(v) => Ok(v),
         Err(e) => {
-            let rollback = strict_restore(request.path, &old);
+            let rollback = strict_restore(&authorization, request.path, &old);
             match rollback {
                 Ok(()) => Err(format!("{e}; exact-rollback=ok")),
                 Err(r) => Err(format!("{e}; exact-rollback=failed:{r}")),
             }
         }
+    }
+        },
+    )?;
+    match run {
+        crate::atoms::comparison::ComparisonRun::Moved { movement, .. } => Ok(movement),
+        crate::atoms::comparison::ComparisonRun::Current { .. } => Err("place-file-strict-unexpected-current".into()),
     }
 }
 
@@ -546,42 +547,42 @@ mod mutation {
         ownership: DeclaredOwnership,
         observation: &PlaceFileObservation,
     ) -> Result<PlaceFileMovement, String> {
-        use std::io::Write;
-        use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::io::AsRawFd;
         let parent = path.parent().ok_or("xenia-guest-not-installed")?;
         let name = path.file_name().ok_or("xenia-guest-not-installed")?.to_string_lossy();
         let temp = parent.join(format!(".{name}.xenia-update-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default().as_nanos()));
         let mut exchanged = false;
+        let mut candidate_identity = None;
         let result = (|| -> Result<(), String> {
-            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)
+            let mode = mode.ok_or("xenia-update-mode-missing")?;
+            crate::atoms::projectio::act_scratch_write_new(authorization, &temp, bytes, mode)
                 .map_err(|e| format!("xenia-update-temp-create-failed: {e}"))?;
-            file.write_all(bytes).map_err(|e| format!("xenia-update-temp-write-failed: {e}"))?;
             let uid = ownership.uid.ok_or("xenia-update-owner-missing")?;
             let gid = ownership.gid.ok_or("xenia-update-group-missing")?;
-            if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-                return Err(format!("xenia-update-owner-failed: {}", std::io::Error::last_os_error()));
-            }
-            file.set_permissions(std::fs::Permissions::from_mode(mode.ok_or("xenia-update-mode-missing")?))
+            crate::atoms::projectio::act_scratch_chown(authorization, &temp, uid, gid)
+                .map_err(|e| format!("xenia-update-owner-failed: {e}"))?;
+            crate::atoms::projectio::act_scratch_mode(authorization, &temp, mode)
                 .map_err(|e| format!("xenia-update-mode-failed: {e}"))?;
-            file.sync_all().map_err(|e| format!("xenia-update-sync-failed: {e}"))?;
-            let old = std::ffi::CString::new(temp.as_os_str().as_bytes()).map_err(|_| "xenia-update-path-invalid")?;
-            let new = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| "xenia-update-path-invalid")?;
-            if unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_EXCHANGE) } != 0 {
-                let error = std::io::Error::last_os_error();
+            crate::atoms::projectio::act_sync(authorization, &temp).map_err(|e| format!("xenia-update-sync-failed: {e}"))?;
+            let m = fs::symlink_metadata(&temp).map_err(|e| e.to_string())?;
+            candidate_identity = Some((m.dev(), m.ino()));
+            if let Err(error) = crate::atoms::projectio::act_exchange_files(authorization, &temp, path) {
                 if error.kind() == std::io::ErrorKind::NotFound { return Err("xenia-guest-not-installed".into()); }
                 return Err(format!("xenia-update-exchange-failed: {error}"));
             }
             exchanged = true;
-            crate::atoms::touch::record(path, None, false);
-            std::fs::remove_file(&temp).map_err(|e| format!("xenia-update-prior-remove-failed: {e}"))?;
-            std::fs::File::open(parent).and_then(|dir| dir.sync_all())
+            crate::atoms::projectio::act_scratch_remove(authorization, &temp).map_err(|e| format!("xenia-update-prior-remove-failed: {e}"))?;
+            crate::atoms::projectio::act_sync(authorization, parent)
                 .map_err(|e| format!("xenia-update-parent-sync-failed: {e}"))?;
             Ok(())
         })();
-        if result.is_err() && !exchanged { let _ = std::fs::remove_file(&temp); }
+        if result.is_err() && !exchanged {
+            let still_candidate = candidate_identity.map_or(true, |identity| {
+                fs::symlink_metadata(&temp).is_ok_and(|m| (m.dev(), m.ino()) == identity)
+            });
+            if still_candidate { let _ = crate::atoms::projectio::act_scratch_remove(authorization, &temp); }
+        }
         result?;
         let _ = (authorization, invocation);
         Ok(PlaceFileMovement { bytes: !observation.bytes_equal, mode: !observation.mode_equal,

@@ -1,8 +1,8 @@
 //! Forward-only process replacement. This is the sole raw CommandExt::exec owner.
 use crate::atoms::r#do::InvocationKey;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
 #[derive(Debug, Clone)]
@@ -118,40 +118,20 @@ pub(crate) fn replace_with_exec(
 }
 
 pub(crate) fn rollback_installed(p: &Plan) -> Result<(), String> {
+    let witness = crate::atoms::projectio::engine_state_witness();
     if let Some(bytes) = &p.rollback_bytes {
-        let parent = p
-            .successor
-            .parent()
-            .ok_or("replace-process-rollback-parent")?;
-        let temp = parent.join(format!(".harmonia-rollback-{}.tmp", std::process::id()));
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)
-                .map_err(|e| e.to_string())?;
-            file.write_all(bytes).map_err(|e| e.to_string())?;
-            file.sync_all().map_err(|e| e.to_string())?;
-            #[cfg(unix)]
-            if let Some(mode) = p.rollback_mode {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&temp, fs::Permissions::from_mode(mode))
-                    .map_err(|e| e.to_string())?;
-            }
-            fs::rename(&temp, &p.successor).map_err(|e| e.to_string())?;
-            OpenOptions::new()
-                .read(true)
-                .open(parent)
-                .map_err(|e| e.to_string())?
-                .sync_all()
-                .map_err(|e| e.to_string())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
+        p.successor.parent().ok_or("replace-process-rollback-parent")?;
+        let (uid, gid) = match fs::symlink_metadata(&p.successor) {
+            Ok(metadata) => (metadata.uid(), metadata.gid()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("replace-process-rollback-successor-absent".into()),
+            Err(e) => return Err(e.to_string()),
+        };
+        crate::atoms::projectio::engine_put_owned(
+            &witness, &p.successor, bytes, p.rollback_mode.unwrap_or(0o644),
+            uid, gid,
+        ).map_err(|e| e.to_string())
     } else {
-        match fs::remove_file(&p.successor) {
+        match crate::atoms::projectio::engine_remove(&witness, &p.successor, false) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!("replace-process-rollback-remove-failed: {error}")),

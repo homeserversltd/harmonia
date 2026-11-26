@@ -3070,7 +3070,8 @@ pub(crate) fn run_engine_preflight(
                 let invocation = invocation
                     .ok_or_else(|| "engine-artifact-stage-invocation-missing".to_string())?;
                 if let Some(parent) = staged.parent() {
-                    fs::create_dir_all(parent)
+                    let witness = crate::atoms::projectio::engine_state_witness();
+                    crate::atoms::projectio::act_scratch_make_dir(&witness, parent)
                         .map_err(|error| format!("engine-artifact-stage-parent-failed: {error}"))?;
                 }
                 let target = format!(
