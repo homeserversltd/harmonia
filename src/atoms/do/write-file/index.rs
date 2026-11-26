@@ -1,6 +1,7 @@
 use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::projectio;
 use crate::atoms::r#do::InvocationKey;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct FileWriteOptions<'a> {
@@ -28,7 +29,11 @@ pub(crate) fn file_write(
                 format!("file-write-backup-parent-create-failed {}: {error}", parent.display())
             })?;
         }
-        projectio::act_copy(authorization, path, backup, None, None, None).map_err(|error| {
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+            format!("file-write-backup-failed {} -> {}: {error}", path.display(), backup.display())
+        })?;
+        projectio::act_copy(authorization, path, backup, Some(metadata.mode() & 0o7777),
+            Some(metadata.uid()), Some(metadata.gid())).map_err(|error| {
             format!("file-write-backup-failed {} -> {}: {error}", path.display(), backup.display())
         })?;
         Some(backup.to_path_buf())
