@@ -1,8 +1,8 @@
 //! Append-only, proof-gated known-good state for installed surfaces.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -241,7 +241,8 @@ pub(crate) fn prove_installed_state(
             ));
         }
     }
-    fs::create_dir_all(receipt_boundary).map_err(|e| e.to_string())?;
+    let witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::engine_make_dir(&witness, receipt_boundary).map_err(|e| e.to_string())?;
     let proof_time_unix_ms = now_ms();
     let (syzygy_sha, syzygy_signal, stamp_verdict, stamp_sha, stamp_signal) =
         committed_transaction_evidence(receipt_boundary);
@@ -269,12 +270,10 @@ pub(crate) fn prove_installed_state(
             )
         };
         let path = receipt_boundary.join(name);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                let bytes = serde_json::to_vec_pretty(&aggregate).map_err(|e| e.to_string())?;
-                file.write_all(&bytes).map_err(|e| e.to_string())?;
-                file.write_all(b"\n").map_err(|e| e.to_string())?;
-                file.sync_all().map_err(|e| e.to_string())?;
+        let mut bytes = serde_json::to_vec_pretty(&aggregate).map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        match crate::atoms::projectio::engine_create_new(&witness, &path, &bytes, 0o644) {
+            Ok(()) => {
                 aggregate_receipt_ref = Some(path.to_string_lossy().into_owned());
                 break;
             }
@@ -489,7 +488,8 @@ pub(crate) fn append_and_move(
         ));
     }
     let dir = surface_dir(root, &proof.surface)?;
-    fs::create_dir_all(dir.join("rungs")).map_err(|e| e.to_string())?;
+    let witness = crate::atoms::projectio::engine_state_witness();
+    crate::atoms::projectio::engine_make_dir(&witness, &dir.join("rungs")).map_err(|e| e.to_string())?;
     let current = read_current_inner(root, &proof.surface)?;
     let history = read_history(root, &proof.surface)?;
     let tail = history.last();
@@ -540,19 +540,7 @@ pub(crate) fn append_and_move(
             && tail.proof_battery == proof.proof_battery
             && tail.aggregate_receipt_ref == proof.aggregate_receipt_ref;
         if same_proof {
-            let temp_path = dir.join(format!(".current-retry.{}.tmp", tail.sequence));
-            let mut temp = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp_path)
-                .map_err(|e| e.to_string())?;
-            temp.write_all(format!("{}\n", tail.identity).as_bytes())
-                .map_err(|e| e.to_string())?;
-            temp.sync_all().map_err(|e| e.to_string())?;
-            if let Err(e) = fs::rename(&temp_path, current_path(&dir)) {
-                let _ = fs::remove_file(&temp_path);
-                return Err(e.to_string());
-            }
+            crate::atoms::projectio::engine_put(&witness, &current_path(&dir), format!("{}\n", tail.identity).as_bytes(), 0o644).map_err(|e| e.to_string())?;
             return move_pointer(&dir, tail, proof.proof_battery, proof.aggregate_receipt_ref);
         }
     } else if let Some(current) = current.as_ref() {
@@ -594,32 +582,9 @@ pub(crate) fn append_and_move(
         aggregate_receipt_ref: proof.aggregate_receipt_ref.clone(),
         prior_rung_identity: prior.clone(),
     };
-    let mut rung_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(rung_path(&dir, &identity))
-        .map_err(|e| e.to_string())?;
-    rung_file
-        .write_all(&serde_json::to_vec_pretty(&rung).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    rung_file.sync_all().map_err(|e| e.to_string())?;
-    let temp_path = dir.join(format!(
-        ".current.{sequence}.{}.tmp",
-        proof.proof_time_unix_ms
-    ));
-    let mut temp = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-        .map_err(|e| e.to_string())?;
-    temp.write_all(identity.as_bytes())
-        .map_err(|e| e.to_string())?;
-    temp.write_all(b"\n").map_err(|e| e.to_string())?;
-    temp.sync_all().map_err(|e| e.to_string())?;
-    if let Err(e) = fs::rename(&temp_path, current_path(&dir)) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(e.to_string());
-    }
+    let rung_bytes = serde_json::to_vec_pretty(&rung).map_err(|e| e.to_string())?;
+    crate::atoms::projectio::engine_create_new(&witness, &rung_path(&dir, &identity), &rung_bytes, 0o644).map_err(|e| e.to_string())?;
+    crate::atoms::projectio::engine_put(&witness, &current_path(&dir), format!("{identity}\n").as_bytes(), 0o644).map_err(|e| e.to_string())?;
     move_pointer(
         &dir,
         &rung,
@@ -685,29 +650,13 @@ pub(crate) fn restore_run_pointer(
     }
 
     let pointer = current_path(&dir);
+    let witness = crate::atoms::projectio::engine_state_witness();
     let mut blockers = Vec::new();
     let mutation = if let Some(identity) = restore_to {
-        let temp_path = dir.join(format!(
-            ".current-rollback.{}.{}.tmp",
-            std::process::id(),
-            now_ms()
-        ));
-        (|| -> Result<(), String> {
-            let mut temp = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp_path)
-                .map_err(|error| format!("known-good-pointer-rollback-temp-create-failed: {error}"))?;
-            temp.write_all(format!("{identity}\n").as_bytes())
-                .map_err(|error| format!("known-good-pointer-rollback-write-failed: {error}"))?;
-            temp.sync_all()
-                .map_err(|error| format!("known-good-pointer-rollback-file-fsync-failed: {error}"))?;
-            drop(temp);
-            fs::rename(&temp_path, &pointer)
-                .map_err(|error| format!("known-good-pointer-rollback-rename-failed: {error}"))
-        })()
+        crate::atoms::projectio::engine_put(&witness, &pointer, format!("{identity}\n").as_bytes(), 0o644)
+            .map_err(|error| format!("known-good-pointer-rollback-rename-failed: {error}"))
     } else {
-        fs::remove_file(&pointer)
+        crate::atoms::projectio::engine_remove(&witness, &pointer, false)
             .map_err(|error| format!("known-good-pointer-rollback-remove-failed: {error}"))
     };
     if let Err(error) = mutation {

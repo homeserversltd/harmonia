@@ -1,4 +1,4 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -18,12 +18,13 @@ pub(crate) enum EngineRunLockFailure {
 
 pub(crate) struct EngineRunLockGuard {
     path: PathBuf,
-    _file: std::fs::File,
+    contents: Vec<u8>,
 }
 
 impl Drop for EngineRunLockGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let witness = crate::atoms::projectio::engine_state_witness();
+        let _ = crate::atoms::projectio::engine_remove_if(&witness, &self.path, &self.contents, false);
     }
 }
 
@@ -71,9 +72,10 @@ pub(crate) fn engine_run_lock_pid_is_live(_pid: u32) -> Result<bool, String> {
 }
 
 pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, EngineRunLockFailure> {
+    let witness = crate::atoms::projectio::engine_state_witness();
     let path = engine_run_lock_path();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
+        crate::atoms::projectio::engine_make_dir(&witness, parent).map_err(|error| {
             EngineRunLockFailure::Unavailable(format!(
                 "engine-run-lock-parent-create-failed {}: {error}",
                 parent.display()
@@ -81,29 +83,15 @@ pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, Engine
         })?;
     }
     loop {
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                use std::io::Write;
-                if let Err(error) = writeln!(file, "pid={}", std::process::id()) {
-                    let _ = fs::remove_file(&path);
-                    return Err(EngineRunLockFailure::Unavailable(format!(
-                        "engine-run-lock-write-failed {}: {error}",
-                        path.display()
-                    )));
-                }
-                if let Err(error) = file.sync_all() {
-                    let _ = fs::remove_file(&path);
-                    return Err(EngineRunLockFailure::Unavailable(format!(
-                        "engine-run-lock-sync-failed {}: {error}",
-                        path.display()
-                    )));
-                }
-                return Ok(EngineRunLockGuard { path, _file: file });
+        let contents = format!("pid={}\n", std::process::id()).into_bytes();
+        match crate::atoms::projectio::engine_create_new(&witness, &path, &contents, 0o644) {
+            Ok(()) => {
+                return Ok(EngineRunLockGuard { path, contents });
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 match engine_run_lock_pid(&path) {
                     Ok(Some(pid)) if pid == std::process::id() => {
-                        fs::remove_file(&path).map_err(|error| {
+                        crate::atoms::projectio::engine_remove(&witness, &path, false).map_err(|error| {
                             EngineRunLockFailure::Unavailable(format!(
                                 "engine-run-lock-inherited-remove-failed {}: {error}",
                                 path.display()
@@ -117,7 +105,7 @@ pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, Engine
                         return Err(EngineRunLockFailure::Busy);
                     }
                     Ok(Some(_)) => {
-                        fs::remove_file(&path).map_err(|error| {
+                        crate::atoms::projectio::engine_remove(&witness, &path, false).map_err(|error| {
                             EngineRunLockFailure::Unavailable(format!(
                                 "engine-run-lock-stale-remove-failed {}: {error}",
                                 path.display()
@@ -150,14 +138,12 @@ pub(crate) fn try_acquire_homeconsole_update_lock(
     lock_path: &Path,
 ) -> Result<ConvergenceLockGuard, ConvergenceLockBusy> {
     use std::os::unix::io::AsRawFd;
+    let witness = crate::atoms::projectio::engine_state_witness();
 
     if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent).map_err(|_| ConvergenceLockBusy)?;
+        crate::atoms::projectio::engine_make_dir(&witness, parent).map_err(|_| ConvergenceLockBusy)?;
     }
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(lock_path)
+    let file = crate::atoms::projectio::engine_open_lock(&witness, lock_path)
         .map_err(|_| ConvergenceLockBusy)?;
     let fd = file.as_raw_fd();
     let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };

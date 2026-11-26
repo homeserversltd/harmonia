@@ -82,7 +82,8 @@ pub(crate) fn select_blessed_ref(declared: Option<&str>, fallback: Option<&str>)
 struct CanaryLock(PathBuf);
 impl Drop for CanaryLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let witness = crate::atoms::projectio::engine_state_witness();
+        let _ = crate::atoms::projectio::engine_remove_if(&witness, &self.0, b"", false);
     }
 }
 
@@ -179,15 +180,12 @@ pub(crate) fn artifact_head_divergence_canary_with_bearer(
     let mut tracking_error = None;
     let mut first_observed = None;
     let mut persistence = None;
-    if let Err(error) = fs::create_dir_all(&state_dir) {
+    let witness = crate::atoms::projectio::engine_state_witness();
+    if let Err(error) = crate::atoms::projectio::engine_make_dir(&witness, &state_dir) {
         tracking_error = Some(format!("canary-state-dir: {error}"));
     } else {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(_file) => {
+        match crate::atoms::projectio::engine_create_new(&witness, &lock_path, b"", 0o644) {
+            Ok(()) => {
                 let _lock = CanaryLock(lock_path.clone());
                 let previous: CanaryState = fs::read(&state_path)
                     .ok()

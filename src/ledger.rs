@@ -61,22 +61,23 @@ pub(crate) fn reader() -> Result<Option<Connection>, String> {
     Ok(Some(connection))
 }
 
-fn public_mode(path: &Path, mode: u32) -> Result<(), String> {
+fn public_mode(witness: &crate::atoms::projectio::EngineStateWitness, path: &Path, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let metadata = std::fs::symlink_metadata(path).map_err(|_| "harmonia-state-mode-observe-failed")?;
     if metadata.file_type().is_symlink() { return Err("harmonia-state-symlink-refused".into()); }
     if metadata.permissions().mode() & 0o7777 != mode {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        crate::atoms::projectio::engine_mode(witness, path, mode)
             .map_err(|_| "harmonia-state-public-mode-failed")?;
     }
     Ok(())
 }
 
 pub(crate) fn writer() -> Result<Connection, String> {
+    let witness = crate::atoms::projectio::engine_state_witness();
     let database = database_path();
     let parent = database.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|error| format!("harmonia-state-parent-failed: {error}"))?;
-    public_mode(parent, 0o755)?;
+    crate::atoms::projectio::engine_make_dir(&witness, parent).map_err(|error| format!("harmonia-state-parent-failed: {error}"))?;
+    public_mode(&witness, parent, 0o755)?;
     match std::fs::symlink_metadata(&database) {
         Ok(metadata) if !metadata.file_type().is_file() => return Err("harmonia-state-not-regular".into()),
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("harmonia-state-observe-failed: {error}")),
@@ -84,7 +85,7 @@ pub(crate) fn writer() -> Result<Connection, String> {
     }
     let mut connection = Connection::open(&database).map_err(database_error)?;
     connection.pragma_update(None, "secure_delete", "ON").map_err(database_error)?;
-    public_mode(&database, 0o644)?;
+    public_mode(&witness, &database, 0o644)?;
     connection.busy_timeout(Duration::from_secs(5)).map_err(database_error)?;
     // The entire schema becomes visible in one transaction.
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(database_error)?;
