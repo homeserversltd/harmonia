@@ -253,6 +253,24 @@ fn parse_resolved_operation(value: &Value) -> Result<Operation, &'static str> {
     }
     let match_value = object.get("match").and_then(Value::as_str)
         .ok_or("touch-operation-match-missing-or-not-string")?;
+    if match_value.is_empty() {
+        return Err("touch-operation-match-empty");
+    }
+    match kind {
+        "package-upgrade" if match_value != "*" => {
+            return Err("touch-package-upgrade-match-must-be-star");
+        }
+        "command" => {
+            let has_slash = match_value.contains('/');
+            if (has_slash && !match_value.starts_with('/'))
+                || match_value.chars().any(char::is_whitespace)
+                || (has_slash && normalize_absolute(match_value).is_none())
+            {
+                return Err("touch-command-match-invalid");
+            }
+        }
+        _ => {}
+    }
     Ok(Operation { kind: kind.to_owned(), match_value: match_value.to_owned() })
 }
 
