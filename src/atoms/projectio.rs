@@ -1278,6 +1278,10 @@ pub(crate) fn act_fd_write<'a>(w: impl Into<PenWitness<'a>>, file: &File, bytes:
     pen_check(record)?;
     let lane = w.into().lane();
     let length = libc::off_t::try_from(bytes.len()).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "projectio-write-length-overflow"))?;
+    // Linux pwrite appends on an O_APPEND descriptor, ignoring its offset.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 { return Err(std::io::Error::last_os_error()); }
+    if flags & libc::O_APPEND != 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "projectio-fd-write-append-refused")); }
     let mut offset = 0;
     while offset < bytes.len() {
         match file.write_at(&bytes[offset..], offset as u64) {
