@@ -215,7 +215,12 @@ pub(crate) fn artifact_head_divergence_canary_with_bearer(
                     tracking_error = Some(error);
                 }
             }
-            Err(error) => tracking_error = Some(format!("canary-state-lock: {error}")),
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    let _ = crate::atoms::projectio::engine_remove_if(&witness, &lock_path, b"", false);
+                }
+                tracking_error = Some(format!("canary-state-lock: {error}"));
+            }
         }
     }
     let mut receipt = ArtifactHeadDivergenceCanary {

@@ -278,7 +278,12 @@ pub(crate) fn prove_installed_state(
                 break;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                if fs::read(&path).is_ok_and(|actual| actual == bytes) {
+                    return Err(format!("known-good-aggregate-written {}: {e}", path.display()));
+                }
+                return Err(e.to_string());
+            }
         }
     }
     let aggregate_receipt_ref =
@@ -540,8 +545,8 @@ pub(crate) fn append_and_move(
             && tail.proof_battery == proof.proof_battery
             && tail.aggregate_receipt_ref == proof.aggregate_receipt_ref;
         if same_proof {
-            crate::atoms::projectio::engine_put(&witness, &current_path(&dir), format!("{}\n", tail.identity).as_bytes(), 0o644).map_err(|e| e.to_string())?;
-            return move_pointer(&dir, tail, proof.proof_battery, proof.aggregate_receipt_ref);
+            let result = crate::atoms::projectio::engine_put(&witness, &current_path(&dir), format!("{}\n", tail.identity).as_bytes(), 0o644);
+            return report_pointer_put(&dir, tail, proof.proof_battery, proof.aggregate_receipt_ref, result);
         }
     } else if let Some(current) = current.as_ref() {
         if current.installed_sha == proof.installed_sha
@@ -583,13 +588,20 @@ pub(crate) fn append_and_move(
         prior_rung_identity: prior.clone(),
     };
     let rung_bytes = serde_json::to_vec_pretty(&rung).map_err(|e| e.to_string())?;
-    crate::atoms::projectio::engine_create_new(&witness, &rung_path(&dir, &identity), &rung_bytes, 0o644).map_err(|e| e.to_string())?;
-    crate::atoms::projectio::engine_put(&witness, &current_path(&dir), format!("{identity}\n").as_bytes(), 0o644).map_err(|e| e.to_string())?;
-    move_pointer(
+    let rung_file = rung_path(&dir, &identity);
+    if let Err(e) = crate::atoms::projectio::engine_create_new(&witness, &rung_file, &rung_bytes, 0o644) {
+        if e.kind() != std::io::ErrorKind::AlreadyExists && fs::read(&rung_file).is_ok_and(|actual| actual == rung_bytes) {
+            return Err(format!("known-good-rung-written {}: {e}", rung_file.display()));
+        }
+        return Err(e.to_string());
+    }
+    let result = crate::atoms::projectio::engine_put(&witness, &current_path(&dir), format!("{identity}\n").as_bytes(), 0o644);
+    report_pointer_put(
         &dir,
         &rung,
         proof.proof_battery,
         proof.aggregate_receipt_ref,
+        result,
     )
 }
 
@@ -659,31 +671,54 @@ pub(crate) fn restore_run_pointer(
         crate::atoms::projectio::engine_remove(&witness, &pointer, false)
             .map_err(|error| format!("known-good-pointer-rollback-remove-failed: {error}"))
     };
+    let mutation_failed = mutation.is_err();
     if let Err(error) = mutation {
         blockers.push(error);
     }
     if let Err(error) = File::open(&dir).and_then(|directory| directory.sync_all()) {
         blockers.push(format!("known-good-pointer-rollback-fsync-failed: {error}"));
     }
-    match read_current_inner(root, surface) {
-        Ok(Some(rung)) if restore_to == Some(rung.identity.as_str()) => {}
-        Ok(None) if restore_to.is_none() => {}
-        Ok(Some(rung)) => blockers.push(format!(
+    let observed_restored = match read_current_inner(root, surface) {
+        Ok(Some(rung)) if restore_to == Some(rung.identity.as_str()) => true,
+        Ok(None) if restore_to.is_none() => true,
+        Ok(Some(rung)) => { blockers.push(format!(
             "known-good-pointer-rollback-readback-mismatch expected={} observed={}",
             restore_to.unwrap_or("absent"),
             rung.identity
-        )),
-        Ok(None) => blockers.push(format!(
+        )); false },
+        Ok(None) => { blockers.push(format!(
             "known-good-pointer-rollback-readback-mismatch expected={} observed=absent",
             restore_to.unwrap_or("absent")
-        )),
-        Err(error) => blockers.push(format!("known-good-pointer-rollback-readback-failed: {error}")),
-    }
+        )); false },
+        Err(error) => { blockers.push(format!("known-good-pointer-rollback-readback-failed: {error}")); false },
+    };
+    restore.restored = blockers.is_empty() || (restore_to.is_some() && mutation_failed && observed_restored);
     if !blockers.is_empty() {
         restore.blocker = Some(blockers.join("; "));
     }
-    restore.restored = restore.blocker.is_none();
     restore
+}
+
+fn report_pointer_put(
+    dir: &Path,
+    rung: &KnownGoodRung,
+    proof_battery: Vec<String>,
+    aggregate_receipt_ref: String,
+    result: std::io::Result<()>,
+) -> Result<KnownGoodReceipt, String> {
+    if let Err(error) = result {
+        if !fs::read_to_string(current_path(dir)).is_ok_and(|value| value.trim() == rung.identity) {
+            return Err(error.to_string());
+        }
+        let mut receipt = move_pointer(dir, rung, proof_battery, aggregate_receipt_ref)?;
+        receipt.blocker = Some(match receipt.blocker {
+            Some(blocker) => format!("{error}; {blocker}"),
+            None => error.to_string(),
+        });
+        receipt.converged = false;
+        return Ok(receipt);
+    }
+    move_pointer(dir, rung, proof_battery, aggregate_receipt_ref)
 }
 
 fn move_pointer(

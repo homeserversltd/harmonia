@@ -117,6 +117,7 @@ pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, Engine
                 }
             }
             Err(error) => {
+                let _ = crate::atoms::projectio::engine_remove_if(&witness, &path, &contents, false);
                 return Err(EngineRunLockFailure::Unavailable(format!(
                     "engine-run-lock-create-failed {}: {error}",
                     path.display()
