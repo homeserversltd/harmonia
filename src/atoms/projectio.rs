@@ -1254,7 +1254,8 @@ pub(crate) fn act_fd_mode<'a>(w: impl Into<PenWitness<'a>>, file: &File, mode: u
 #[allow(dead_code)]
 pub(crate) fn act_at_make_dir<'a>(w: impl Into<PenWitness<'a>>, dir: &File, name: &std::ffi::OsStr, mode: u32, record: Option<&Path>) -> std::io::Result<File> {
     pen_check(record)?; let name = pen_name(name)?; let lane = w.into().lane();
-    if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), mode as libc::mode_t) } != 0 { return Err(std::io::Error::last_os_error()); }
+    // Keep the new directory openable before applying a possibly restrictive final mode.
+    if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) } != 0 { return Err(std::io::Error::last_os_error()); }
     if let Some(path) = record { crate::atoms::touch::record_made_directory(path, lane); }
     let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
     if fd < 0 { return Err(std::io::Error::last_os_error()); }
@@ -1290,6 +1291,11 @@ pub(crate) fn act_at_rename<'a>(w: impl Into<PenWitness<'a>>, from_dir: &File, f
     pen_check(record_to)?; pen_check(record_from)?; let from_name = pen_name(from_name)?; let to_name = pen_name(to_name)?; let lane = w.into().lane();
     let before = stat_at_nofollow(from_dir, &from_name)?;
     let other = if matches!(how, LinkPromotion::Exchange) { Some(stat_at_nofollow(to_dir, &to_name)?) } else { None };
+    // POSIX rename of two names for the same inode succeeds without a mutation.
+    if matches!(how, LinkPromotion::Rename)
+        && stat_at_nofollow(to_dir, &to_name).is_ok_and(|s| stat_identity(&s) == stat_identity(&before)) {
+        return Ok(());
+    }
     let flags = match how { LinkPromotion::Rename => 0, LinkPromotion::Exchange => libc::RENAME_EXCHANGE, LinkPromotion::NoReplace => libc::RENAME_NOREPLACE };
     if unsafe { libc::renameat2(from_dir.as_raw_fd(), from_name.as_ptr(), to_dir.as_raw_fd(), to_name.as_ptr(), flags) } != 0 { return Err(std::io::Error::last_os_error()); }
     pen_record(record_to, lane); pen_record(record_from, lane);
