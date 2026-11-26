@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use crate::atoms::command;
 use std::env;
 use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use crate::atoms::projectio;
 use std::fs;
 use crate::CmdResult;
 use crate::atoms::attest::build_aur_pinned::write_pinned_artifacts_receipt as write_build_receipt_json;
@@ -33,6 +34,7 @@ pub(crate) fn check(
 }
 
 pub(crate) fn aur_build_pinned_action(
+    authorization: &ActionAuthorization,
     receipt_dir: &Path,
     receipt_name: &str,
     package: &str,
@@ -90,6 +92,7 @@ pub(crate) fn aur_build_pinned_action(
     }
 
     let result = prepare_and_build(
+        authorization,
         &lock,
         package,
         &build_dir,
@@ -340,6 +343,7 @@ pub(crate) fn build_pinned(
     Ok(outcome)
 }
 pub(crate) fn prepare_and_build(
+    authorization: &ActionAuthorization,
     lock: &AurRatchetLock,
     package: &str,
     build_dir: &Path,
@@ -348,12 +352,12 @@ pub(crate) fn prepare_and_build(
     timeout_secs: u64,
 ) -> Result<(CmdResult, Option<PathBuf>, bool), String> {
     if build_dir.exists() {
-        fs::remove_dir_all(build_dir).map_err(|e| format!("aur-build-dir-clean-failed: {e}"))?;
+        projectio::act_scratch_remove_tree(authorization, build_dir).map_err(|e| format!("aur-build-dir-clean-failed: {e}"))?;
     }
-    fs::create_dir_all(build_dir.parent().unwrap_or_else(|| Path::new(".")))
+    projectio::act_scratch_make_dir(authorization, build_dir.parent().unwrap_or_else(|| Path::new(".")))
         .map_err(|e| format!("aur-build-root-create-failed: {e}"))?;
     if let Some(source) = source_dir {
-        copy_dir(Path::new(source), build_dir)?;
+        copy_dir(authorization, Path::new(source), build_dir)?;
     } else {
         let url = lock
             .aur_url
@@ -389,8 +393,8 @@ pub(crate) fn prepare_and_build(
             verified.stdout.trim()
         ));
     }
-    prepare_build_dir_for_builder(build_dir, builder)?;
-    let pkgver_neutralized = neutralize_pkgver_function(build_dir, builder, timeout_secs)?;
+    prepare_build_dir_for_builder(authorization, build_dir, builder)?;
+    let pkgver_neutralized = neutralize_pkgver_function(authorization, build_dir, builder, timeout_secs)?;
     let makepkg = makepkg_command(builder, timeout_secs, build_dir)?;
     let produced = if makepkg.ok {
         pinned_pkg_tar(build_dir, package, &lock.pinned_version)?
@@ -401,6 +405,7 @@ pub(crate) fn prepare_and_build(
 }
 
 pub(crate) fn neutralize_pkgver_function(
+    authorization: &ActionAuthorization,
     build_dir: &Path,
     builder: &str,
     timeout_secs: u64,
@@ -412,7 +417,11 @@ pub(crate) fn neutralize_pkgver_function(
     if !changed {
         return Ok(false);
     }
-    fs::write(&pkgbuild, after)
+    let metadata = fs::symlink_metadata(&pkgbuild).map_err(|e| format!("aur-pkgver-neutralize-failed {}: {e}", pkgbuild.display()))?;
+    if !metadata.is_file() { return Err(format!("aur-pkgver-neutralize-failed {}: not regular", pkgbuild.display())); }
+    projectio::act_scratch_remove(authorization, &pkgbuild)
+        .and_then(|_| projectio::act_scratch_write_new(authorization, &pkgbuild, after.as_bytes(), metadata.mode() & 0o7777))
+        .and_then(|_| projectio::act_scratch_chown(authorization, &pkgbuild, metadata.uid(), metadata.gid()))
         .map_err(|e| format!("aur-pkgver-neutralize-failed {}: {e}", pkgbuild.display()))?;
     if unsafe { libc::geteuid() } == 0 && builder != "current-user" {
         let verify = command::capture_with_options(
@@ -554,7 +563,7 @@ pub(crate) fn current_pkg_tar(build_dir: &Path, package: &str) -> Result<Option<
     }
 }
 
-pub(crate) fn prepare_build_dir_for_builder(build_dir: &Path, builder: &str) -> Result<(), String> {
+pub(crate) fn prepare_build_dir_for_builder(authorization: &ActionAuthorization, build_dir: &Path, builder: &str) -> Result<(), String> {
     if unsafe { libc::geteuid() } != 0 || builder == "current-user" {
         return Ok(());
     }
@@ -565,39 +574,26 @@ pub(crate) fn prepare_build_dir_for_builder(build_dir: &Path, builder: &str) -> 
     }
     let uid = unsafe { (*passwd).pw_uid };
     let gid = unsafe { (*passwd).pw_gid };
-    chown_recursive(build_dir, uid, gid)
+    chown_recursive(authorization, build_dir, uid, gid)
 }
-pub(crate) fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(src).map_err(|e| format!("aur-source-dir-read-failed: {e}"))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let ty = entry.file_type().map_err(|e| e.to_string())?;
-        let target = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir(&entry.path(), &target)?;
-        } else if ty.is_file() {
-            fs::copy(entry.path(), target).map_err(|e| format!("aur-source-copy-failed: {e}"))?;
-        }
-    }
-    Ok(())
+pub(crate) fn copy_dir(authorization: &ActionAuthorization, src: &Path, dst: &Path) -> Result<(), String> {
+    projectio::act_scratch_copy_tree(authorization, src, dst).map_err(|e| format!("aur-source-copy-failed: {e}"))
 }
 
 #[cfg(unix)]
 pub(crate) fn chown_recursive(
+    authorization: &ActionAuthorization,
     path: &Path,
     uid: libc::uid_t,
     gid: libc::gid_t,
 ) -> Result<(), String> {
-    use std::os::unix::ffi::OsStrExt;
-    let c_path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| format!("aur-build-dir-chown-path-invalid {}", path.display()))?;
-    if unsafe { libc::chown(c_path.as_ptr(), uid, gid) } != 0 {
-        return Err(format!("aur-build-dir-chown-failed {}", path.display()));
-    }
-    if path.is_dir() {
+    let metadata = fs::symlink_metadata(path).map_err(|e| format!("aur-build-dir-chown-failed {}: {e}", path.display()))?;
+    if metadata.file_type().is_symlink() { return Err(format!("aur-build-dir-chown-failed {}: symlink refused", path.display())); }
+    projectio::act_scratch_chown(authorization, path, uid, gid).map_err(|e| format!("aur-build-dir-chown-failed {}: {e}", path.display()))?;
+    if metadata.is_dir() {
         for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            chown_recursive(&entry.path(), uid, gid)?;
+            chown_recursive(authorization, &entry.path(), uid, gid)?;
         }
     }
     Ok(())

@@ -121,7 +121,10 @@ pub(crate) fn pinned_artifacts_command(
     receipt_dir: &Path,
     args: &[String],
 ) -> Result<(), String> {
-    std::fs::create_dir_all(receipt_dir).map_err(|e| e.to_string())?;
+    if action != "bless" {
+        let witness = crate::atoms::projectio::engine_state_witness();
+        crate::atoms::projectio::engine_make_dir(&witness, receipt_dir).map_err(|e| e.to_string())?;
+    }
     match action {
         "check" => {
             let observation =
@@ -167,7 +170,7 @@ mod mutation {
     use crate::atoms::comparison::ActionAuthorization;
     use crate::OperationOutcome;
     use crate::{
-        hyalos, value_arg, value_arg_string, write_json, PinnedArtifact, PinnedArtifactsLock,
+        hyalos, value_arg, value_arg_string, PinnedArtifact, PinnedArtifactsLock,
         Profile,
     };
     use serde_json::json;
@@ -175,6 +178,7 @@ mod mutation {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use crate::atoms::{comparison, projectio};
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_pinned(
@@ -199,6 +203,7 @@ mod mutation {
         let built =
             atoms::r#do::build_aur_pinned::aur_build_pinned(authorization, invocation, || {
                 atoms::r#do::build_aur_pinned::aur_build_pinned_action(
+                    authorization,
                     receipt_dir,
                     receipt_name,
                     package,
@@ -241,11 +246,14 @@ mod mutation {
         lock_path: &Path,
         lock: &PinnedArtifactsLock,
     ) -> Result<(), String> {
+        let witness = projectio::engine_state_witness();
         if let Some(parent) = lock_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            projectio::engine_make_dir(&witness, parent).map_err(|e| e.to_string())?;
         }
         let value = serde_json::to_value(lock).map_err(|e| e.to_string())?;
-        write_json(lock_path, &value)
+        let mut bytes = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        projectio::engine_put(&witness, lock_path, &bytes, 0o644).map_err(|e| e.to_string())
     }
 
     pub(super) fn pinned_artifacts_nudge(
@@ -266,16 +274,18 @@ mod mutation {
             .join(&name)
             .join(candidate.file_name().unwrap_or_default());
         if ok {
+            let witness = projectio::engine_state_witness();
             if let Some(parent) = staged_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                projectio::act_scratch_make_dir(&witness, parent).map_err(|e| e.to_string())?;
             }
-            fs::copy(&candidate, &staged_path)
+            if staged_path.exists() { projectio::act_scratch_remove(&witness, &staged_path).map_err(|e| e.to_string())?; }
+            projectio::act_scratch_copy(&witness, &candidate, &staged_path, None)
                 .map_err(|e| format!("candidate-stage-failed {}: {e}", staged_path.display()))?;
             let mode = fs::metadata(&candidate)
                 .map_err(|e| e.to_string())?
                 .permissions()
                 .mode();
-            fs::set_permissions(&staged_path, fs::Permissions::from_mode(mode))
+            projectio::act_scratch_mode(&witness, &staged_path, mode)
                 .map_err(|e| e.to_string())?;
         }
         let first_missing_signal = if ok {
@@ -345,37 +355,47 @@ mod mutation {
         let install_path = value_arg(args, "--install-path")
             .or_else(|| old.as_ref().map(|artifact| PathBuf::from(&artifact.path)))
             .ok_or("bless requires --install-path for new artifact")?;
-        if apply {
-            if let Some(parent) = install_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            let backup_path = install_path.with_extension("harmonia-prev");
-            if install_path.exists() {
-                fs::copy(&install_path, &backup_path)
-                    .map_err(|e| format!("backup-failed {}: {e}", backup_path.display()))?;
-            }
-            fs::copy(&candidate, &install_path)
-                .map_err(|e| format!("install-failed {}: {e}", install_path.display()))?;
-            fs::set_permissions(&install_path, fs::Permissions::from_mode(0o755))
-                .map_err(|e| e.to_string())?;
-            lock.artifacts.insert(
-                name.clone(),
-                PinnedArtifact {
-                    version: version.clone(),
-                    path: install_path.display().to_string(),
-                    sha256: expected_sha.clone(),
-                    policy: "known-good".to_string(),
-                    source: value_arg_string(args, "--source"),
-                },
-            );
-            write_pinned_lock(lock_path, &lock)?;
+        match fs::symlink_metadata(&install_path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("aur-bless-install-absent-refused".into()),
+            Err(e) => return Err(format!("aur-bless-install-read-failed: {e}")),
+            Ok(metadata) if !metadata.is_file() => return Err("aur-bless-install-not-regular".into()),
+            Ok(_) => (),
         }
+        let mut changed = false;
+        if apply {
+            let bytes = fs::read(&candidate).map_err(|e| format!("candidate-read-failed: {e}"))?;
+            if !atoms::file_sha256(&bytes).eq_ignore_ascii_case(&expected_sha) {
+                return Err("candidate-sha256-mismatch".into());
+            }
+            let run = comparison::execute_once(
+                "aur-bless",
+                || fs::read(&install_path).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "aur-bless-install-absent-refused".to_string() } else { format!("aur-bless-install-read-failed: {e}") }),
+                |installed| if installed == &bytes { comparison::DiffDecision::Empty } else { comparison::DiffDecision::Different },
+                |authorization, _| {
+                    let backup_path = install_path.with_extension("harmonia-prev");
+                    if backup_path.exists() { projectio::act_scratch_remove(&authorization, &backup_path).map_err(|e| format!("backup-failed {}: {e}", backup_path.display()))?; }
+                    projectio::act_scratch_copy(&authorization, &install_path, &backup_path, None)
+                        .map_err(|e| format!("backup-failed {}: {e}", backup_path.display()))?;
+                    projectio::act_put(&authorization, &install_path, &bytes, Some(0o755), None, None)
+                        .map_err(|e| format!("install-failed {}: {e}", install_path.display()))?;
+                    lock.artifacts.insert(name.clone(), PinnedArtifact {
+                        version: version.clone(), path: install_path.display().to_string(),
+                        sha256: expected_sha.clone(), policy: "known-good".to_string(),
+                        source: value_arg_string(args, "--source"),
+                    });
+                    write_pinned_lock(lock_path, &lock)
+                },
+            )?;
+            changed = matches!(run, comparison::ComparisonRun::Moved { .. });
+        }
+        let witness = projectio::engine_state_witness();
+        projectio::engine_make_dir(&witness, receipt_dir).map_err(|e| e.to_string())?;
         crate::atoms::attest::build_aur_pinned::write_pinned_artifacts_receipt(
             &receipt_dir.join("run.json"),
             &json!({
                 "schema": "harmonia.pinned_artifacts.bless.v1",
                 "ok": true,
-                "mutation": apply,
+                "mutation": changed,
                 "profile_id": profile.id,
                 "lock_path": lock_path,
                 "artifact": name,
@@ -386,7 +406,7 @@ mod mutation {
                 "sha256": expected_sha,
                 "install_path": install_path,
                 "first_missing_signal": "none",
-                "meaning": if apply { "known-good lock advanced and artifact relocked" } else { "bless planned; rerun with --apply to advance lock" },
+                "meaning": if changed { "known-good lock advanced and artifact relocked" } else if apply { "artifact already current" } else { "bless planned; rerun with --apply to advance lock" },
             }),
         )?;
         println!("schema=harmonia.pinned_artifacts.bless.v1");
@@ -398,7 +418,7 @@ mod mutation {
                 None,
 );
         println!("ok=true");
-        println!("mutation={}", apply);
+        println!("mutation={}", changed);
         println!("artifact={}", name);
         println!("candidate_version={}", version);
         println!("first_missing_signal=none");

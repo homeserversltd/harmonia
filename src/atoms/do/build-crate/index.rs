@@ -53,6 +53,15 @@ pub(crate) fn cargo_build_and_stamp(
     source_build_sha: &str,
     environment_sha: &str,
 ) -> Result<CommandObservation, String> {
+    use std::os::unix::fs::MetadataExt;
+    use crate::atoms::projectio;
+    // Cargo's target directory is the build's staging root, not an installed path.
+    let staging_root = cwd.join("target");
+    let scratch = artifact.starts_with(&staging_root)
+        && !artifact.components().any(|part| matches!(part, std::path::Component::ParentDir));
+    if !scratch && !artifact.exists() {
+        return Err(format!("build-crate-artifact-absent-refused {}", artifact.display()));
+    }
     let observation = cargo_build(authorization, invocation, cwd, environment, bearer, timeout)?;
     if observation.ok {
         let artifact_name = artifact
@@ -61,15 +70,20 @@ pub(crate) fn cargo_build_and_stamp(
             .unwrap_or("artifact");
         let built = cwd.join("target/release").join(artifact_name);
         if built != artifact {
-            std::fs::create_dir_all(
-                artifact
-                    .parent()
-                    .ok_or("build-crate-staged-artifact-parent-missing")?,
-            )
-            .map_err(|error| {
-                format!("build-crate-staged-artifact-parent-create-failed: {error}")
-            })?;
-            std::fs::copy(&built, artifact).map_err(|error| {
+            if scratch {
+                projectio::act_scratch_make_dir(authorization, artifact.parent().ok_or("build-crate-staged-artifact-parent-missing")?)
+                    .map_err(|error| format!("build-crate-staged-artifact-parent-create-failed: {error}"))?;
+                if artifact.exists() {
+                    projectio::act_scratch_remove(authorization, artifact)
+                        .map_err(|error| format!("build-crate-staged-artifact-copy-failed: {error}"))?;
+                }
+            }
+            let copied = if scratch {
+                projectio::act_scratch_copy(authorization, &built, artifact, None)
+            } else {
+                projectio::act_copy(authorization, &built, artifact, None, None, None)
+            };
+            copied.map_err(|error| {
                 format!(
                     "build-crate-staged-artifact-copy-failed {} -> {}: {error}",
                     built.display(),
@@ -77,12 +91,13 @@ pub(crate) fn cargo_build_and_stamp(
                 )
             })?;
         }
+        let owner = std::fs::metadata(artifact).map_err(|e| format!("build-crate-artifact-metadata-failed: {e}"))?;
         let stamp = artifact.with_file_name(format!("{artifact_name}.source-build-sha"));
-        std::fs::write(stamp, format!("{source_build_sha}\n"))
+        projectio::act_put(authorization, &stamp, format!("{source_build_sha}\n").as_bytes(), Some(0o644), Some(owner.uid()), Some(owner.gid()))
             .map_err(|error| format!("build-crate-source-head-stamp-write-failed: {error}"))?;
         let environment_stamp =
             artifact.with_file_name(format!("{artifact_name}.build-environment-sha"));
-        std::fs::write(environment_stamp, format!("{environment_sha}\n"))
+        projectio::act_put(authorization, &environment_stamp, format!("{environment_sha}\n").as_bytes(), Some(0o644), Some(owner.uid()), Some(owner.gid()))
             .map_err(|error| format!("build-crate-environment-stamp-write-failed: {error}"))?;
     }
     Ok(observation)
