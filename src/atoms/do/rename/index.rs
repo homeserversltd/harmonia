@@ -10,7 +10,7 @@ pub(crate) fn rename(
     from: &Path,
     to: &Path,
 ) -> Result<(), String> {
-    crate::atoms::projectio::act_rename(authorization, from, to, false).map_err(|error| error.to_string())?;
+    crate::atoms::projectio::act_rename(authorization, from, to, false, false).map_err(|error| error.to_string())?;
     let _ = (authorization, invocation);
     Ok(())
 }
@@ -18,7 +18,15 @@ pub(crate) fn rename(
 pub(crate) fn rename_from_scratch(
     authorization: &ActionAuthorization, invocation: &InvocationKey, from: &Path, to: &Path,
 ) -> Result<(), String> {
-    crate::atoms::projectio::act_rename(authorization, from, to, true).map_err(|error| error.to_string())?;
+    crate::atoms::projectio::act_rename(authorization, from, to, true, false).map_err(|error| error.to_string())?;
+    let _ = (authorization, invocation);
+    Ok(())
+}
+
+pub(crate) fn rename_to_scratch(
+    authorization: &ActionAuthorization, invocation: &InvocationKey, from: &Path, to: &Path,
+) -> Result<(), String> {
+    crate::atoms::projectio::act_rename(authorization, from, to, false, true).map_err(|error| error.to_string())?;
     let _ = (authorization, invocation);
     Ok(())
 }

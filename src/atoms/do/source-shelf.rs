@@ -3285,7 +3285,7 @@ fn source_shelf_sweep_with_fault(
             let transaction = (|| -> Result<(), String> {
                 if !shelf_current {
                     if shelf_had_prior {
-                        crate::atoms::r#do::source_shelf::rename(
+                        crate::atoms::r#do::rename::rename_to_scratch(
                             authorization,
                             invocation,
                             &request.target_shelf,
@@ -3295,7 +3295,7 @@ fn source_shelf_sweep_with_fault(
                             format!("source-shelf-sweep-shelf-quarantine-failed: {error}")
                         })?;
                     }
-                    crate::atoms::r#do::source_shelf::rename(
+                    crate::atoms::r#do::rename::rename_from_scratch(
                         authorization,
                         invocation,
                         &stage,
@@ -3631,7 +3631,7 @@ fn source_shelf_sweep_with_fault(
                         ));
                     }
                     if shelf_had_prior {
-                        if let Err(error) = crate::atoms::r#do::source_shelf::rename(
+                        if let Err(error) = crate::atoms::r#do::rename::rename_from_scratch(
                             authorization,
                             invocation,
                             &shelf_backup,

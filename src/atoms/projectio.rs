@@ -60,7 +60,7 @@ pub(crate) fn act_owner(
 
 pub(crate) fn act_rename(
     _authorization: &crate::atoms::comparison::ActionAuthorization,
-    from: &Path, to: &Path, scratch_from: bool,
+    from: &Path, to: &Path, scratch_from: bool, scratch_to: bool,
 ) -> std::io::Result<()> {
     check_act_path(from)?;
     check_act_path(to)?;
@@ -69,7 +69,7 @@ pub(crate) fn act_rename(
     let from_readback = fs::symlink_metadata(from);
     let matches = to_readback.is_ok()
         && matches!(from_readback, Err(ref e) if e.kind() == std::io::ErrorKind::NotFound);
-    crate::atoms::touch::record_lane(to, "known-good");
+    if !scratch_to { crate::atoms::touch::record_lane(to, "known-good"); }
     if !scratch_from { crate::atoms::touch::record_lane(from, "known-good"); }
     if !matches { return Err(act_mismatch("rename", to)); }
     Ok(())
