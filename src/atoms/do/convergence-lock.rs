@@ -32,6 +32,9 @@ fn engine_run_lock_pid(path: &Path) -> Result<Option<u32>, String> {
     match fs::read_to_string(path) {
         Ok(contents) => {
             let pid = contents
+                .lines()
+                .next()
+                .unwrap_or("")
                 .trim()
                 .strip_prefix("pid=")
                 .ok_or_else(|| format!("engine-run-lock-invalid {}", path.display()))?
@@ -83,7 +86,9 @@ pub(crate) fn try_acquire_engine_run_lock() -> Result<EngineRunLockGuard, Engine
         })?;
     }
     loop {
-        let contents = format!("pid={}\n", std::process::id()).into_bytes();
+        static LOCK_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = LOCK_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let contents = format!("pid={}\nsequence={sequence}\n", std::process::id()).into_bytes();
         match crate::atoms::projectio::engine_create_new(&witness, &path, &contents, 0o644) {
             Ok(()) => {
                 return Ok(EngineRunLockGuard { path, contents });
