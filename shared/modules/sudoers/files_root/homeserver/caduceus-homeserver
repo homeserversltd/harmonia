@@ -1,0 +1,15 @@
+# HomeServer xenos band and exec crossings.
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^[a-z0-9][a-z0-9-]{0\,62} band [A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$
+caduceus ALL=(root) NOPASSWD: /usr/local/sbin/agathodaimon/caduceus-xenos-run ^[a-z0-9][a-z0-9-]{0\,62} exec /var/lib/xenia/[a-z0-9][a-z0-9-]{0\,62}/[A-Za-z0-9_./-]+$
+# keyman doors: Caduceus execs the keyman binary for its four door verbs; secrets ride stdin, never argv
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^key-status$
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^admin-password$
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^create-key --target (vault|external|both) --strategy (safe_rotation|replace_primary|flexible_addition)$
+caduceus ALL=(root) NOPASSWD: /vault/keyman/keyman ^update-key --device /dev(/[A-Za-z0-9][A-Za-z0-9_.:@+-]*)+ --strategy (safe_rotation|replace_primary|flexible_addition)$
+# Fixed Kea configuration and lease reads.
+caduceus ALL=(root) NOPASSWD: /usr/bin/cat /etc/kea/kea-dhcp4.conf
+caduceus ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/kea/kea-leases4.csv
+caduceus ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/kea/kea-leases4.csv.1
+caduceus ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/kea/kea-leases4.csv.2
+Cmnd_Alias CADUCEUS_KEA_READ = /usr/bin/cat /etc/kea/kea-dhcp4.conf, /usr/bin/cat /var/lib/kea/kea-leases4.csv, /usr/bin/cat /var/lib/kea/kea-leases4.csv.1, /usr/bin/cat /var/lib/kea/kea-leases4.csv.2
+Defaults!CADUCEUS_KEA_READ !log_allowed, !pam_session
