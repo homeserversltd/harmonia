@@ -485,6 +485,7 @@ pub fn check(declaration: &Declaration, path: &str) -> Value {
 #[derive(Debug)]
 struct Collector {
     declaration: Declaration,
+    press_declared: Vec<(String, &'static str)>,
     writes: Vec<Touch>,
 }
 
@@ -495,6 +496,7 @@ struct Touch {
     step: Option<String>,
     owner_accept: bool,
     explicit_lane: Option<&'static str>,
+    made_directory: bool,
 }
 
 static COLLECTOR: OnceLock<Mutex<Option<Collector>>> = OnceLock::new();
@@ -512,6 +514,7 @@ pub fn start() {
     let mut state = collector_lock();
     *state = Some(Collector {
         declaration: Declaration::empty(LoadState::Absent, None, None, "", None),
+        press_declared: Vec::new(),
         writes: Vec::new(),
     });
 }
@@ -520,6 +523,22 @@ pub fn attach(declaration: Declaration) {
     if let Some(collector) = collector_lock().as_mut() {
         collector.declaration = declaration;
     }
+}
+
+/// Declare one literal target for this press, without changing `check`.
+pub(crate) fn declare_press_target(path: &Path, lane: &'static str) {
+    if let Some(target) = normalize_absolute(&path.to_string_lossy()) {
+        if let Some(collector) = collector_lock().as_mut() {
+            collector.press_declared.push((target, lane));
+        }
+    }
+}
+
+fn made_directory_ancestor(directory: &str, pattern: &str) -> bool {
+    let head: Vec<_> = pattern.split('/').filter(|part| !part.is_empty())
+        .take_while(|part| !part.contains('*')).collect();
+    let parts: Vec<_> = directory.split('/').filter(|part| !part.is_empty()).collect();
+    parts.len() <= head.len() && parts.iter().zip(head.iter()).all(|(a, b)| a == b)
 }
 
 fn is_within(path: &str, root: &str) -> bool {
@@ -558,7 +577,7 @@ fn lane_hint(normalized_target: Option<&str>, owner_accept: bool) -> Option<&'st
     None
 }
 
-fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool, explicit_lane: Option<&'static str>) {
+fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool, explicit_lane: Option<&'static str>, made_directory: bool) {
     let mut state = collector_lock();
     let Some(collector) = state.as_mut() else {
         return;
@@ -577,19 +596,26 @@ fn record_inner(path: &Path, step: Option<&str>, owner_accept: bool, explicit_la
         target,
         owner_accept,
         explicit_lane,
+        made_directory,
     });
 }
 
 /// Record is deliberately non-refusing and inactive until [`start`] is called.
 pub fn record(path: &Path, step: Option<&str>, owner_accept: bool) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        record_inner(path, step, owner_accept, None);
+        record_inner(path, step, owner_accept, None, false);
     }));
 }
 
 pub(crate) fn record_lane(path: &Path, lane: &'static str) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        record_inner(path, None, false, Some(lane));
+        record_inner(path, None, false, Some(lane), false);
+    }));
+}
+
+pub(crate) fn record_made_directory(path: &Path, lane: &'static str) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        record_inner(path, None, false, Some(lane), true);
     }));
 }
 
@@ -604,6 +630,19 @@ pub fn receipt() -> Value {
     for touch in &collector.writes {
         let normalized = normalize_absolute(&touch.target);
         let key = normalized.clone().unwrap_or_else(|| touch.target.clone());
+        let press_allowed = normalized.as_ref().is_some_and(|target|
+            collector.press_declared.iter().any(|(declared, _lane)| target == declared));
+        let directory_allowed = touch.made_directory && normalized.as_ref().is_some_and(|target| {
+            collector.declaration.allow.iter().any(|row| made_directory_ancestor(target, &row.pattern))
+                || collector.press_declared.iter().any(|(declared, _lane)| {
+                    target == "/" || target == declared || declared.strip_prefix(target)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                })
+        });
+        if press_allowed || directory_allowed || check(&collector.declaration, &touch.target)
+            .get("allowed").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
         if let Some(&index) = seen_targets.get(&key) {
             if let Some(lane) = touch.explicit_lane {
                 if undeclared[index]["lane_hint"] != "self" && undeclared[index]["explicit_lane_present"] == false {
@@ -611,10 +650,6 @@ pub fn receipt() -> Value {
                     undeclared[index]["explicit_lane_present"] = json!(true);
                 }
             }
-            continue;
-        }
-        if check(&collector.declaration, &touch.target)
-            .get("allowed").and_then(Value::as_bool).unwrap_or(false) {
             continue;
         }
         seen_targets.insert(key, undeclared.len());

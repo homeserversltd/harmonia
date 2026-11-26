@@ -102,7 +102,7 @@ pub(crate) fn act_make_dir(
     }
     fs::create_dir_all(path)?;
     let matches = fs::metadata(path).is_ok_and(|after| after.is_dir());
-    for directory in missing { crate::atoms::touch::record_lane(&directory, "known-good"); }
+    for directory in missing { crate::atoms::touch::record_made_directory(&directory, "known-good"); }
     if !matches { return Err(act_mismatch("make-dir", path)); }
     Ok(())
 }

@@ -508,6 +508,18 @@ fn interactable_run(
     args: &[String],
     invocation: Option<&crate::Invocation>,
 ) -> Result<(), String> {
+    crate::atoms::touch::start();
+    let profile_error = match crate::device_profile::resolve_certificate_profile() {
+        Ok((profile, _)) => {
+            crate::atoms::touch::attach(crate::atoms::touch::load(
+                &crate::bands::renew_self::engine_source_root(), &profile.id,
+            ));
+            None
+        }
+        Err(error) => Some(error),
+    };
+    let mut pressed_kind = None;
+    let result = (|| {
     if args.len() != 1 {
         return Err("config-proposal accept requires exactly one <id>".to_string());
     }
@@ -521,6 +533,10 @@ fn interactable_run(
         }
         return Err(format!("interactable-unknown-id {}", args[0]));
     };
+    pressed_kind = Some(item.kind.clone());
+    if let Some(target) = item.target_path.as_deref() {
+        crate::atoms::touch::declare_press_target(target, "interactable");
+    }
     let mut feed = make_feed(vec![item.clone()]);
     let position = 0;
     if item.id == homeserver_clock_utc::INTERACTABLE_ID {
@@ -562,6 +578,22 @@ fn interactable_run(
         return run_command_proposal(&path, &item, invocation);
     }
     run_file_config_proposal(&path, &item.id, invocation)
+    })();
+    let mut receipt = crate::atoms::touch::receipt();
+    if let Some(object) = receipt.as_object_mut() {
+        object.insert("id".into(), serde_json::json!(args.first()));
+        object.insert("kind".into(), serde_json::json!(pressed_kind));
+        if let Some(error) = profile_error {
+            object.insert("profile_error".into(), serde_json::json!(error));
+        }
+    }
+    let directory = Path::new("/var/lib/harmonia/receipts/interactable-latest");
+    if fs::create_dir_all(directory).is_ok() {
+        if let Ok(bytes) = serde_json::to_vec_pretty(&receipt) {
+            let _ = fs::write(directory.join("touch.json"), bytes);
+        }
+    }
+    result
 }
 
 /// Accept exactly the selected bound link. Never recurse into a module/update
