@@ -79,11 +79,14 @@ pub(crate) fn select_blessed_ref(declared: Option<&str>, fallback: Option<&str>)
 
 /// Report-only comparison of the pulled source head and the blessed artifact.
 /// This function never gates execution and mutates only its receipt/state files.
-struct CanaryLock(PathBuf);
+struct CanaryLock {
+    path: PathBuf,
+    contents: Vec<u8>,
+}
 impl Drop for CanaryLock {
     fn drop(&mut self) {
         let witness = crate::atoms::projectio::engine_state_witness();
-        let _ = crate::atoms::projectio::engine_remove_if(&witness, &self.0, b"", false);
+        let _ = crate::atoms::projectio::engine_remove_if(&witness, &self.path, &self.contents, false);
     }
 }
 
@@ -184,9 +187,12 @@ pub(crate) fn artifact_head_divergence_canary_with_bearer(
     if let Err(error) = crate::atoms::projectio::engine_make_dir(&witness, &state_dir) {
         tracking_error = Some(format!("canary-state-dir: {error}"));
     } else {
-        match crate::atoms::projectio::engine_create_new(&witness, &lock_path, b"", 0o644) {
+        static LOCK_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = LOCK_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let contents = format!("pid={} sequence={sequence}\n", std::process::id()).into_bytes();
+        match crate::atoms::projectio::engine_create_new(&witness, &lock_path, &contents, 0o644) {
             Ok(()) => {
-                let _lock = CanaryLock(lock_path.clone());
+                let _lock = CanaryLock { path: lock_path.clone(), contents: contents.clone() };
                 let previous: CanaryState = fs::read(&state_path)
                     .ok()
                     .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -217,7 +223,7 @@ pub(crate) fn artifact_head_divergence_canary_with_bearer(
             }
             Err(error) => {
                 if error.kind() != std::io::ErrorKind::AlreadyExists {
-                    let _ = crate::atoms::projectio::engine_remove_if(&witness, &lock_path, b"", false);
+                    let _ = crate::atoms::projectio::engine_remove_if(&witness, &lock_path, &contents, false);
                 }
                 tracking_error = Some(format!("canary-state-lock: {error}"));
             }
