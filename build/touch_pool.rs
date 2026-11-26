@@ -337,18 +337,22 @@ fn build(root: &Path, profile_id: &str, registry: &Value, clobbered: &Value) -> 
     let mut paths = Vec::new();
     let mut operations = Vec::new();
     for (module, from_base) in module_list(root, &profile)? {
-        let owner = if from_base {
-            base.unwrap_or(profile_id)
-        } else {
-            profile_id
-        };
+        // The worn profile's local seat wins even for a base module.
         let local = root
             .join("profiles")
-            .join(owner)
+            .join(profile_id)
             .join("modules")
             .join(&module);
+        let base_local =
+            base.map(|id| root.join("profiles").join(id).join("modules").join(&module));
         let module_dir = if local.join("manifest.json").is_file() {
             local
+        } else if from_base
+            && base_local
+                .as_ref()
+                .is_some_and(|p| p.join("manifest.json").is_file())
+        {
+            base_local.unwrap()
         } else {
             root.join("shared/modules").join(&module)
         };
