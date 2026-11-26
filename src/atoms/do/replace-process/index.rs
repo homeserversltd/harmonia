@@ -123,7 +123,7 @@ pub(crate) fn rollback_installed(p: &Plan) -> Result<(), String> {
         p.successor.parent().ok_or("replace-process-rollback-parent")?;
         let (uid, gid) = match fs::symlink_metadata(&p.successor) {
             Ok(metadata) => (metadata.uid(), metadata.gid()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("replace-process-rollback-successor-absent".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (unsafe { libc::geteuid() }, unsafe { libc::getegid() }),
             Err(e) => return Err(e.to_string()),
         };
         crate::atoms::projectio::engine_put_owned(

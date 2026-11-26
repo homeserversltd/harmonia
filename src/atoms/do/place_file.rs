@@ -379,7 +379,7 @@ fn strict_restore(authorization: &crate::atoms::comparison::ActionAuthorization,
         match fs::symlink_metadata(path) {
             Ok(m) if m.file_type().is_file() => {},
             Ok(_) => return Err("place-file-rollback-collision".into()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("place-file-rollback-target-absent".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
             Err(e) => return Err(e.to_string()),
         }
         crate::atoms::projectio::act_put(authorization, path, &old.bytes, Some(old.mode), Some(old.uid), Some(old.gid))
@@ -547,6 +547,8 @@ mod mutation {
         ownership: DeclaredOwnership,
         observation: &PlaceFileObservation,
     ) -> Result<PlaceFileMovement, String> {
+        use std::io::Write;
+        use std::os::unix::io::AsRawFd;
         let parent = path.parent().ok_or("xenia-guest-not-installed")?;
         let name = path.file_name().ok_or("xenia-guest-not-installed")?.to_string_lossy();
         let temp = parent.join(format!(".{name}.xenia-update-{}-{}", std::process::id(),
@@ -555,18 +557,20 @@ mod mutation {
         let mut exchanged = false;
         let mut candidate_identity = None;
         let result = (|| -> Result<(), String> {
-            let mode = mode.ok_or("xenia-update-mode-missing")?;
-            crate::atoms::projectio::act_scratch_write_new(authorization, &temp, bytes, mode)
+            // R5-0d held-fd exception: guest-writable Xenia seats require fd-anchored metadata.
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)
                 .map_err(|e| format!("xenia-update-temp-create-failed: {e}"))?;
+            let m = file.metadata().map_err(|e| e.to_string())?;
+            candidate_identity = Some((m.dev(), m.ino()));
+            file.write_all(bytes).map_err(|e| format!("xenia-update-temp-write-failed: {e}"))?;
             let uid = ownership.uid.ok_or("xenia-update-owner-missing")?;
             let gid = ownership.gid.ok_or("xenia-update-group-missing")?;
-            crate::atoms::projectio::act_scratch_chown(authorization, &temp, uid, gid)
-                .map_err(|e| format!("xenia-update-owner-failed: {e}"))?;
-            crate::atoms::projectio::act_scratch_mode(authorization, &temp, mode)
+            if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+                return Err(format!("xenia-update-owner-failed: {}", std::io::Error::last_os_error()));
+            }
+            file.set_permissions(std::fs::Permissions::from_mode(mode.ok_or("xenia-update-mode-missing")?))
                 .map_err(|e| format!("xenia-update-mode-failed: {e}"))?;
-            crate::atoms::projectio::act_sync(authorization, &temp).map_err(|e| format!("xenia-update-sync-failed: {e}"))?;
-            let m = fs::symlink_metadata(&temp).map_err(|e| e.to_string())?;
-            candidate_identity = Some((m.dev(), m.ino()));
+            file.sync_all().map_err(|e| format!("xenia-update-sync-failed: {e}"))?;
             if let Err(error) = crate::atoms::projectio::act_exchange_files(authorization, &temp, path) {
                 if error.kind() == std::io::ErrorKind::NotFound { return Err("xenia-guest-not-installed".into()); }
                 return Err(format!("xenia-update-exchange-failed: {error}"));
@@ -578,7 +582,7 @@ mod mutation {
             Ok(())
         })();
         if result.is_err() && !exchanged {
-            let still_candidate = candidate_identity.map_or(true, |identity| {
+            let still_candidate = candidate_identity.map_or(false, |identity| {
                 fs::symlink_metadata(&temp).is_ok_and(|m| (m.dev(), m.ino()) == identity)
             });
             if still_candidate { let _ = crate::atoms::projectio::act_scratch_remove(authorization, &temp); }
