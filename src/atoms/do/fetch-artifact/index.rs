@@ -63,7 +63,7 @@ fn atomic_install(authorization: &ActionAuthorization, destination: &Path, bytes
             }
             Err(error) => return Err(format!("fetch-artifact-destination-stat-failed {}: {error}", destination.display())),
         };
-        return projectio::act_strike(authorization, destination, bytes, metadata.mode() & 0o7777, metadata.uid(), metadata.gid())
+        return projectio::act_strike(authorization, destination, bytes, 0o755, metadata.uid(), metadata.gid())
             .map(|_| ())
             .map_err(|error| format!("fetch-artifact-rename-failed: {error}"));
     }
