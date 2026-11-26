@@ -2,7 +2,6 @@ use crate::tools::ladder::{LadderManifest, ValidatedStep};
 use crate::{CmdResult, OperationOutcome};
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -155,7 +154,47 @@ fn apply_theme(
             command: None,
         });
     }
-    if !changed {
+    let comparison = crate::atoms::comparison::execute_once(
+        "grub-theme-material",
+        || {
+            let before = if defaults.is_file() {
+                fs::read_to_string(&defaults).map_err(|e| format!("grub-defaults-read-failed:{e}"))?
+            } else {
+                String::new()
+            };
+            let after = rewrite_defaults(&before, &theme_path.to_string_lossy());
+            let defaults_changed = before.as_bytes() != after.as_bytes();
+            let theme_changed = !tree_matches(source, &theme_dir)?;
+            Ok::<_, String>((before, after, defaults_changed, theme_changed))
+        },
+        |(_, _, defaults_changed, theme_changed)| {
+            if *defaults_changed || *theme_changed {
+                crate::atoms::comparison::DiffDecision::Different
+            } else {
+                crate::atoms::comparison::DiffDecision::Empty
+            }
+        },
+        |authorization, (_, after, defaults_changed, theme_changed)| {
+            receipt["attempt"] = json!("apply-material-change");
+            crate::atoms::files::ensure_resolved_containment(root, &theme_dir)?;
+            crate::atoms::files::ensure_resolved_containment(root, &defaults)?;
+            if *theme_changed {
+                atomic_copy_tree(&authorization, source, &theme_dir, name)?;
+                receipt["changed"] = json!(true);
+            }
+            if *defaults_changed {
+                atomic_write(&authorization, &defaults, after.as_bytes())?;
+                receipt["changed"] = json!(true);
+            }
+            Ok::<_, String>(())
+        },
+    )?;
+    let (defaults_before, defaults_after, defaults_changed, theme_changed) = comparison.observation();
+    receipt["observed"]["defaults_before"] = json!(defaults_before);
+    receipt["observed"]["theme_material_current"] = json!(!theme_changed);
+    receipt["observed"]["defaults_current"] = json!(!defaults_changed);
+    receipt["changed"] = json!(*defaults_changed || *theme_changed);
+    if matches!(comparison, crate::atoms::comparison::ComparisonRun::Current { .. }) {
         receipt["ok"] = json!(true);
         receipt["attempt"] = json!("no-op");
         receipt["final_state"] = json!("current");
@@ -170,17 +209,6 @@ fn apply_theme(
         });
     }
 
-    receipt["attempt"] = json!("apply-material-change");
-    crate::atoms::files::ensure_resolved_containment(root, &theme_dir)?;
-    crate::atoms::files::ensure_resolved_containment(root, &defaults)?;
-    if theme_changed {
-        atomic_copy_tree(source, &theme_dir, name)?;
-        receipt["changed"] = json!(true);
-    }
-    if defaults_changed {
-        atomic_write(&defaults, defaults_after.as_bytes())?;
-        receipt["changed"] = json!(true);
-    }
     let theme_readback = tree_matches(source, &theme_dir)?;
     let defaults_readback = fs::read(&defaults)
         .map_err(|e| format!("grub-defaults-readback-failed:{e}"))?
@@ -476,86 +504,66 @@ fn ensure_safe_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn atomic_write(
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "grub-target-parent-missing".to_string())?;
-    fs::create_dir_all(parent).map_err(|e| format!("grub-target-parent-create-failed:{e}"))?;
-    let temp = temp_path(
-        parent,
-        path.file_name().and_then(|v| v.to_str()).unwrap_or("grub"),
-    );
-    let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
-        file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        fs::rename(&temp, path).map_err(|e| e.to_string())?;
-        Ok::<(), String>(())
-    })();
-    if temp.exists() {
-        let _ = fs::remove_file(temp);
-    }
-    result.map_err(|e| format!("grub-defaults-atomic-write-failed:{e}"))
+    crate::atoms::projectio::act_make_dir(authorization, parent)
+        .map_err(|e| format!("grub-target-parent-create-failed:{e}"))?;
+    let (mode, uid, gid) = if path.exists() {
+        (None, None, None)
+    } else {
+        (Some(0o644), Some(0), Some(0))
+    };
+    crate::atoms::projectio::act_put(authorization, path, bytes, mode, uid, gid)
+        .map_err(|e| format!("grub-defaults-atomic-write-failed:{e}"))
 }
 
-fn atomic_copy_tree(source: &Path, target: &Path, name: &str) -> Result<(), String> {
+fn atomic_copy_tree(
+    authorization: &crate::atoms::comparison::ActionAuthorization,
+    source: &Path,
+    target: &Path,
+    name: &str,
+) -> Result<(), String> {
     let parent = target
         .parent()
         .ok_or_else(|| "grub-theme-target-parent-missing".to_string())?;
-    fs::create_dir_all(parent)
+    crate::atoms::projectio::act_make_dir(authorization, parent)
         .map_err(|e| format!("grub-theme-target-parent-create-failed:{e}"))?;
     let staging = temp_path(parent, name);
-    fs::create_dir(&staging).map_err(|e| format!("grub-theme-staging-create-failed:{e}"))?;
+    crate::atoms::projectio::act_scratch_make_dir_new(authorization, &staging)
+        .map_err(|e| format!("grub-theme-staging-create-failed:{e}"))?;
     let staged_tree = staging.join(name);
     let result = (|| {
-        copy_tree_contents(source, &staged_tree)?;
+        crate::atoms::projectio::act_scratch_copy_tree(authorization, source, &staged_tree)
+            .map_err(|e| format!("grub-theme-copy-failed:{e}"))?;
         let backup = temp_path(parent, &format!("{name}.old"));
         let had_prior = target.exists();
         if had_prior {
             if !target.is_dir() || target.is_symlink() {
                 return Err("grub-theme-target-not-directory".into());
             }
-            fs::rename(target, &backup).map_err(|e| format!("grub-theme-backup-failed:{e}"))?;
+            crate::atoms::projectio::act_rename(authorization, target, &backup, false, true)
+                .map_err(|e| format!("grub-theme-backup-failed:{e}"))?;
         }
-        if let Err(error) = fs::rename(&staged_tree, target) {
+        if let Err(error) = crate::atoms::projectio::act_rename(authorization, &staged_tree, target, true, false) {
             if had_prior {
-                let _ = fs::rename(&backup, target);
+                let _ = crate::atoms::projectio::act_rename(authorization, &backup, target, true, false);
             }
             return Err(format!("grub-theme-promote-failed:{error}"));
         }
         if had_prior {
-            fs::remove_dir_all(&backup)
+            crate::atoms::projectio::act_scratch_remove_tree(authorization, &backup)
                 .map_err(|e| format!("grub-theme-prior-remove-failed:{e}"))?;
         }
         Ok(())
     })();
-    let _ = fs::remove_dir_all(staging);
+    let _ = crate::atoms::projectio::act_scratch_remove_tree(authorization, &staging);
     result
-}
-
-fn copy_tree_contents(source: &Path, target: &Path) -> Result<(), String> {
-    fs::create_dir_all(target).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let src = entry.path();
-        let dst = target.join(entry.file_name());
-        let metadata = fs::symlink_metadata(&src).map_err(|e| e.to_string())?;
-        if metadata.file_type().is_symlink() {
-            return Err("grub-theme-source-symlink-forbidden".into());
-        }
-        if metadata.is_dir() {
-            copy_tree_contents(&src, &dst)?;
-        } else if metadata.is_file() {
-            fs::copy(&src, &dst).map_err(|e| format!("grub-theme-copy-failed:{e}"))?;
-        } else {
-            return Err("grub-theme-source-special-file-forbidden".into());
-        }
-    }
-    Ok(())
 }
 
 fn temp_path(parent: &Path, stem: &str) -> PathBuf {
