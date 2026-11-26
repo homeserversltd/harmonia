@@ -1,7 +1,6 @@
 use crate::atoms::comparison::ActionAuthorization;
 use crate::atoms::projectio;
 use crate::atoms::r#do::InvocationKey;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct FileWriteOptions<'a> {
@@ -29,11 +28,7 @@ pub(crate) fn file_write(
                 format!("file-write-backup-parent-create-failed {}: {error}", parent.display())
             })?;
         }
-        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-            format!("file-write-backup-failed {} -> {}: {error}", path.display(), backup.display())
-        })?;
-        projectio::act_copy(authorization, path, backup, Some(metadata.mode() & 0o7777),
-            Some(metadata.uid()), Some(metadata.gid())).map_err(|error| {
+        projectio::act_copy(authorization, path, backup, None, None, None).map_err(|error| {
             format!("file-write-backup-failed {} -> {}: {error}", path.display(), backup.display())
         })?;
         Some(backup.to_path_buf())
@@ -49,6 +44,11 @@ pub(crate) fn file_write(
                 .map_err(|error| format!("file-write-mode-set-failed {}: {error}", path.display()))?;
         }
         if options.uid.is_some() || options.gid.is_some() {
+            let metadata = std::fs::symlink_metadata(path)
+                .map_err(|error| format!("file-write-owner-set-failed {}: {error}", path.display()))?;
+            if metadata.file_type().is_symlink() {
+                return Err(format!("file-write-owner-set-failed {}: symlink target refused", path.display()));
+            }
             projectio::act_owner(authorization, path, options.uid.unwrap_or(!0), options.gid.unwrap_or(!0))
                 .map_err(|error| format!("file-write-owner-set-failed {}: {error}", path.display()))?;
         }
