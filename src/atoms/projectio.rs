@@ -1334,12 +1334,48 @@ pub(crate) fn engine_remove(_w: &EngineStateWitness, path: &Path, scratch: bool)
 #[allow(dead_code)]
 pub(crate) fn engine_remove_if(_w: &EngineStateWitness, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> {
     check_act_path(path)?;
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() { return Err(std::io::Error::other(format!("projectio-remove-if-not-regular {}", path.display()))); }
-    let bytes = read_engine_state_target(path).map_err(std::io::Error::other)?;
-    if bytes != expected { return Err(std::io::Error::other(format!("projectio-remove-if-refused {}", path.display()))); }
-    verify_preimage(path, expected, &metadata).map_err(std::io::Error::other)?;
-    remove_act(path, 0, !scratch)
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().and_then(|n| n.to_str())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "projectio-remove-if-invalid-name"))?;
+    let claim = loop {
+        let sequence = ENGINE_STATE_BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let claim = parent.join(format!(".projectio-{}-{sequence}-{name}", std::process::id()));
+        match renameat2_raw(path, &claim, libc::RENAME_NOREPLACE) {
+            Ok(()) => break claim,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    // Only the claimed name is inspected or removed; a replacement at path is never touched.
+    let checked = (|| -> std::io::Result<FileIdentity> {
+        let metadata = fs::symlink_metadata(&claim)?;
+        if !metadata.file_type().is_file() {
+            return Err(std::io::Error::other(format!("projectio-remove-if-not-regular {}", path.display())));
+        }
+        let bytes = read_engine_state_target(&claim).map_err(std::io::Error::other)?;
+        if bytes != expected {
+            return Err(std::io::Error::other(format!("projectio-remove-if-refused {}", path.display())));
+        }
+        verify_preimage(&claim, expected, &metadata).map_err(std::io::Error::other)?;
+        Ok(file_identity(&metadata))
+    })();
+    let identity = match checked {
+        Ok(identity) => identity,
+        Err(error) => {
+            if let Err(restore) = renameat2_raw(&claim, path, libc::RENAME_NOREPLACE) {
+                return Err(std::io::Error::other(format!("{error}; projectio-remove-if-put-back {} -> {}: {restore}; claim retained", claim.display(), path.display())));
+            }
+            return Err(error);
+        }
+    };
+    fs::remove_file(&claim).map_err(|e| std::io::Error::new(e.kind(), format!("projectio-remove-if-claim-remove {} (target {}): {e}", claim.display(), path.display())))?;
+    if !scratch { crate::atoms::touch::record_lane(path, "self"); }
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(metadata) if file_identity(&metadata) != identity => Ok(()),
+        Ok(_) => Err(act_mismatch("remove-if", path)),
+        Err(e) => Err(e),
+    }
 }
 #[allow(dead_code)]
 pub(crate) fn engine_remove_dir(_w: &EngineStateWitness, path: &Path, scratch: bool) -> std::io::Result<()> { remove_act(path, 1, !scratch) }
