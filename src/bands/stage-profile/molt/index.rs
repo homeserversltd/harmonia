@@ -382,14 +382,23 @@ fn molt_from_source_kind_inner(
             .join(&profile.id)
             .join("modules")
             .join(module);
-        if shared && shadow.exists() {
-            fs::remove_dir_all(&shadow).map_err(|e| {
-                format!(
-                    "molt-shared-module-shadow-prune-failed {}: {e}",
-                    shadow.display()
-                )
-            })?;
-            pruned_paths.push(shadow.display().to_string());
+        if shared {
+            let prune = crate::atoms::comparison::execute_once(
+                "molt-shared-module-shadow-prune",
+                || Ok::<_, String>(shadow.exists()),
+                |present| if *present { crate::atoms::comparison::DiffDecision::Different } else { crate::atoms::comparison::DiffDecision::Empty },
+                |authorization, _| {
+                    let metadata = fs::symlink_metadata(&shadow).map_err(|e| format!("molt-shared-module-shadow-prune-failed {}: {e}", shadow.display()))?;
+                    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                        return Err(format!("molt-shared-module-shadow-prune-failed {}: not a directory", shadow.display()));
+                    }
+                    crate::atoms::projectio::act_remove_tree(&authorization, &shadow, crate::atoms::projectio::RemoveTree::Tree, false)
+                        .map_err(|e| format!("molt-shared-module-shadow-prune-failed {}: {e}", shadow.display()))
+                },
+            )?;
+            if matches!(prune, crate::atoms::comparison::ComparisonRun::Moved { .. }) {
+                pruned_paths.push(shadow.display().to_string());
+            }
         }
         let sidecar = module_dir.join("sidecar.json");
         let manifest = module_dir.join("manifest.json");
@@ -1644,7 +1653,13 @@ fn replace_export_directory_entry(
                     &output_observed,
                 )?;
                 verify_absent(&output_observed)?;
-                fs::create_dir(&output_observed).map_err(|error| {
+                use std::os::unix::fs::OpenOptionsExt;
+                let parent = output_observed.parent().ok_or_else(|| "molt-export-directory-parent-missing".to_string())?;
+                let name = output_observed.file_name().ok_or_else(|| "molt-export-directory-name-missing".to_string())?;
+                let parent_fd = fs::OpenOptions::new().read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(parent).map_err(|error| format!("molt-export-directory-parent-open-failed {}: {error}", parent.display()))?;
+                crate::atoms::projectio::act_at_make_dir(&authorization, &parent_fd, name, 0o755, Some(&output_observed)).map_err(|error| {
                     format!(
                         "molt-export-directory-create-failed {}: {error}",
                         output_observed.display()

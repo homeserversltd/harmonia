@@ -966,7 +966,7 @@ impl Drop for SourceStagingGuard {
     }
 }
 
-pub(crate) fn promote_staged_source(stage: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn promote_staged_source(authorization: &crate::atoms::comparison::ActionAuthorization, stage: &Path, destination: &Path) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or_else(|| "destination-has-no-parent".to_string())?;
@@ -984,15 +984,15 @@ pub(crate) fn promote_staged_source(stage: &Path, destination: &Path) -> Result<
             .unwrap_or("source"),
         std::process::id()
     ));
-    fs::rename(destination, &backup).map_err(|err| format!("promotion-backup-failed: {err}"))?;
-    match fs::rename(stage, destination) {
+    crate::atoms::projectio::act_rename(authorization, destination, &backup, false, true).map_err(|err| format!("promotion-backup-failed: {err}"))?;
+    match crate::atoms::projectio::act_rename(authorization, stage, destination, true, false) {
         Ok(()) => {
             let witness = crate::atoms::projectio::engine_state_witness();
             let _ = crate::atoms::projectio::act_scratch_remove_tree(&witness, &backup);
             Ok(())
         }
         Err(err) => {
-            let restore = fs::rename(&backup, destination);
+            let restore = crate::atoms::projectio::act_rename(authorization, &backup, destination, true, false);
             Err(format!(
                 "promotion-install-failed: {err}; restore={restore:?}"
             ))
@@ -1246,7 +1246,21 @@ pub(crate) fn acquire_source(
                     "staged source post-state did not converge; stage discarded; destination unchanged".into();
                 return movement;
             }
-            if let Err(error) = crate::atoms::r#do::pull_repo::promote_staged_source(&stage, &plan.destination) {
+            let promotion = comparison::execute_once(
+                "pull-repo-promote-staged-source",
+                || {
+                    if !plan.destination.exists() {
+                        return Err(format!("pull-repo-destination-absent {}; birth places the destination", plan.destination.display()));
+                    }
+                    Ok(stage.exists())
+                },
+                |stage_exists| if *stage_exists { comparison::DiffDecision::Different } else { comparison::DiffDecision::Empty },
+                |authorization, _| crate::atoms::r#do::pull_repo::promote_staged_source(&authorization, &stage, &plan.destination),
+            ).and_then(|run| match run {
+                comparison::ComparisonRun::Moved { .. } => Ok(()),
+                comparison::ComparisonRun::Current { .. } => Err("promotion-stage-absent".to_string()),
+            });
+            if let Err(error) = promotion {
                 crate::atoms::r#do::pull_repo::discard_staged_source(&stage);
                 movement.ok = false;
                 movement.changed = false;
