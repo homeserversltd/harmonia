@@ -19,7 +19,7 @@
     },
     "harmonia.touch.v1": {
       "file": "schema/harmonia.touch.v1.json",
-      "schema_version": "1.2.0"
+      "schema_version": "1.3.0"
     },
     "harmonia.touch.resolved.v1": {
       "file": "schema/harmonia.touch.resolved.v1.json",

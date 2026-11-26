@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-const TOUCH_SCHEMA: &str = "harmonia.touch.v1";
+const TOUCH_SCHEMA: &str = "harmonia.touch.resolved.v1";
 const HOOKED: [&str; 16] = [
     "file_write",
     "atomic_write_bytes_with_ownership",
@@ -52,24 +52,16 @@ struct Allow {
 }
 
 #[derive(Debug, Clone)]
-struct Never {
-    original: String,
-    pattern: String,
-}
-
-#[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct Operation {
     kind: String,
     match_value: String,
-    lanes: Vec<String>,
-    note: Option<String>,
 }
 
 /// A loaded, absent, or malformed touch declaration.
 ///
 /// Fields remain private so declarations are created through [`load`], which
-/// validates all three declaration shapes and their operations before use.
+/// validates the resolved pool and its operations before use.
 #[derive(Debug, Clone)]
 pub struct Declaration {
     state: LoadState,
@@ -77,7 +69,6 @@ pub struct Declaration {
     source_revision: Option<String>,
     profile: String,
     allow: Vec<Allow>,
-    never: Vec<Never>,
     operations: Vec<Operation>,
     failure: Option<String>,
 }
@@ -96,7 +87,6 @@ impl Declaration {
             source_revision,
             profile: profile.to_owned(),
             allow: Vec::new(),
-            never: Vec::new(),
             operations: Vec::new(),
             failure: failure.map(str::to_owned),
         }
@@ -106,9 +96,7 @@ impl Declaration {
 #[derive(Debug)]
 struct ParsedDocument {
     allow: Vec<Allow>,
-    never: Vec<Never>,
     operations: Vec<Operation>,
-    extends: Option<String>,
 }
 
 #[derive(Debug)]
@@ -224,23 +212,6 @@ fn normalize_pattern(pattern: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn parse_lanes(value: &Value) -> Result<Vec<String>, &'static str> {
-    let lanes = value
-        .as_array()
-        .ok_or("touch-lanes-not-array")?
-        .iter()
-        .map(|lane| {
-            let lane = lane.as_str().ok_or("touch-lane-not-string")?;
-            if matches!(lane, "interactable" | "self" | "known-good") {
-                Ok(lane.to_owned())
-            } else {
-                Err("touch-lane-unknown")
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(lanes)
-}
-
 fn optional_note(object: &serde_json::Map<String, Value>) -> Result<Option<String>, &'static str> {
     match object.get("note") {
         None => Ok(None),
@@ -252,139 +223,61 @@ fn optional_note(object: &serde_json::Map<String, Value>) -> Result<Option<Strin
     }
 }
 
-fn parse_allow(value: &Value) -> Result<Allow, &'static str> {
+fn required_nullable_string(object: &serde_json::Map<String, Value>, key: &str) -> Result<(), &'static str> {
+    match object.get(key) {
+        Some(Value::String(_)) | Some(Value::Null) => Ok(()),
+        _ => Err("touch-row-metadata-missing-or-invalid"),
+    }
+}
+
+fn parse_resolved_allow(value: &Value, lane: &str) -> Result<Allow, &'static str> {
     let object = value.as_object().ok_or("touch-allow-not-object")?;
-    let original = object
-        .get("path")
-        .and_then(Value::as_str)
-        .ok_or("touch-allow-path-missing-or-not-string")?
-        .to_owned();
+    for key in ["module", "step", "tool"] {
+        required_nullable_string(object, key)?;
+    }
+    let original = object.get("path").and_then(Value::as_str)
+        .ok_or("touch-allow-path-missing-or-not-string")?.to_owned();
     let pattern = normalize_pattern(&original).ok_or("touch-allow-path-invalid")?;
-    let lanes = parse_lanes(object.get("lanes").ok_or("touch-allow-lanes-missing")?)?;
-    let note = optional_note(object)?;
-    Ok(Allow {
-        original,
-        pattern,
-        lanes,
-        note,
-    })
+    Ok(Allow { original, pattern, lanes: vec![lane.to_owned()], note: optional_note(object)? })
 }
 
-fn parse_never(value: &Value) -> Result<Never, &'static str> {
-    let original = value
-        .as_str()
-        .ok_or("touch-never-entry-not-string")?
-        .to_owned();
-    let pattern = normalize_pattern(&original).ok_or("touch-never-path-invalid")?;
-    Ok(Never { original, pattern })
-}
-
-fn parse_operation(value: &Value) -> Result<Operation, &'static str> {
+fn parse_resolved_operation(value: &Value) -> Result<Operation, &'static str> {
     let object = value.as_object().ok_or("touch-operation-not-object")?;
-    let kind = object
-        .get("kind")
-        .and_then(Value::as_str)
+    for key in ["module", "step"] {
+        required_nullable_string(object, key)?;
+    }
+    let kind = object.get("kind").and_then(Value::as_str)
         .ok_or("touch-operation-kind-missing-or-not-string")?;
     if !matches!(kind, "package" | "package-upgrade" | "command" | "unit") {
         return Err("touch-operation-kind-unknown");
     }
-    let match_value = object
-        .get("match")
-        .and_then(Value::as_str)
+    let match_value = object.get("match").and_then(Value::as_str)
         .ok_or("touch-operation-match-missing-or-not-string")?;
-    if match_value.is_empty() {
-        return Err("touch-operation-match-empty");
-    }
-    match kind {
-        "package-upgrade" if match_value != "*" => {
-            return Err("touch-package-upgrade-match-must-be-star");
-        }
-        "command" => {
-            let has_slash = match_value.contains('/');
-            if (has_slash && !match_value.starts_with('/'))
-                || match_value.chars().any(char::is_whitespace)
-                || (has_slash && normalize_absolute(match_value).is_none())
-            {
-                return Err("touch-command-match-invalid");
-            }
-        }
-        _ => {}
-    }
-    let lanes = parse_lanes(object.get("lanes").ok_or("touch-operation-lanes-missing")?)?;
-    let note = optional_note(object)?;
-    Ok(Operation {
-        kind: kind.to_owned(),
-        match_value: match_value.to_owned(),
-        lanes,
-        note,
-    })
+    Ok(Operation { kind: kind.to_owned(), match_value: match_value.to_owned() })
 }
 
-fn parse_document(
-    value: Value,
-    expected_profile: Option<&str>,
-    shared: bool,
-    inherited: bool,
-) -> Result<ParsedDocument, &'static str> {
+fn parse_document(value: Value, profile: &str) -> Result<ParsedDocument, &'static str> {
     let object = value.as_object().ok_or("touch-document-not-object")?;
     if object.get("schema").and_then(Value::as_str) != Some(TOUCH_SCHEMA) {
         return Err("touch-schema-foreign-or-missing");
     }
-    if let Some(profile_value) = object.get("profile") {
-        let profile = profile_value.as_str().ok_or("touch-profile-not-string")?;
-        if expected_profile.is_some_and(|expected| profile != expected) {
-            return Err("touch-profile-mismatch");
+    let document_profile = object.get("profile").and_then(Value::as_str)
+        .ok_or("touch-profile-missing-or-not-string")?;
+    if document_profile != profile {
+        return Err("touch-profile-mismatch");
+    }
+    let mut allow = Vec::new();
+    for (field, lane) in [("interactable", "interactable"), ("hotfix", "known-good"), ("clobbered", "self")] {
+        let rows = object.get(field).and_then(Value::as_array)
+            .ok_or("touch-pool-missing-or-not-array")?;
+        for row in rows {
+            allow.push(parse_resolved_allow(row, lane)?);
         }
     }
-    let extends = match object.get("extends") {
-        None => None,
-        Some(value) => {
-            let value = value.as_str().ok_or("touch-extends-not-string")?;
-            if !valid_profile_id(value) {
-                return Err("touch-extends-invalid");
-            }
-            Some(value.to_owned())
-        }
-    };
-    if inherited && extends.is_some() {
-        return Err("touch-extends-depth-exceeded");
-    }
-
-    let allow_values = object
-        .get("allow")
-        .and_then(Value::as_array)
-        .ok_or("touch-allow-missing-or-not-array")?;
-    let allow = allow_values
-        .iter()
-        .map(parse_allow)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let never = match object.get("never") {
-        Some(value) => value
-            .as_array()
-            .ok_or("touch-never-not-array")?
-            .iter()
-            .map(parse_never)
-            .collect::<Result<Vec<_>, _>>()?,
-        None if shared => return Err("touch-shared-never-missing"),
-        None => Vec::new(),
-    };
-
-    let operation_values = object
-        .get("operations")
-        .and_then(Value::as_array)
-        .ok_or("touch-operations-missing-or-not-array")?;
-    let operations = operation_values
-        .iter()
-        .map(parse_operation)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(ParsedDocument {
-        allow,
-        never,
-        operations,
-        extends,
-    })
+    let operations = object.get("operations").and_then(Value::as_array)
+        .ok_or("touch-operations-missing-or-not-array")?.iter()
+        .map(parse_resolved_operation).collect::<Result<Vec<_>, _>>()?;
+    Ok(ParsedDocument { allow, operations })
 }
 
 fn malformed(
@@ -412,94 +305,29 @@ fn absent(source: Option<String>, revision: Option<String>, profile: &str) -> De
     )
 }
 
-/// Load shared, selected-profile, and at most one explicitly extended profile.
+/// Load only the generated pool for the requested profile.
 pub fn load(root: &Path, profile: &str) -> Declaration {
     let source = source_root(root);
     let revision = checkout_revision(root);
     if !valid_profile_id(profile) {
         return malformed(source, revision, profile, "touch-profile-id-invalid");
     }
-
-    let shared_read = read_document(&root.join("shared/touch.json"));
-    let profile_read = read_document(&root.join("profiles").join(profile).join("touch.json"));
-    if let ReadDocument::Malformed(reason) = &shared_read {
-        return malformed(source, revision, profile, reason);
-    }
-    if let ReadDocument::Malformed(reason) = &profile_read {
-        return malformed(source, revision, profile, reason);
-    }
-
-    let shared = match shared_read {
-        ReadDocument::Present(value) => match parse_document(value, None, true, false) {
-            Ok(document) => Some(document),
+    let path = root.join("schema/touch/resolved").join(format!("{profile}.json"));
+    let document = match read_document(&path) {
+        ReadDocument::Absent => return absent(source, revision, profile),
+        ReadDocument::Malformed(reason) => return malformed(source, revision, profile, reason),
+        ReadDocument::Present(value) => match parse_document(value, profile) {
+            Ok(document) => document,
             Err(reason) => return malformed(source, revision, profile, reason),
         },
-        ReadDocument::Absent => None,
-        ReadDocument::Malformed(reason) => return malformed(source, revision, profile, reason),
     };
-    let selected = match profile_read {
-        ReadDocument::Present(value) => match parse_document(value, Some(profile), false, false) {
-            Ok(document) => Some(document),
-            Err(reason) => return malformed(source, revision, profile, reason),
-        },
-        ReadDocument::Absent => None,
-        ReadDocument::Malformed(reason) => return malformed(source, revision, profile, reason),
-    };
-
-    let extended = if let Some(selected_document) = selected.as_ref() {
-        if let Some(base_profile) = selected_document.extends.as_deref() {
-            if base_profile == profile {
-                return malformed(source, revision, profile, "touch-profile-extends-itself");
-            }
-            let base_path = root.join("profiles").join(base_profile).join("touch.json");
-            match read_document(&base_path) {
-                ReadDocument::Absent => Some(None),
-                ReadDocument::Malformed(reason) => {
-                    return malformed(source, revision, profile, reason);
-                }
-                ReadDocument::Present(value) => {
-                    match parse_document(value, Some(base_profile), false, true) {
-                        Ok(document) => Some(Some(document)),
-                        Err(reason) => return malformed(source, revision, profile, reason),
-                    }
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let (Some(shared), Some(selected)) = (shared, selected) else {
-        return absent(source, revision, profile);
-    };
-    let extended = match extended {
-        Some(Some(document)) => Some(document),
-        Some(None) => return absent(source, revision, profile),
-        None => None,
-    };
-
-    let mut allow = shared.allow;
-    let mut never = shared.never;
-    let mut operations = shared.operations;
-    allow.extend(selected.allow);
-    never.extend(selected.never);
-    operations.extend(selected.operations);
-    if let Some(extended) = extended {
-        allow.extend(extended.allow);
-        never.extend(extended.never);
-        operations.extend(extended.operations);
-    }
-
     Declaration {
         state: LoadState::Loaded,
         source,
         source_revision: revision,
         profile: profile.to_owned(),
-        allow,
-        never,
-        operations,
+        allow: document.allow,
+        operations: document.operations,
         failure: None,
     }
 }
@@ -576,11 +404,11 @@ fn close_double_star(pattern: &[&str], states: &mut [bool]) {
     }
 }
 
-/// Check an absolute target against never-first path rules.
+/// Check an absolute target against the resolved pool.
 pub fn check(declaration: &Declaration, path: &str) -> Value {
     let normalized = normalize_absolute(path);
     let mut matched_allow = Vec::new();
-    let mut matched_never = Vec::new();
+    let matched_never: Vec<String> = Vec::new();
     let mut lanes = Vec::<String>::new();
     let mut notes = Vec::<String>::new();
 
@@ -601,23 +429,16 @@ pub fn check(declaration: &Declaration, path: &str) -> Value {
                     }
                 }
             }
-            for rule in &declaration.never {
-                if pattern_matches(&rule.pattern, normalized_path) {
-                    matched_never.push(rule.original.clone());
-                }
-            }
         }
     }
 
     let allowed = declaration.state == LoadState::Loaded
         && normalized.is_some()
-        && !matched_allow.is_empty()
-        && matched_never.is_empty();
+        && !matched_allow.is_empty();
     let decision = match declaration.state {
         LoadState::Absent => "absent",
         LoadState::Malformed => "malformed",
         LoadState::Loaded if normalized.is_none() => "invalid-path",
-        LoadState::Loaded if !matched_never.is_empty() => "never",
         LoadState::Loaded if matched_allow.is_empty() => "undeclared",
         LoadState::Loaded => "allowed",
     };
