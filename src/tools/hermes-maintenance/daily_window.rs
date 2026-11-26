@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -494,9 +494,9 @@ impl SafeDirectories {
                 )),
             }
         }
-        let mut file = temp_file.ok_or("hermes-maintenance-daily-window-record-temp-collision")?;
+        let file = temp_file.ok_or("hermes-maintenance-daily-window-record-temp-collision")?;
         let write_result = (|| -> Result<(), String> {
-            file.write_all(bytes).map_err(|error| {
+            projectio::act_fd_write(&witness, &file, bytes, None).map_err(|error| {
                 format!("hermes-maintenance-daily-window-record-write-failed: {error}")
             })?;
             projectio::act_fd_mode(&witness, &file, 0o600, None)
