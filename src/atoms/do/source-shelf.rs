@@ -454,7 +454,7 @@ fn carry_excluded_shelf_entries(
                 match fs::symlink_metadata(&promoted_path) {
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        crate::atoms::r#do::source_shelf::rename(
+                        crate::atoms::r#do::rename::rename_from_scratch(
                             authorization,
                             invocation,
                             &backup_path,
@@ -3607,7 +3607,7 @@ fn source_shelf_sweep_with_fault(
                 }
                 if shelf_promoted {
                     for (backup, promoted) in carried_excluded.iter().rev() {
-                        if let Err(error) = crate::atoms::r#do::source_shelf::rename(
+                        if let Err(error) = crate::atoms::r#do::rename::rename_to_scratch(
                             authorization,
                             invocation,
                             promoted,
