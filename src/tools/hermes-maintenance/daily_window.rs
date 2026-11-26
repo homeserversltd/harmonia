@@ -1,15 +1,16 @@
 //! Optional local-time admission and durable once-per-local-day proof for
 //! Hermes maintenance. The date is read through GNU `date` with an explicit
 //! `TZ=:/etc/localtime`; the inherited TZ environment never selects the zone.
+use crate::atoms::projectio::{self, LinkPromotion};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -442,30 +443,26 @@ impl SafeDirectories {
     }
 
     fn write_record(&mut self, record_path: &str, bytes: &[u8]) -> Result<(), String> {
+        // Daily-window records are Harmonia's own bookkeeping, not the update itself.
+        let witness = projectio::engine_state_witness();
         if self.days.is_none() {
-            let name = CString::new(RECORD_DIRECTORY).expect("constant directory name");
-            let result = unsafe { libc::mkdirat(self.base.as_raw_fd(), name.as_ptr(), 0o700) };
-            let created = result == 0;
-            if !created {
-                let error = std::io::Error::last_os_error();
-                if error.kind() != std::io::ErrorKind::AlreadyExists {
-                    return Err(format!(
-                        "hermes-maintenance-daily-window-record-directory-create-failed: {error}"
-                    ));
-                }
-            }
-            let directory =
-                openat_directory(self.base.as_raw_fd(), RECORD_DIRECTORY).map_err(|error| {
-                    format!("hermes-maintenance-daily-window-record-directory-unsafe: {error}")
-                })?;
+            let directory_path = Path::new(RECORD_BASE).join(RECORD_DIRECTORY);
+            let (directory, created) = match projectio::act_at_make_dir(
+                &witness, &self.base, OsStr::new(RECORD_DIRECTORY), 0o700, Some(&directory_path),
+            ) {
+                Ok(directory) => (directory, true),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
+                    openat_directory(self.base.as_raw_fd(), RECORD_DIRECTORY).map_err(|error| {
+                        format!("hermes-maintenance-daily-window-record-directory-unsafe: {error}")
+                    })?,
+                    false,
+                ),
+                Err(error) => return Err(format!(
+                    "hermes-maintenance-daily-window-record-directory-create-failed: {error}"
+                )),
+            };
             if created {
                 validate_days_directory_owner(&directory)?;
-                if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
-                    return Err(format!(
-                        "hermes-maintenance-daily-window-record-directory-mode-failed: {}",
-                        std::io::Error::last_os_error()
-                    ));
-                }
             }
             validate_days_directory(&directory)?;
             if created && unsafe { libc::fsync(self.base.as_raw_fd()) } != 0 {
@@ -489,28 +486,12 @@ impl SafeDirectories {
                 ".hermes-maintenance-day-{}-{sequence}.tmp",
                 std::process::id()
             );
-            let temp_c = CString::new(temp_name.as_str()).expect("generated temp name");
-            let fd = unsafe {
-                libc::openat(
-                    days.as_raw_fd(),
-                    temp_c.as_ptr(),
-                    libc::O_WRONLY
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_NOFOLLOW
-                        | libc::O_CLOEXEC,
-                    0o600,
-                )
-            };
-            if fd >= 0 {
-                temp_file = Some(unsafe { File::from_raw_fd(fd) });
-                break;
-            }
-            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(format!(
-                    "hermes-maintenance-daily-window-record-temp-create-failed: {}",
-                    std::io::Error::last_os_error()
-                ));
+            match projectio::act_at_create_new(&witness, days, OsStr::new(&temp_name), 0o600, None) {
+                Ok(file) => { temp_file = Some(file); break; }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!(
+                    "hermes-maintenance-daily-window-record-temp-create-failed: {error}"
+                )),
             }
         }
         let mut file = temp_file.ok_or("hermes-maintenance-daily-window-record-temp-collision")?;
@@ -518,7 +499,7 @@ impl SafeDirectories {
             file.write_all(bytes).map_err(|error| {
                 format!("hermes-maintenance-daily-window-record-write-failed: {error}")
             })?;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            projectio::act_fd_mode(&witness, &file, 0o600, None)
                 .map_err(|error| {
                     format!("hermes-maintenance-daily-window-record-mode-failed: {error}")
                 })?;
@@ -538,24 +519,15 @@ impl SafeDirectories {
         })();
         if let Err(error) = write_result {
             drop(file);
-            unlinkat(days.as_raw_fd(), &temp_name);
+            let _ = projectio::act_at_unlink(&witness, days, OsStr::new(&temp_name), false, None);
             return Err(error);
         }
         drop(file);
-        let temp_c = CString::new(temp_name.as_str()).expect("generated temp name");
-        let final_c = CString::new(file_name)
-            .map_err(|_| "hermes-maintenance-daily-window-record-name-invalid")?;
-        let renamed = unsafe {
-            libc::renameat(
-                days.as_raw_fd(),
-                temp_c.as_ptr(),
-                days.as_raw_fd(),
-                final_c.as_ptr(),
-            )
-        };
-        if renamed != 0 {
-            let error = std::io::Error::last_os_error();
-            unlinkat(days.as_raw_fd(), &temp_name);
+        if let Err(error) = projectio::act_at_rename(
+            &witness, days, OsStr::new(&temp_name), days, OsStr::new(file_name),
+            LinkPromotion::Rename, Some(Path::new(record_path)), None,
+        ) {
+            let _ = projectio::act_at_unlink(&witness, days, OsStr::new(&temp_name), false, None);
             return Err(format!(
                 "hermes-maintenance-daily-window-record-promote-failed: {error}"
             ));
@@ -702,13 +674,6 @@ fn resolve_local_owner_uid(name: &str) -> Result<u32, String> {
     })
 }
 
-fn unlinkat(parent_fd: i32, name: &str) {
-    if let Ok(name) = CString::new(name) {
-        unsafe {
-            libc::unlinkat(parent_fd, name.as_ptr(), 0);
-        }
-    }
-}
 
 fn digest(bytes: &[u8]) -> String {
     let hash = Sha256::digest(bytes);
