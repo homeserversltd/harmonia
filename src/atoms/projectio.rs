@@ -1319,6 +1319,10 @@ pub(crate) fn engine_open_lock(_w: &EngineStateWitness, path: &Path) -> std::io:
 pub(crate) fn engine_rename(_w: &EngineStateWitness, from: &Path, to: &Path, scratch_from: bool, scratch_to: bool) -> std::io::Result<()> {
     check_act_path(from)?; check_act_path(to)?;
     let before = fs::symlink_metadata(from)?;
+    // POSIX rename is a no-op if both names already identify the same inode.
+    if fs::symlink_metadata(to).is_ok_and(|m| file_identity(&m) == file_identity(&before)) {
+        return Ok(());
+    }
     fs::rename(from, to)?;
     if !scratch_to { crate::atoms::touch::record_lane(to, "self"); }
     if !scratch_from { crate::atoms::touch::record_lane(from, "self"); }
@@ -1330,7 +1334,11 @@ pub(crate) fn engine_remove(_w: &EngineStateWitness, path: &Path, scratch: bool)
 #[allow(dead_code)]
 pub(crate) fn engine_remove_if(_w: &EngineStateWitness, path: &Path, expected: &[u8], scratch: bool) -> std::io::Result<()> {
     check_act_path(path)?;
-    if fs::read(path)? != expected { return Err(std::io::Error::other(format!("projectio-remove-if-refused {}", path.display()))); }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() { return Err(std::io::Error::other(format!("projectio-remove-if-not-regular {}", path.display()))); }
+    let bytes = read_engine_state_target(path).map_err(std::io::Error::other)?;
+    if bytes != expected { return Err(std::io::Error::other(format!("projectio-remove-if-refused {}", path.display()))); }
+    verify_preimage(path, expected, &metadata).map_err(std::io::Error::other)?;
     remove_act(path, 0, !scratch)
 }
 #[allow(dead_code)]
