@@ -50,7 +50,7 @@ pub(crate) fn file_write(
         None
     };
     if options.write_bytes {
-        atomic_file_write(path, bytes, options.mode, options.uid, options.gid)?;
+        atomic_file_write(path, bytes, options.mode, options.uid, options.gid, false)?;
     } else {
         if let Some(mode) = options.mode {
             set_mode(path, mode)?;
@@ -65,12 +65,26 @@ pub(crate) fn file_write(
     Ok(FileWriteResult { backed_up })
 }
 
+/// Stage bytes for a caller-owned scratch name without recording that name.
+pub(crate) fn file_write_scratch(
+    authorization: &ActionAuthorization,
+    invocation: &InvocationKey,
+    path: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+) -> Result<(), String> {
+    atomic_file_write(path, bytes, mode, None, None, true)?;
+    let _ = (authorization, invocation);
+    Ok(())
+}
+
 fn atomic_file_write(
     path: &Path,
     bytes: &[u8],
     mode: Option<u32>,
     uid: Option<u32>,
     gid: Option<u32>,
+    scratch: bool,
 ) -> Result<(), String> {
     let parent = path
         .parent()
@@ -111,7 +125,9 @@ fn atomic_file_write(
                 path.display()
             )
         })?;
-        crate::atoms::touch::record(path, None, false);
+        if !scratch {
+            crate::atoms::touch::record(path, None, false);
+        }
         let directory = OpenOptions::new()
             .read(true)
             .open(parent)

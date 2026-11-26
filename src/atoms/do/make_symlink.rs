@@ -181,7 +181,7 @@ fn remove_link(
     match atoms::ask::path_kind(path)? {
         None => Ok(()),
         Some(atoms::ask::PathKind::Symlink) => {
-            atoms::r#do::symlink_converge::remove_file(authorization, invocation, path)
+            atoms::r#do::symlink_converge::remove_scratch_file(authorization, invocation, path)
         }
         Some(_) => Err(format!(
             "validated-file-symlink-link-not-link {}",
@@ -474,18 +474,12 @@ fn execute_action(
     };
     clean();
     if let Err(error) = file_symlink_fault(FileSymlinkFault::StageSource).and_then(|_| {
-        atoms::r#do::write_file::file_write(
+        atoms::r#do::write_file::file_write_scratch(
             authorization,
             invocation,
             &source_candidate,
             desired,
-            atoms::r#do::write_file::FileWriteOptions {
-                write_bytes: true,
-                mode: Some(desired_mode),
-                uid: None,
-                gid: None,
-                backup_to: None,
-            },
+            Some(desired_mode),
         )
         .map(|_| {
             source_candidate_exists.set(true);
