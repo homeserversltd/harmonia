@@ -2,6 +2,7 @@
 mod daily_window;
 mod source;
 use crate::atoms::comparison::{ActionAuthorization, DiffDecision};
+use crate::atoms::projectio::{self, EngineStateWitness};
 use crate::atoms::r#do::InvocationKey;
 use crate::{OperationOutcome, SoftwareApplyAuthorization};
 use serde::Serialize;
@@ -13,7 +14,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1997,6 +1998,7 @@ fn restore_launcher(
     directory: &LauncherDirectorySnapshot,
     owner_uid: u32,
 ) -> Result<Vec<u8>, String> {
+    let witness = projectio::engine_state_witness();
     verify_launcher_directory(directory, owner_uid)?;
     let original_target = restorable_launcher_identity(&snapshot.path, owner_uid)?;
     let basename = snapshot
@@ -2020,31 +2022,28 @@ fn restore_launcher(
         file.write_all(&snapshot.bytes)
             .map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
-        if (metadata.uid(), metadata.gid()) != (snapshot.uid, snapshot.gid)
-            && unsafe {
-                libc::fchown(file.as_raw_fd(), snapshot.uid, snapshot.gid)
-            } != 0
-        {
-            return Err("rollback-launcher-owner-restore-failed".into());
+        if (metadata.uid(), metadata.gid()) != (snapshot.uid, snapshot.gid) {
+            projectio::act_fd_owner(&witness, &file, snapshot.uid, snapshot.gid, None)
+                .map_err(|error| format!("rollback-launcher-owner-restore-failed: {error}"))?;
         }
-        file.set_permissions(fs::Permissions::from_mode(snapshot.mode))
+        projectio::act_fd_mode(&witness, &file, snapshot.mode, None)
             .map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
         Ok(())
     })();
     if let Err(error) = write_result {
         drop(file);
-        let _ = fs::remove_file(&temp);
+        let _ = projectio::act_scratch_remove(&witness, &temp);
         return Err(error);
     }
     drop(file);
     verify_launcher_directory(directory, owner_uid)?;
     if restorable_launcher_identity(&snapshot.path, owner_uid)? != original_target {
-        let _ = fs::remove_file(&temp);
+        let _ = projectio::act_scratch_remove(&witness, &temp);
         return Err("rollback-launcher-target-changed-before-promote".into());
     }
     fs::rename(&temp, &snapshot.path).map_err(|error| {
-        let _ = fs::remove_file(&temp);
+        let _ = projectio::act_scratch_remove(&witness, &temp);
         format!("rollback-launcher-atomic-rename-failed: {error}")
     })?;
     verify_launcher_directory(directory, owner_uid)?;
@@ -2365,6 +2364,7 @@ fn validate_receipt_file_shape(
 }
 
 fn prepare_receipt_directory(path: &Path, custody: ReceiptCustody) -> Result<(), String> {
+    let witness = projectio::engine_state_witness();
     if !path.is_absolute() {
         return Err("managed-directory-must-be-absolute".into());
     }
@@ -2380,9 +2380,9 @@ fn prepare_receipt_directory(path: &Path, custody: ReceiptCustody) -> Result<(),
                 ))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&current)
+                projectio::engine_make_dir(&witness, &current)
                     .map_err(|error| format!("receipt-directory-create-failed: {error}"))?;
-                own_path(&current, custody.uid, custody.gid, 0o700)?;
+                own_path(&witness, &current, custody.uid, custody.gid, 0o700, true)?;
             }
             Err(error) => return Err(format!("receipt-directory-observe-failed: {error}")),
         }
@@ -2398,16 +2398,16 @@ fn prepare_receipt_directory(path: &Path, custody: ReceiptCustody) -> Result<(),
     Ok(())
 }
 
-fn own_path(path: &Path, uid: u32, gid: u32, mode: u32) -> Result<(), String> {
+fn own_path(witness: &EngineStateWitness, path: &Path, uid: u32, gid: u32, mode: u32, record: bool) -> Result<(), String> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
         .map_err(|error| error.to_string())?;
-    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-        return Err("managed-path-owner-assignment-failed".into());
-    }
-    file.set_permissions(fs::Permissions::from_mode(mode))
+    let recorded = record.then_some(path);
+    projectio::act_fd_owner(witness, &file, uid, gid, recorded)
+        .map_err(|error| format!("managed-path-owner-assignment-failed: {error}"))?;
+    projectio::act_fd_mode(witness, &file, mode, recorded)
         .map_err(|error| error.to_string())
 }
 
@@ -2418,6 +2418,7 @@ fn atomic_write_owned(
     gid: u32,
     mode: u32,
 ) -> Result<(), String> {
+    let witness = projectio::engine_state_witness();
     match fs::symlink_metadata(path) {
         Ok(metadata)
             if metadata.is_file()
@@ -2446,23 +2447,22 @@ fn atomic_write_owned(
         file.write_all(bytes).map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
-        if (metadata.uid(), metadata.gid()) != (uid, gid)
-            && unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0
-        {
-            return Err("native-receipt-temp-owner-assignment-failed".into());
+        if (metadata.uid(), metadata.gid()) != (uid, gid) {
+            projectio::act_fd_owner(&witness, &file, uid, gid, None)
+                .map_err(|error| format!("native-receipt-temp-owner-assignment-failed: {error}"))?;
         }
-        file.set_permissions(fs::Permissions::from_mode(mode))
+        projectio::act_fd_mode(&witness, &file, mode, None)
             .map_err(|error| error.to_string())?;
         Ok(())
     })();
     if let Err(error) = result {
         drop(file);
-        let _ = fs::remove_file(&temp);
+        let _ = projectio::act_scratch_remove(&witness, &temp);
         return Err(error);
     }
     drop(file);
-    fs::rename(&temp, path).map_err(|error| {
-        let _ = fs::remove_file(&temp);
+    projectio::engine_rename(&witness, &temp, path, true, false).map_err(|error| {
+        let _ = projectio::act_scratch_remove(&witness, &temp);
         format!("native-receipt-atomic-promote-failed: {error}")
     })?;
     File::open(parent)
@@ -3340,20 +3340,22 @@ fn prove_launch_isolated(launcher: &Path, source_root: &Path) -> Result<(), Stri
         &cache_home,
         &tmp_dir,
     ] {
-        fs::create_dir(path)
+        projectio::act_scratch_make_dir_new(&temp.witness, path)
             .map_err(|error| format!("isolated-profile-directory-create-failed: {error}"))?;
         own_path(
+            &temp.witness,
             path,
             current_owner_context()?.uid,
             current_owner_context()?.gid,
             0o700,
+            false,
         )?;
     }
     let owner = current_owner_context()?;
     // Both the native launcher and the born venv fallback can enter Hermes's
     // dependency manager. Preserve its committed selection when one exists;
     // a legacy installation with no selection still gets the isolated probe.
-    stage_isolated_native_dependency_selection(source_root, &hermes_home, &owner)?;
+    stage_isolated_native_dependency_selection(source_root, &hermes_home, &owner, &temp.witness)?;
     let output = run_owner_command(
         &launcher.to_string_lossy(),
         &["--version"],
@@ -3400,6 +3402,7 @@ fn stage_isolated_native_dependency_selection(
     source_root: &Path,
     isolated_hermes_home: &Path,
     owner: &OwnerContext,
+    witness: &EngineStateWitness,
 ) -> Result<(), String> {
     let canonical_root = source_root
         .canonicalize()
@@ -3455,25 +3458,26 @@ fn stage_isolated_native_dependency_selection(
     }
 
     let isolated_installs = isolated_hermes_home.join("installs");
-    fs::create_dir(&isolated_installs)
+    projectio::act_scratch_make_dir_new(witness, &isolated_installs)
         .map_err(|error| format!("isolated-native-installs-create-failed: {error}"))?;
-    own_path(&isolated_installs, owner.uid, owner.gid, 0o700)?;
+    own_path(witness, &isolated_installs, owner.uid, owner.gid, 0o700, false)?;
     let isolated_install = isolated_installs.join(install_key);
-    fs::create_dir(&isolated_install)
+    projectio::act_scratch_make_dir_new(witness, &isolated_install)
         .map_err(|error| format!("isolated-native-install-create-failed: {error}"))?;
-    own_path(&isolated_install, owner.uid, owner.gid, 0o700)?;
+    own_path(witness, &isolated_install, owner.uid, owner.gid, 0o700, false)?;
     // Upstream resolves the selected venv and requires it below the active install state's
     // environments directory. Keep its facts bytes unchanged and expose only that path in the
     // temporary home; the dependency generation itself remains in the owner's store.
-    symlink(
+    projectio::act_scratch_symlink(witness,
         &canonical_generations,
-        isolated_install.join("environments"),
+        &isolated_install.join("environments"),
     )
     .map_err(|error| format!("isolated-native-environments-link-failed: {error}"))?;
-    write_isolated_owner_file(&isolated_install.join("facts.json"), &facts, owner)
+    write_isolated_owner_file(witness, &isolated_install.join("facts.json"), &facts, owner)
 }
 
 fn write_isolated_owner_file(
+    witness: &EngineStateWitness,
     path: &Path,
     bytes: &[u8],
     owner: &OwnerContext,
@@ -3492,33 +3496,34 @@ fn write_isolated_owner_file(
     let metadata = file
         .metadata()
         .map_err(|error| format!("isolated-native-facts-stat-failed: {error}"))?;
-    if (metadata.uid(), metadata.gid()) != (owner.uid, owner.gid)
-        && unsafe { libc::fchown(file.as_raw_fd(), owner.uid, owner.gid) } != 0
-    {
-        return Err("isolated-native-facts-owner-assignment-failed".into());
+    if (metadata.uid(), metadata.gid()) != (owner.uid, owner.gid) {
+        projectio::act_fd_owner(witness, &file, owner.uid, owner.gid, None)
+            .map_err(|error| format!("isolated-native-facts-owner-assignment-failed: {error}"))?;
     }
-    file.set_permissions(fs::Permissions::from_mode(0o600))
+    projectio::act_fd_mode(witness, &file, 0o600, None)
         .map_err(|error| format!("isolated-native-facts-mode-set-failed: {error}"))
 }
 
 struct ScopedTempDir {
     path: PathBuf,
     created_parents: Vec<PathBuf>,
+    witness: EngineStateWitness,
 }
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 impl Drop for ScopedTempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        let _ = projectio::act_scratch_remove_tree(&self.witness, &self.path);
         for parent in self.created_parents.iter().rev() {
-            let _ = fs::remove_dir(parent);
+            let _ = projectio::act_scratch_remove_dir(&self.witness, parent);
         }
     }
 }
 fn isolated_tempdir() -> Result<ScopedTempDir, String> {
+    let witness = projectio::engine_state_witness();
     let owner = current_owner_context()?;
     let base = owner.home.join(".cache/hermes-maintenance/tmp");
     let created_parents =
-        create_owned_directory_tree_track(&base, &owner.home, owner.uid, owner.gid)?;
+        create_owned_directory_tree_track(&witness, &base, &owner.home, owner.uid, owner.gid)?;
     for _ in 0..128 {
         let path = base.join(format!(
             "hermes-maintenance-{}-{}-{}",
@@ -3526,12 +3531,13 @@ fn isolated_tempdir() -> Result<ScopedTempDir, String> {
             now_nanos()?,
             TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        match fs::create_dir(&path) {
+        match projectio::act_scratch_make_dir_new(&witness, &path) {
             Ok(()) => {
-                own_path(&path, owner.uid, owner.gid, 0o700)?;
+                own_path(&witness, &path, owner.uid, owner.gid, 0o700, false)?;
                 return Ok(ScopedTempDir {
                     path,
                     created_parents,
+                    witness,
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -3541,6 +3547,7 @@ fn isolated_tempdir() -> Result<ScopedTempDir, String> {
     Err("isolated-temporary-directory-name-collision-limit".into())
 }
 fn create_owned_directory_tree_track(
+    witness: &EngineStateWitness,
     path: &Path,
     owner_home: &Path,
     uid: u32,
@@ -3566,9 +3573,9 @@ fn create_owned_directory_tree_track(
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&current)
+                projectio::act_scratch_make_dir_new(witness, &current)
                     .map_err(|error| format!("temporary-parent-create-failed: {error}"))?;
-                own_path(&current, uid, gid, 0o700)?;
+                own_path(witness, &current, uid, gid, 0o700, false)?;
                 created.push(current.clone());
             }
             Err(error) => return Err(format!("temporary-parent-observe-failed: {error}")),
