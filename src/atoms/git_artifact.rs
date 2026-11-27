@@ -16,6 +16,7 @@ pub(crate) struct ReleaseRequest {
     pub credential_host: Option<String>,
     pub credential_scope_found: bool,
     pub cache_dir: PathBuf,
+    pub own_forge: bool,
 }
 
 impl ReleaseRequest {
@@ -27,6 +28,10 @@ impl ReleaseRequest {
         (self.credential_host.as_deref() == Some(host.as_str()))
             .then_some(self.credential.as_ref())
             .flatten()
+    }
+
+    pub(crate) fn own_forge_for_url(&self, url: &str) -> bool {
+        self.own_forge && url.starts_with("https://git.home.arpa/")
     }
 }
 

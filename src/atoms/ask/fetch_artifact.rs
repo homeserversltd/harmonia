@@ -1,30 +1,5 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
-use crate::atoms::git_artifact::ReleaseAssets;
-
-// The transport choice belongs to the request, not to a guessed URL lane.
-struct ReleaseRequest {
-    kind: String,
-    base_url: String,
-    owner: String,
-    repo: String,
-    credential: Option<crate::atoms::forge_credential::Credential>,
-    credential_host: Option<String>,
-    credential_scope_found: bool,
-    cache_dir: std::path::PathBuf,
-    own_forge: bool,
-}
-
-impl ReleaseRequest {
-    fn credential_for_url<'a>(&'a self, url: &str) -> Option<&'a crate::atoms::forge_credential::Credential> {
-        let host = crate::atoms::forge_credential::url_host(url)?;
-        (self.credential_host.as_deref() == Some(host.as_str()))
-            .then_some(self.credential.as_ref()).flatten()
-    }
-
-    fn own_forge_for_url(&self, url: &str) -> bool {
-        self.own_forge && url.starts_with("https://git.home.arpa/")
-    }
-}
+use crate::atoms::git_artifact::{ReleaseAssets, ReleaseRequest};
 use crate::atoms::projectio;
 use serde::Deserialize;
 use serde_json::Value;
