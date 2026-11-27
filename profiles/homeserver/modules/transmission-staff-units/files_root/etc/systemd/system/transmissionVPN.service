@@ -18,6 +18,7 @@ TimeoutStartSec=180
 Environment=PYTHONDONTWRITEBYTECODE=1
 StandardInput=data
 StandardInputText={}
+ExecCondition=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/configured
 ExecStart=/usr/local/sbin/agathodaimon/cli.py transmission/daemon
 ExecStartPost=/usr/local/sbin/agathodaimon/cli.py transmission/settings
 Restart=on-failure

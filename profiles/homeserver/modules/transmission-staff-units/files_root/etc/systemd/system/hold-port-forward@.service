@@ -14,6 +14,7 @@ NotifyAccess=all
 Environment=PYTHONDONTWRITEBYTECODE=1
 StandardInput=data
 StandardInputText={"provider":"%i"}
+ExecCondition=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/configured
 ExecStartPre=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/namespace
 ExecStart=/usr/local/sbin/agathodaimon/cli.py transmission/vpn/hold
 Restart=no
