@@ -1,5 +1,30 @@
 //! Observation and bounded acquisition for Forgejo generic artifacts.
-use crate::atoms::git_artifact::{ReleaseAssets, ReleaseRequest};
+use crate::atoms::git_artifact::ReleaseAssets;
+
+// The transport choice belongs to the request, not to a guessed URL lane.
+struct ReleaseRequest {
+    kind: String,
+    base_url: String,
+    owner: String,
+    repo: String,
+    credential: Option<crate::atoms::forge_credential::Credential>,
+    credential_host: Option<String>,
+    credential_scope_found: bool,
+    cache_dir: std::path::PathBuf,
+    own_forge: bool,
+}
+
+impl ReleaseRequest {
+    fn credential_for_url<'a>(&'a self, url: &str) -> Option<&'a crate::atoms::forge_credential::Credential> {
+        let host = crate::atoms::forge_credential::url_host(url)?;
+        (self.credential_host.as_deref() == Some(host.as_str()))
+            .then_some(self.credential.as_ref()).flatten()
+    }
+
+    fn own_forge_for_url(&self, url: &str) -> bool {
+        self.own_forge && url.starts_with("https://git.home.arpa/")
+    }
+}
 use crate::atoms::projectio;
 use serde::Deserialize;
 use serde_json::Value;
@@ -50,9 +75,10 @@ pub(crate) fn memo_release_identity<T>(
     Ok(result)
 }
 
-fn memo_curl(url: &str, path: &Path, args: &[String], credential: Option<&crate::atoms::forge_credential::Credential>, inspection_bounds: bool) -> Result<crate::CmdResult, String> {
-    memo_release_identity(url, path, || {
-        let result = run_curl(args, credential)?;
+fn memo_curl(url: &str, path: &Path, args: &[String], credential: Option<&crate::atoms::forge_credential::Credential>, inspection_bounds: bool, own_forge: bool) -> Result<crate::CmdResult, String> {
+    let memo_key = if own_forge { format!("xenia-own-forge:{url}") } else { url.to_owned() };
+    memo_release_identity(&memo_key, path, || {
+        let result = run_release_curl(args, credential, own_forge)?;
         let status = match (result.code, result.stdout.trim()) {
             (0, "200") => Some(200),
             (22, "404") => Some(404),
@@ -133,7 +159,7 @@ pub(crate) fn fetch_external_archive(
     let credential = if kind == "forgejo-release" {
         crate::atoms::forge_credential::credential_for_url(&base_url)?
     } else { None };
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: kind.into(), base_url: base_url.clone(), owner: owner.into(), repo: repo.into(),
         credential_scope_found: credential.is_some(), credential,
         credential_host: crate::atoms::forge_credential::url_host(&base_url),
@@ -197,7 +223,7 @@ pub(crate) fn fetch_pinned_external_archive(
     let credential = if kind == "forgejo-release" {
         crate::atoms::forge_credential::credential_for_url(&base_url)?
     } else { None };
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: kind.into(), base_url: base_url.clone(), owner: owner.into(), repo: repo.into(),
         credential_scope_found: credential.is_some(), credential,
         credential_host: crate::atoms::forge_credential::url_host(&base_url),
@@ -316,7 +342,7 @@ fn lookup_release_metadata_with_tag_mode(
         curl_args(&url, &path.to_string_lossy())
     };
     args.extend(["-w".into(), "%{http_code}".into()]);
-    let result = memo_curl(&url, &path, &args, r.credential_for_url(&url), inspection_bounds)?;
+    let result = memo_curl(&url, &path, &args, r.credential_for_url(&url), inspection_bounds, r.own_forge_for_url(&url))?;
     if result.stdout.trim() == "404" {
         let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
         return Ok(None);
@@ -424,9 +450,9 @@ fn download_release_asset_with_role(
     };
     let x = if identity && (name == "release.flag" || name.ends_with(".sha256")) {
         args.extend(["-w".into(), "%{http_code}".into()]);
-        memo_curl(url, &p, &args, r.credential_for_url(url), inspection_bounds)?
+        memo_curl(url, &p, &args, r.credential_for_url(url), inspection_bounds, r.own_forge_for_url(url))?
     } else {
-        run_curl(&args, r.credential_for_url(url))?
+        run_release_curl(&args, r.credential_for_url(url), r.own_forge_for_url(url))?
     };
     if inspection_bounds && x.code == 63 {
         let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &p);
@@ -500,7 +526,7 @@ pub(crate) fn read_pinned_member_release_flag(
         None
     };
     let credential_scope_found = credential.is_some();
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: kind.into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -595,7 +621,7 @@ pub(crate) fn read_member_release_flags(
         None
     };
     let credential_scope_found = credential.is_some();
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: kind.into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -1029,6 +1055,32 @@ fn safe_release_segment(value: &str) -> bool {
 
 fn safe_asset_name(value: &str) -> bool {
     safe_release_segment(value) && !value.contains('/') && !value.contains('\\')
+}
+
+fn run_release_curl(
+    args: &[String],
+    credential: Option<&crate::atoms::forge_credential::Credential>,
+    own_forge: bool,
+) -> Result<crate::CmdResult, String> {
+    if !own_forge { return run_curl(args, credential); }
+    let has_status = args.iter().any(|arg| arg == "-w");
+    let mut loopback = args.to_vec();
+    if !has_status { loopback.extend(["-w".into(), "%{http_code}".into()]); }
+    loopback.extend(["--resolve".into(), "git.home.arpa:443:127.0.0.1".into(),
+        "--noproxy".into(), "git.home.arpa".into()]);
+    let cert = std::env::var_os("CADUCEUS_CERT_DIR")
+        .map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/var/lib/caduceus/certs"))
+        .join("ca.pem");
+    if fs::File::open(&cert).is_ok() {
+        loopback.extend(["--cacert".into(), cert.to_string_lossy().into_owned()]);
+    }
+    let mut result = run_curl(&loopback, credential)?;
+    if matches!(result.code, 7 | 35 | 60) && result.stdout.trim() == "000" {
+        result = run_curl(args, credential)?;
+    } else if !has_status {
+        result.stdout.clear();
+    }
+    Ok(result)
 }
 
 fn run_curl(
@@ -1767,7 +1819,7 @@ pub(crate) fn inspect_release(
     let (owner, repo) = release_repo.split_once('/').ok_or("fetch-artifact-release-repo-invalid")?;
     if owner.is_empty() || repo.is_empty() || repo.contains('/') { return Err("fetch-artifact-release-repo-invalid".into()); }
     let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
-    let request = ReleaseRequest { kind: "forgejo-release".into(), base_url: api_root.into(),
+    let request = ReleaseRequest { own_forge: !owner.eq_ignore_ascii_case("HOMESERVERSLTD"), kind: "forgejo-release".into(), base_url: api_root.into(),
         owner: owner.into(), repo: repo.into(), credential_host: crate::atoms::forge_credential::url_host(api_root),
         credential_scope_found: credential.is_some(), credential,
         cache_dir: std::env::temp_dir().join(format!("harmonia-xenia-release-{}", unique_temp_suffix())) };
@@ -1784,7 +1836,7 @@ pub(crate) fn inspect_release(
         let mut candidate_requests = Vec::new();
         for url in candidates {
             let (_, candidate_owner, candidate_repo) = external_release_candidate_shape("github-release", url, asset)?;
-            candidate_requests.push((url, ReleaseRequest {
+            candidate_requests.push((url, ReleaseRequest { own_forge: false,
                 kind: "github-release".into(), base_url: "https://api.github.com".into(),
                 owner: candidate_owner.into(), repo: candidate_repo.into(), credential: None,
                 credential_host: None, credential_scope_found: false,
@@ -1843,7 +1895,7 @@ pub(crate) fn download_xenia_release(
     } else {
         ("forgejo-release", api_root, owner, repo, crate::atoms::forge_credential::credential_for_url(api_root)?)
     };
-    let request = ReleaseRequest { kind: kind.into(), base_url: base.into(),
+    let request = ReleaseRequest { own_forge: candidate_url.is_none() && !owner.eq_ignore_ascii_case("HOMESERVERSLTD"), kind: kind.into(), base_url: base.into(),
         owner: selected_owner.into(), repo: selected_repo.into(), credential_host: crate::atoms::forge_credential::url_host(base),
         credential_scope_found: credential.is_some(), credential,
         cache_dir: std::env::temp_dir().join(format!("harmonia-xenia-release-{}", unique_temp_suffix())) };
@@ -1897,7 +1949,7 @@ pub(crate) fn download_engine_release(
     }
     let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
     let credential_scope_found = credential.is_some();
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: "forgejo-release".into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -2005,7 +2057,7 @@ pub(crate) fn probe_release_digest(
     let asset = asset_name.map(str::to_owned).unwrap_or_else(|| format!("{binary_name}-x86_64"));
     let sidecar = sidecar_name.map(str::to_owned).unwrap_or_else(|| format!("{asset}.sha256"));
     let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: "forgejo-release".into(), base_url: api_root.into(), owner: owner.into(), repo: repo.into(),
         credential_host: crate::atoms::forge_credential::url_host(api_root),
         credential_scope_found: credential.is_some(), credential,
@@ -2065,7 +2117,7 @@ pub(crate) fn download_release(
     let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
     let credential_scope_found = credential.is_some();
     let credential_host = crate::atoms::forge_credential::url_host(api_root);
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: "forgejo-release".into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -2329,7 +2381,7 @@ pub(crate) fn download_pinned_engine_release_for_provider(
         "github" => ("github-release", None),
         _ => return Err(format!("release-flag-provider-unsupported provider={provider}")),
     };
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: kind.into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -2388,7 +2440,7 @@ pub(crate) fn observe_module_release_identity(
     let credential = if provider == "forgejo" {
         crate::atoms::forge_credential::credential_for_url(api_root)?
     } else if provider == "github" { None } else { return Err("release-provider-invalid".into()); };
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: format!("{provider}-release"), base_url: api_root.into(), owner: owner.into(), repo: repo.into(),
         credential_host: crate::atoms::forge_credential::url_host(api_root),
         credential_scope_found: credential.is_some(), credential,
@@ -2487,7 +2539,7 @@ pub(crate) fn download_latest_engine_release_for_assets(
     let asset_set = module_release_asset_set(component, asset_name, sidecar_name, profile);
     let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
     let credential_scope_found = credential.is_some();
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: "forgejo-release".into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -2639,7 +2691,7 @@ pub(crate) fn download_github_latest_engine_release_for_assets(
         return Err("fetch-artifact-pinned-release-sha-invalid".into());
     }
     let asset_set = module_release_asset_set(component, asset_name, sidecar_name, profile);
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: "github-release".into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -2872,7 +2924,7 @@ pub(crate) fn download_member_release_binary(
         None
     };
     let credential_scope_found = credential.is_some();
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: kind.into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -3081,7 +3133,7 @@ fn download_release_with_pin(
     validate_segment(sidecar_name, "sidecar-name")?;
     let credential = crate::atoms::forge_credential::credential_for_url(api_root)?;
     let credential_scope_found = credential.is_some();
-    let request = ReleaseRequest {
+    let request = ReleaseRequest { own_forge: false,
         kind: "forgejo-release".into(),
         base_url: api_root.into(),
         owner: owner.into(),
@@ -3330,7 +3382,7 @@ fn lookup_published_releases(request: &ReleaseRequest) -> Result<Vec<PublishedRe
         let args = inspection_curl_args(&page_url, &path.to_string_lossy());
         let mut args = args;
         args.extend(["-w".into(), "%{http_code}".into()]);
-        let response = memo_curl(&page_url, &path, &args, request.credential_for_url(&page_url), true)?;
+        let response = memo_curl(&page_url, &path, &args, request.credential_for_url(&page_url), true, request.own_forge_for_url(&page_url))?;
         if response.code == 63 {
             let _ = projectio::act_scratch_remove(&projectio::engine_state_witness(), &path);
             return Err(INSPECTION_OVERSIZE_BLOCKER.into());
