@@ -556,6 +556,12 @@
       "tool": "files.converge"
     },
     {
+      "module": "element",
+      "path": "/etc/nginx/conf.d/agora-chat-redirect.conf",
+      "step": "element-hestia-config",
+      "tool": "files.converge"
+    },
+    {
       "module": "nginx",
       "path": "/etc/nginx/hestia/notes/cache-static.conf",
       "step": "nginx-product-config",
